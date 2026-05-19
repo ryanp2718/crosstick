@@ -1,0 +1,17 @@
+global:
+  scrape_interval: 5s
+  evaluation_interval: 5s
+
+scrape_configs:
+  - job_name: ingest
+    static_configs:
+      - targets:
+          - "ingest-binance:9101"
+          - "ingest-coinbase:9102"
+          - "ingest-kraken:9103"
+  - job_name: analytics
+    static_configs:
+      - targets: ["analytics:9110"]
+  - job_name: gateway
+    static_configs:
+      - targets: ["gateway:9120"]

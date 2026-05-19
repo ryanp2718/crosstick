@@ -1,0 +1,118 @@
+name: crypto-md
+
+services:
+  redis:
+    image: redis:7-alpine
+    command: ["redis-server", "--appendonly", "no", "--save", ""]
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 2s
+      retries: 5
+
+  ingest-binance:
+    build:
+      context: ./python
+      dockerfile: Dockerfile
+    command: ["python", "-m", "ingest.main"]
+    environment:
+      EXCHANGE: binance
+      SYMBOLS: BTCUSDT,ETHUSDT
+      REDIS_URL: redis://redis:6379/0
+      METRICS_PORT: "9101"
+    ports:
+      - "9101:9101"
+    depends_on:
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+
+  ingest-coinbase:
+    build:
+      context: ./python
+      dockerfile: Dockerfile
+    command: ["python", "-m", "ingest.main"]
+    environment:
+      EXCHANGE: coinbase
+      SYMBOLS: BTC-USD,ETH-USD
+      REDIS_URL: redis://redis:6379/0
+      METRICS_PORT: "9102"
+    ports:
+      - "9102:9102"
+    depends_on:
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+
+  ingest-kraken:
+    build:
+      context: ./python
+      dockerfile: Dockerfile
+    command: ["python", "-m", "ingest.main"]
+    environment:
+      EXCHANGE: kraken
+      SYMBOLS: BTC/USD,ETH/USD
+      REDIS_URL: redis://redis:6379/0
+      METRICS_PORT: "9103"
+    ports:
+      - "9103:9103"
+    depends_on:
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+
+  analytics:
+    build:
+      context: ./python
+      dockerfile: Dockerfile
+    command: ["python", "-m", "analytics.engine"]
+    environment:
+      REDIS_URL: redis://redis:6379/0
+      METRICS_PORT: "9110"
+    ports:
+      - "9110:9110"
+    depends_on:
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+
+  gateway:
+    build:
+      context: .
+      dockerfile: ./node/gateway/Dockerfile
+    environment:
+      REDIS_URL: redis://redis:6379/0
+      WS_PORT: "8080"
+      METRICS_PORT: "9120"
+    ports:
+      - "8080:8080"
+      - "9120:9120"
+    depends_on:
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+
+  prometheus:
+    image: prom/prometheus:latest
+    volumes:
+      - ./ops/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+    ports:
+      - "9090:9090"
+    restart: unless-stopped
+
+  grafana:
+    image: grafana/grafana:latest
+    environment:
+      GF_AUTH_ANONYMOUS_ENABLED: "true"
+      GF_AUTH_ANONYMOUS_ORG_ROLE: "Admin"
+      GF_SECURITY_ADMIN_PASSWORD: "admin"
+    volumes:
+      - ./ops/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./ops/grafana/dashboards:/var/lib/grafana/dashboards:ro
+    ports:
+      - "3000:3000"
+    depends_on:
+      - prometheus
+    restart: unless-stopped
