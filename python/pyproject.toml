@@ -8,9 +8,10 @@ dependencies = [
     "httpx>=0.27",
     "msgspec>=0.18",
     "sortedcontainers>=2.4",
-    "redis[hiredis]>=5.0",
+    "aiokafka>=0.11",
+    "lz4>=4.0",
+    "pyarrow>=17.0",
     "numpy>=2.0",
-    "polars>=1.0",
     "prometheus-client>=0.20",
     "uvloop>=0.20; sys_platform != 'win32'",
 ]

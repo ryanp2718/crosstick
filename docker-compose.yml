@@ -1,17 +1,86 @@
 name: crypto-md
 
-services:
-  redis:
-    image: redis:7-alpine
-    command: ["redis-server", "--appendonly", "no", "--save", ""]
-    ports:
-      - "6379:6379"
-    healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
-      interval: 5s
-      timeout: 2s
-      retries: 5
+# Kappa architecture: Redpanda topics = source of truth.
+# Materializer projects topics to Parquet on MinIO; warehouse (DuckDB + dbt)
+# queries the lake; gateway computes live derived signals (BBO, spread) from
+# the same topic firehose it fans out to WS clients.
 
+services:
+  # ─── source of truth ──────────────────────────────────────────────────────
+  redpanda:
+    image: redpandadata/redpanda:latest
+    container_name: redpanda
+    command:
+      - redpanda
+      - start
+      - --kafka-addr=internal://0.0.0.0:9092,external://0.0.0.0:19092
+      - --advertise-kafka-addr=internal://redpanda:9092,external://localhost:19092
+      - --rpc-addr=redpanda:33145
+      - --advertise-rpc-addr=redpanda:33145
+      - --schema-registry-addr=internal://0.0.0.0:8081,external://0.0.0.0:18081
+      - --mode=dev-container
+      - --smp=1
+      - --default-log-level=warn
+    ports:
+      - "19092:19092"   # Kafka API (external)
+      - "18081:18081"   # Schema Registry (external)
+      - "9644:9644"     # Admin API
+    healthcheck:
+      test: ["CMD-SHELL", "rpk cluster health | grep -q 'Healthy:.*true'"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+    restart: unless-stopped
+
+  redpanda-console:
+    image: redpandadata/console:latest
+    container_name: redpanda-console
+    environment:
+      KAFKA_BROKERS: redpanda:9092
+      CONFIG_FILEPATH: ""
+    ports:
+      - "8090:8080"
+    depends_on:
+      redpanda:
+        condition: service_healthy
+    restart: unless-stopped
+
+  # ─── object store ─────────────────────────────────────────────────────────
+  minio:
+    image: minio/minio:latest
+    container_name: minio
+    command: ["server", "/data", "--console-address", ":9001"]
+    environment:
+      MINIO_ROOT_USER: minio
+      MINIO_ROOT_PASSWORD: minio12345
+    ports:
+      - "9000:9000"     # S3 API
+      - "9001:9001"     # Web console
+    healthcheck:
+      test: ["CMD", "mc", "ready", "local"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+  minio-init:
+    image: minio/mc:latest
+    container_name: minio-init
+    depends_on:
+      minio:
+        condition: service_healthy
+    entrypoint: >
+      /bin/sh -c "
+        mc alias set local http://minio:9000 minio minio12345 &&
+        mc mb -p local/lake &&
+        mc mb -p local/silver &&
+        mc mb -p local/gold &&
+        echo 'buckets ready'
+      "
+    restart: "no"
+
+  # ─── ingest (Python, one process per exchange) ────────────────────────────
   ingest-binance:
     build:
       context: ./python
@@ -20,12 +89,12 @@ services:
     environment:
       EXCHANGE: binance
       SYMBOLS: BTCUSDT,ETHUSDT
-      REDIS_URL: redis://redis:6379/0
+      KAFKA_BROKERS: redpanda:9092
       METRICS_PORT: "9101"
     ports:
       - "9101:9101"
     depends_on:
-      redis:
+      redpanda:
         condition: service_healthy
     restart: unless-stopped
 
@@ -37,12 +106,12 @@ services:
     environment:
       EXCHANGE: coinbase
       SYMBOLS: BTC-USD,ETH-USD
-      REDIS_URL: redis://redis:6379/0
+      KAFKA_BROKERS: redpanda:9092
       METRICS_PORT: "9102"
     ports:
       - "9102:9102"
     depends_on:
-      redis:
+      redpanda:
         condition: service_healthy
     restart: unless-stopped
 
@@ -54,48 +123,60 @@ services:
     environment:
       EXCHANGE: kraken
       SYMBOLS: BTC/USD,ETH/USD
-      REDIS_URL: redis://redis:6379/0
+      KAFKA_BROKERS: redpanda:9092
       METRICS_PORT: "9103"
     ports:
       - "9103:9103"
     depends_on:
-      redis:
+      redpanda:
         condition: service_healthy
     restart: unless-stopped
 
-  analytics:
+  # ─── stream materializer (Kappa: stream → Parquet projection) ─────────────
+  materializer:
     build:
       context: ./python
       dockerfile: Dockerfile
-    command: ["python", "-m", "analytics.engine"]
+    command: ["python", "-m", "materializer.main"]
     environment:
-      REDIS_URL: redis://redis:6379/0
+      KAFKA_BROKERS: redpanda:9092
+      S3_ENDPOINT: http://minio:9000
+      S3_ACCESS_KEY: minio
+      S3_SECRET_KEY: minio12345
+      S3_BUCKET: lake
       METRICS_PORT: "9110"
+      FLUSH_INTERVAL_SEC: "60"
+      FLUSH_BYTES: "16777216"   # 16 MiB
     ports:
       - "9110:9110"
     depends_on:
-      redis:
+      redpanda:
+        condition: service_healthy
+      minio:
         condition: service_healthy
     restart: unless-stopped
 
+  # ─── Node gateway: fanout + live BBO/spread derivation ────────────────────
   gateway:
     build:
       context: .
       dockerfile: ./node/gateway/Dockerfile
     environment:
-      REDIS_URL: redis://redis:6379/0
+      KAFKA_BROKERS: redpanda:9092
       WS_PORT: "8080"
       METRICS_PORT: "9120"
     ports:
       - "8080:8080"
       - "9120:9120"
     depends_on:
-      redis:
+      redpanda:
         condition: service_healthy
     restart: unless-stopped
 
+  # ─── observability ────────────────────────────────────────────────────────
   prometheus:
     image: prom/prometheus:latest
+    container_name: prometheus
     volumes:
       - ./ops/prometheus.yml:/etc/prometheus/prometheus.yml:ro
     ports:
@@ -104,10 +185,12 @@ services:
 
   grafana:
     image: grafana/grafana:latest
+    container_name: grafana
     environment:
       GF_AUTH_ANONYMOUS_ENABLED: "true"
       GF_AUTH_ANONYMOUS_ORG_ROLE: "Admin"
-      GF_SECURITY_ADMIN_PASSWORD: "admin"
+      GF_SECURITY_ADMIN_PASSWORD: admin
+      GF_INSTALL_PLUGINS: motherduck-duckdb-datasource
     volumes:
       - ./ops/grafana/provisioning:/etc/grafana/provisioning:ro
       - ./ops/grafana/dashboards:/var/lib/grafana/dashboards:ro
@@ -116,3 +199,5 @@ services:
     depends_on:
       - prometheus
     restart: unless-stopped
+
+  # NOTE: airflow + spark services added in their respective build phases.

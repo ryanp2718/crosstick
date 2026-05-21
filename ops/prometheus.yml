@@ -9,9 +9,13 @@ scrape_configs:
           - "ingest-binance:9101"
           - "ingest-coinbase:9102"
           - "ingest-kraken:9103"
-  - job_name: analytics
+  - job_name: materializer
     static_configs:
-      - targets: ["analytics:9110"]
+      - targets: ["materializer:9110"]
   - job_name: gateway
     static_configs:
       - targets: ["gateway:9120"]
+  - job_name: redpanda
+    static_configs:
+      - targets: ["redpanda:9644"]
+    metrics_path: /public_metrics
