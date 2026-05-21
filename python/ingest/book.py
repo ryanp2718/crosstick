@@ -6,14 +6,19 @@ Hot-path invariants enforced after every mutation:
     3. no zero-size levels persist
 
 On any violation, raise BookInvariantError — caller's responsibility to mark
-the book STALE and trigger a resync. We do NOT silently patch.
+the symbol STALE (via SymbolContext.state) and trigger a resync.
+We do NOT silently patch.
+
+State ownership: BookState was removed.  All lifecycle state lives in
+SymbolContext.state (SymbolState enum in base_ingester.py) — a single
+source of truth that prevents the two state machines from diverging.
 """
 from __future__ import annotations
 
 import enum
 import zlib
+from collections.abc import Iterable
 from decimal import Decimal
-from typing import Iterable
 
 from sortedcontainers import SortedDict
 
@@ -21,15 +26,9 @@ from sortedcontainers import SortedDict
 Level = tuple[Decimal, Decimal]
 
 
-class Side(str, enum.Enum):
+class Side(enum.StrEnum):
     BID = "bid"
     ASK = "ask"
-
-
-class BookState(str, enum.Enum):
-    BOOTSTRAP = "bootstrap"
-    LIVE = "live"
-    STALE = "stale"
 
 
 class BookInvariantError(Exception):
@@ -40,18 +39,14 @@ class BookInvariantError(Exception):
 
 
 class OrderBook:
-    __slots__ = ("exchange", "symbol", "_bids", "_asks", "sequence", "state")
+    __slots__ = ("_asks", "_bids", "exchange", "sequence", "symbol")
 
     def __init__(self, exchange: str, symbol: str):
         self.exchange = exchange
         self.symbol = symbol
-        # Bids: descending price (so best is bids.peekitem(-1)? no — we use
-        # negative-keyed dict only if we want first()=best. Simpler: keep
-        # ascending and best_bid = peekitem(-1)).
         self._bids: SortedDict[Decimal, Decimal] = SortedDict()
         self._asks: SortedDict[Decimal, Decimal] = SortedDict()
         self.sequence: int = -1
-        self.state: BookState = BookState.BOOTSTRAP
 
     # ---- queries ---------------------------------------------------------
 
@@ -71,14 +66,15 @@ class OrderBook:
         return len(self._bids if side is Side.BID else self._asks)
 
     def top_n(self, side: Side, n: int) -> list[Level]:
+        # SortedKeysView supports O(log k) index access, so reading n items is
+        # O(n log k) — avoids the O(k) full-list materialization of list(keys)[…].
         if side is Side.BID:
             keys = self._bids.keys()
-            # Descending
-            top = list(keys)[-n:][::-1]
-            return [(px, self._bids[px]) for px in top]
+            count = min(n, len(keys))
+            return [(keys[-1 - i], self._bids[keys[-1 - i]]) for i in range(count)]
         keys = self._asks.keys()
-        top = list(keys)[:n]
-        return [(px, self._asks[px]) for px in top]
+        count = min(n, len(keys))
+        return [(keys[i], self._asks[keys[i]]) for i in range(count)]
 
     # ---- mutations -------------------------------------------------------
 
@@ -107,7 +103,6 @@ class OrderBook:
         self._bids = new_bids
         self._asks = new_asks
         self.sequence = sequence
-        self.state = BookState.LIVE
 
     def apply_delta(
         self,
@@ -140,14 +135,11 @@ class OrderBook:
                 )
         self.sequence = sequence
 
-    def mark_stale(self, reason: str) -> None:
-        self.state = BookState.STALE
-
     def clear(self) -> None:
+        """Reset to empty state. Called by _reset_contexts() before each reconnect."""
         self._bids.clear()
         self._asks.clear()
         self.sequence = -1
-        self.state = BookState.BOOTSTRAP
 
 
 # ---------------------------------------------------------------------------

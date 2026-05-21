@@ -7,6 +7,9 @@ import pytest
 
 from ingest.book import BookInvariantError, OrderBook, Side
 
+# NOTE: BookState was removed — state ownership moved to SymbolContext.state
+# (SymbolState in base_ingester.py) to keep a single source of truth.
+
 
 def D(s: str) -> Decimal:
     return Decimal(s)
@@ -158,12 +161,31 @@ def test_checksum_top_10_kraken_format() -> None:
     assert c1 != c2
 
 
-def test_state_transitions() -> None:
-    from ingest.book import BookState
-
+def test_top_n_large_book_returns_correct_n() -> None:
+    """500-level book: top_n returns exactly n items in the correct order."""
     b = OrderBook(exchange="x", symbol="BTC-USD")
-    assert b.state is BookState.BOOTSTRAP
-    b.apply_snapshot(sequence=1, bids=[(D("100"), D("1"))], asks=[(D("101"), D("1"))])
-    assert b.state is BookState.LIVE
-    b.mark_stale("test")
-    assert b.state is BookState.STALE
+    bids = [(D(str(i)), D("1")) for i in range(1, 501)]
+    asks = [(D(str(i)), D("1")) for i in range(501, 1001)]
+    b.apply_snapshot(1, bids, asks)
+
+    bid_top = b.top_n(Side.BID, 10)
+    assert len(bid_top) == 10
+    bid_prices = [px for px, _ in bid_top]
+    assert bid_prices == sorted(bid_prices, reverse=True), "bids must be descending"
+    assert bid_prices[0] == D("500")
+    assert bid_prices[-1] == D("491")
+
+    ask_top = b.top_n(Side.ASK, 10)
+    assert len(ask_top) == 10
+    ask_prices = [px for px, _ in ask_top]
+    assert ask_prices == sorted(ask_prices), "asks must be ascending"
+    assert ask_prices[0] == D("501")
+    assert ask_prices[-1] == D("510")
+
+
+def test_top_n_clamps_to_book_depth() -> None:
+    """top_n(n) on a book with < n levels returns all available levels."""
+    b = OrderBook(exchange="x", symbol="BTC-USD")
+    b.apply_snapshot(1, [(D("100"), D("1")), (D("99"), D("1"))], [(D("101"), D("1"))])
+    assert len(b.top_n(Side.BID, 10)) == 2
+    assert len(b.top_n(Side.ASK, 10)) == 1

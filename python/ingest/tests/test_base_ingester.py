@@ -10,7 +10,7 @@ from __future__ import annotations
 import asyncio
 import json
 import time
-from typing import AsyncIterator
+from collections.abc import AsyncIterator
 
 import pytest
 import websockets
@@ -24,7 +24,6 @@ from ingest.base_ingester import (
     SymbolContext,
     SymbolState,
 )
-
 
 # ─── fakes ────────────────────────────────────────────────────────────────
 
@@ -62,7 +61,7 @@ class FakeExchangeServer:
         assert self._port is not None
         return f"ws://127.0.0.1:{self._port}"
 
-    async def __aenter__(self) -> "FakeExchangeServer":
+    async def __aenter__(self) -> FakeExchangeServer:
         async def handler(
             ws: websockets.server.WebSocketServerProtocol,
         ) -> None:
@@ -71,7 +70,7 @@ class FakeExchangeServer:
                 # Read up to N subscribe messages (don't block forever).
                 read_task = asyncio.create_task(self._read_subscribes(ws))
                 emit_task = asyncio.create_task(self._emit_scripted(ws))
-                done, pending = await asyncio.wait(
+                _, pending = await asyncio.wait(
                     {read_task, emit_task},
                     return_when=asyncio.FIRST_COMPLETED,
                 )
@@ -316,9 +315,9 @@ async def test_shutdown_causes_clean_exit_without_cancel(
     # Now run_task should complete on its own (no cancel needed).
     try:
         await asyncio.wait_for(run_task, timeout=3.0)
-    except asyncio.TimeoutError:
+    except TimeoutError:
         run_task.cancel()
-        raise AssertionError("run() did not exit within 3s of shutdown()")
+        raise AssertionError("run() did not exit within 3s of shutdown()") from None
     assert run_task.done()
     assert run_task.exception() is None
 
@@ -340,7 +339,6 @@ async def test_queue_full_aborts_connection_and_increments_resync(
 
     ing.process_hook = block
 
-    from common.metrics import book_resyncs
 
     # Snapshot the counter before; we'll check it ticks for "queue_full".
     initial = _resync_count("fake", "queue_full")
@@ -378,3 +376,180 @@ async def test_queue_full_aborts_connection_and_increments_resync(
 def _resync_count(exchange: str, reason: str) -> float:
     from common.metrics import book_resyncs
     return book_resyncs.labels(exchange=exchange, reason=reason)._value.get()
+
+
+# ─── new tests (TDD: written before fixes) ────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_reconnect_clears_buffered_and_last_seq(
+    fake_server: FakeExchangeServer,
+) -> None:
+    """After reconnect, ctx.buffered must be empty and ctx.last_seq must be -1
+    at the start of each bootstrap call.  Fails without _reset_contexts()."""
+    fake_server.scripted = [json.dumps({"sym": "X", "seq": 1, "kind": "trade"})]
+
+    bootstrap_entry_states: list[tuple[int, int]] = []
+
+    class CapturingIngester(FakeIngester):
+        async def bootstrap(self, symbol: str) -> None:
+            ctx = self.contexts[symbol]
+            bootstrap_entry_states.append((len(ctx.buffered), ctx.last_seq))
+            # Pollute state (simulates what a real Binance driver does).
+            ctx.buffered.append(ParsedEvent(symbol=symbol, kind="delta", sequence=1))
+            ctx.last_seq = 999
+            ctx.set_state(SymbolState.LIVE, reason="fake-bootstrap")
+
+        async def process_event(self, ctx: SymbolContext, event: ParsedEvent) -> None:
+            await super().process_event(ctx, event)
+            # Force a reconnect so we can observe the second bootstrap call.
+            raise ResyncRequired("trigger reconnect for test")
+
+    ing = CapturingIngester(
+        exchange="fake",
+        symbols=["X"],
+        ws_url=fake_server.url,
+        producer=FakeProducer(),
+        subscribe_rate=100.0,
+        subscribe_capacity=100.0,
+        queue_maxsize=100,
+        backoff_base=0.001,
+        backoff_cap=0.01,
+        ping_interval=None,
+        ping_timeout=None,
+    )
+    run_task = asyncio.create_task(ing.run())
+    for _ in range(150):
+        if len(bootstrap_entry_states) >= 2:
+            break
+        await asyncio.sleep(0.02)
+    await ing.shutdown()
+    run_task.cancel()
+    try:
+        await run_task
+    except asyncio.CancelledError:
+        pass
+
+    assert len(bootstrap_entry_states) >= 2, "need ≥2 bootstrap calls to test reset"
+    buf0, seq0 = bootstrap_entry_states[0]
+    assert buf0 == 0 and seq0 == -1, f"first bootstrap: dirty state buf={buf0} seq={seq0}"
+    buf1, seq1 = bootstrap_entry_states[1]
+    assert buf1 == 0 and seq1 == -1, (
+        f"second bootstrap: stale state buf={buf1} seq={seq1} "
+        "— _reset_contexts() is missing"
+    )
+
+
+@pytest.mark.asyncio
+async def test_gather_bootstrap_collects_all_coroutines(
+    fake_server: FakeExchangeServer,
+) -> None:
+    """With return_exceptions=True, all bootstrap coroutines settle per cycle.
+    Orphan tasks from a fast-failing symbol would inflate X's call count."""
+    call_counts: dict[str, int] = {}
+
+    class AsymmetricIngester(FakeIngester):
+        async def bootstrap(self, symbol: str) -> None:
+            if symbol == "Y":
+                # Y increments immediately then fails.
+                call_counts["Y"] = call_counts.get("Y", 0) + 1
+                raise RuntimeError("Y always fails immediately")
+            # X increments only at completion (after the sleep) so orphaned tasks
+            # that haven't finished by shutdown time are NOT counted.
+            await asyncio.sleep(0.02)
+            call_counts["X"] = call_counts.get("X", 0) + 1
+            self.contexts[symbol].set_state(SymbolState.LIVE, reason="ok")
+
+    ing = AsymmetricIngester(
+        exchange="fake",
+        symbols=["X", "Y"],
+        ws_url=fake_server.url,
+        producer=FakeProducer(),
+        subscribe_rate=100.0,
+        subscribe_capacity=100.0,
+        queue_maxsize=100,
+        backoff_base=0.001,
+        backoff_cap=0.01,
+        ping_interval=None,
+        ping_timeout=None,
+    )
+    run_task = asyncio.create_task(ing.run())
+    await asyncio.sleep(0.4)
+    await ing.shutdown()
+    run_task.cancel()
+    try:
+        await run_task
+    except asyncio.CancelledError:
+        pass
+
+    x_count = call_counts.get("X", 0)
+    y_count = call_counts.get("Y", 0)
+    assert x_count > 0 and y_count > 0, "both symbols must have been bootstrapped"
+    # With return_exceptions=True: gather awaits all coroutines per cycle, so X
+    # completes in every cycle that Y completes. The final cycle may be cut short
+    # by shutdown while X's 20ms sleep is in-flight, so y_count can exceed x_count
+    # by at most 1. X must never exceed Y (that would indicate orphaned gather tasks
+    # from return_exceptions=False running outside the gather's control).
+    assert x_count <= y_count, (
+        f"X bootstrapped {x_count} times vs Y {y_count} times — "
+        "return_exceptions=False would orphan X tasks, inflating its count"
+    )
+    assert x_count >= y_count - 1, (
+        f"X bootstrapped {x_count} times vs Y {y_count} times — "
+        "X fell more than 1 cycle behind Y (unexpected)"
+    )
+
+
+@pytest.mark.asyncio
+async def test_buffer_overflow_triggers_resync(
+    fake_server: FakeExchangeServer,
+) -> None:
+    """buffer_append raises ResyncRequired once MAX_BUFFER_DELTAS is exceeded."""
+    from ingest.base_ingester import MAX_BUFFER_DELTAS
+
+    n_msgs = MAX_BUFFER_DELTAS + 10
+    fake_server.scripted = [
+        json.dumps({"sym": "X", "seq": i, "kind": "delta"}) for i in range(n_msgs)
+    ]
+
+    class BufferingIngester(FakeIngester):
+        async def bootstrap(self, symbol: str) -> None:
+            # Binance-style: set BUFFERING immediately and return so the
+            # reader/applier start while the REST snapshot is "in flight".
+            self.contexts[symbol].set_state(SymbolState.BUFFERING, reason="test")
+
+        async def process_event(self, ctx: SymbolContext, event: ParsedEvent) -> None:
+            if ctx.state is SymbolState.BUFFERING:
+                ctx.buffer_append(event)  # raises ResyncRequired at MAX_BUFFER_DELTAS
+            else:
+                await super().process_event(ctx, event)
+
+    ing = BufferingIngester(
+        exchange="fake",
+        symbols=["X"],
+        ws_url=fake_server.url,
+        producer=FakeProducer(),
+        subscribe_rate=100.0,
+        subscribe_capacity=100.0,
+        queue_maxsize=2_000,
+        backoff_base=0.001,
+        backoff_cap=0.01,
+        ping_interval=None,
+        ping_timeout=None,
+    )
+    run_task = asyncio.create_task(ing.run())
+    for _ in range(150):
+        if fake_server.connections >= 2:
+            break
+        await asyncio.sleep(0.02)
+    await ing.shutdown()
+    run_task.cancel()
+    try:
+        await run_task
+    except asyncio.CancelledError:
+        pass
+
+    assert fake_server.connections >= 2, (
+        "expected reconnect after buffer_append overflow — "
+        "buffer_append() must raise ResyncRequired"
+    )

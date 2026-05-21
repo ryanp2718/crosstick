@@ -25,6 +25,7 @@ import enum
 import logging
 import time
 from abc import ABC, abstractmethod
+from collections import deque
 from dataclasses import dataclass, field
 from typing import Literal
 
@@ -43,14 +44,20 @@ from common.metrics import (
     ws_reconnects,
 )
 from common.ratelimit import AsyncTokenBucket
-from ingest.book import BookInvariantError, BookState, OrderBook
+from ingest.book import BookInvariantError, OrderBook
 
 log = logging.getLogger(__name__)
 
 EventKind = Literal["trade", "snapshot", "delta", "heartbeat", "subscribed", "error", "other"]
 
+# Maximum number of WS deltas to buffer while a REST snapshot is in-flight
+# (Binance pattern).  If this limit is exceeded before the snapshot arrives,
+# buffer_append() raises ResyncRequired so the connection is torn down and
+# a fresh snapshot is fetched.
+MAX_BUFFER_DELTAS: int = 500
 
-class SymbolState(str, enum.Enum):
+
+class SymbolState(enum.StrEnum):
     BOOTSTRAP = "bootstrap"  # initial; awaiting snapshot (REST or in-band)
     BUFFERING = "buffering"  # WS up; deltas buffered while REST snapshot in flight (Binance)
     LIVE = "live"            # snapshot applied; deltas applying normally
@@ -72,9 +79,9 @@ class SymbolContext:
     book: OrderBook
     state: SymbolState = SymbolState.BOOTSTRAP
     last_seq: int = -1
-    # Binance pattern: WS deltas arriving before REST snapshot completes.
-    # Each entry is the raw ParsedEvent; replay rules are exchange-specific.
-    buffered: list["ParsedEvent"] = field(default_factory=list)
+    # Binance pattern: WS deltas that arrive before the REST snapshot completes.
+    # Stored as a bounded deque; call buffer_append() to append with overflow detection.
+    buffered: deque[ParsedEvent] = field(default_factory=deque)
 
     def set_state(self, new: SymbolState, *, reason: str = "") -> None:
         if new is self.state:
@@ -85,6 +92,19 @@ class SymbolContext:
         book_state.labels(exchange=self.exchange, symbol=self.symbol).set(
             _STATE_TO_METRIC[new]
         )
+
+    def buffer_append(self, event: ParsedEvent) -> None:
+        """Append a delta to the pre-snapshot buffer.
+
+        Raises ResyncRequired if more than MAX_BUFFER_DELTAS accumulate before
+        the snapshot arrives — a stalled bootstrap that keeps buffering is safer
+        to restart than to replay a truncated sequence.
+        """
+        if len(self.buffered) >= MAX_BUFFER_DELTAS:
+            raise ResyncRequired(
+                f"buffer overflow: >{MAX_BUFFER_DELTAS} deltas arrived before bootstrap"
+            )
+        self.buffered.append(event)
 
 
 @dataclass
@@ -229,10 +249,24 @@ class BaseIngester(ABC):
     def _mark_all_stale(self, reason: str) -> None:
         for ctx in self.contexts.values():
             if ctx.state is SymbolState.LIVE:
-                ctx.set_state(SymbolState.STALE, reason=reason)
                 book_resyncs.labels(exchange=self.exchange, reason=reason).inc()
+            if ctx.state is not SymbolState.STALE:
+                ctx.set_state(SymbolState.STALE, reason=reason)
+
+    def _reset_contexts(self) -> None:
+        """Clear per-symbol mutable state before each fresh connection.
+
+        Prevents stale buffered deltas, old last_seq values, and dirty book
+        state from a prior connection cycle from poisoning the next bootstrap.
+        """
+        for ctx in self.contexts.values():
+            ctx.buffered.clear()
+            ctx.last_seq = -1
+            ctx.book.clear()
+            ctx.set_state(SymbolState.BOOTSTRAP, reason="reconnect")
 
     async def _connect_and_stream(self) -> None:
+        self._reset_contexts()
         self._queue = asyncio.Queue(maxsize=self.queue_maxsize)
         log.info("connecting %s -> %s", self.exchange, self.ws_url)
         async with websockets.connect(
@@ -245,11 +279,16 @@ class BaseIngester(ABC):
             self.backoff.reset()
             await self._send_subscribes(ws)
 
-            # Bootstrap symbols (REST snapshots) in parallel — independent.
-            await asyncio.gather(
+            # Bootstrap symbols in parallel. return_exceptions=True ensures every
+            # coroutine settles before the first exception propagates; without it,
+            # a fast-failing symbol orphans the slower peers as detached Tasks.
+            results = await asyncio.gather(
                 *(self._bootstrap_safe(sym) for sym in self.symbols),
-                return_exceptions=False,
+                return_exceptions=True,
             )
+            for r in results:
+                if isinstance(r, BaseException):
+                    raise r
 
             reader_task = asyncio.create_task(self._reader(ws), name="ingest-reader")
             applier_task = asyncio.create_task(self._applier(), name="ingest-applier")
@@ -387,6 +426,7 @@ class BaseIngester(ABC):
                         "invariant violation %s/%s: %s",
                         self.exchange, ev.symbol, e,
                     )
+                    ctx.book.clear()  # book is partially-applied; clear before marking STALE
                     ctx.set_state(SymbolState.STALE, reason="invariant_violation")
                     book_resyncs.labels(
                         exchange=self.exchange, reason="invariant"
