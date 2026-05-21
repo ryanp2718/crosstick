@@ -10,12 +10,19 @@ import enum
 import msgspec
 
 
-class Side(str, enum.Enum):
+class Side(enum.StrEnum):
     BID = "bid"
     ASK = "ask"
 
 
 class BookLevel(msgspec.Struct, frozen=True, array_like=True):
+    """Decodes from a JSON array [price, size] — NOT a dict.
+
+    Compatible with Binance and Kraken wire format (both send arrays).
+    Coinbase sends objects {price_level, new_quantity} — do NOT reuse
+    BookLevel in the Coinbase driver; decode fields by key instead.
+    """
+
     price: str
     size: str
 
@@ -72,6 +79,11 @@ class Spread(msgspec.Struct, tag="spread", tag_field="t", frozen=True):
     local_ts_ns: int
 
 
+# ── Warehouse / batch types (NOT published by streaming ingesters) ─────────
+# VWAP is computed by dbt after the fact, not emitted on any Kafka topic.
+# Kept here for materializer pipelines that may need to decode archived data.
+
+
 class VWAP(msgspec.Struct, tag="vwap", tag_field="t", frozen=True):
     exchange: str
     symbol: str
@@ -88,9 +100,11 @@ def encode(msg: msgspec.Struct) -> bytes:
     return _ENCODER.encode(msg)
 
 
-_DECODER_TYPES = BookSnapshot | BookDelta | Trade | BBO | Spread | VWAP
-_DECODER = msgspec.json.Decoder(_DECODER_TYPES)
+# Streaming decoder: covers only the types that ingesters and the gateway
+# actually produce.  VWAP is excluded — it is never on a live topic.
+_STREAMING_TYPES = BookSnapshot | BookDelta | Trade | BBO | Spread
+_DECODER = msgspec.json.Decoder(_STREAMING_TYPES)
 
 
-def decode(buf: bytes) -> _DECODER_TYPES:
+def decode(buf: bytes) -> _STREAMING_TYPES:
     return _DECODER.decode(buf)

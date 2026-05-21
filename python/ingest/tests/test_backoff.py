@@ -1,8 +1,6 @@
 """Tests for exponential-backoff-with-full-jitter."""
 from __future__ import annotations
 
-import asyncio
-
 import pytest
 
 from common.backoff import FullJitterBackoff

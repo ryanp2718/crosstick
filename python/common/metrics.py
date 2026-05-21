@@ -68,7 +68,7 @@ queue_depth = Gauge(
 
 
 class _MetricsHandler(BaseHTTPRequestHandler):
-    def do_GET(self) -> None:  # noqa: N802
+    def do_GET(self) -> None:
         if self.path == "/metrics":
             body = generate_latest(REGISTRY)
             self.send_response(200)
@@ -80,7 +80,7 @@ class _MetricsHandler(BaseHTTPRequestHandler):
             self.send_response(404)
             self.end_headers()
 
-    def log_message(self, format: str, *args: object) -> None:  # noqa: A002
+    def log_message(self, format: str, *args: object) -> None:
         return
 
 
