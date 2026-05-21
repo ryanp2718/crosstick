@@ -13,19 +13,33 @@ downstream consumers that need to round-trip it.
 from __future__ import annotations
 
 import os
-from typing import Any
+import re
 
 from aiokafka import AIOKafkaConsumer, AIOKafkaProducer
+
+# Characters disallowed in Kafka topic names beyond '/': *, ?, [, ], space, etc.
+# Whitelist: alphanumeric, dot, hyphen, underscore.
+_UNSAFE = re.compile(r"[^a-zA-Z0-9._\-]")
 
 
 def brokers_from_env() -> list[str]:
     raw = os.environ.get("KAFKA_BROKERS", "localhost:9092")
-    return [b.strip() for b in raw.split(",") if b.strip()]
+    brokers = [b.strip() for b in raw.split(",") if b.strip()]
+    if not brokers:
+        raise ValueError(
+            f"KAFKA_BROKERS={raw!r} produced an empty broker list; "
+            "set KAFKA_BROKERS to a comma-separated host:port list"
+        )
+    return brokers
 
 
 def normalize_symbol(symbol: str) -> str:
-    """Kafka topic names disallow '/'. Coerce to '-' (Kraken's BTC/USD → BTC-USD)."""
-    return symbol.replace("/", "-")
+    """Coerce an exchange symbol to a valid Kafka topic name component.
+
+    Replaces '/' first (Kraken BTC/USD → BTC-USD), then substitutes any
+    remaining characters outside [a-zA-Z0-9._-] with '-'.
+    """
+    return _UNSAFE.sub("-", symbol.replace("/", "-"))
 
 
 def trade_topic(exchange: str, symbol: str) -> str:

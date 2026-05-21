@@ -43,6 +43,28 @@ def test_invalid_params() -> None:
         AsyncTokenBucket(rate=1, capacity=0)
 
 
+def test_backward_clock_updates_last_timestamp(monkeypatch: pytest.MonkeyPatch) -> None:
+    """After a backward clock jump, _last is updated to the new (backward) time.
+    Without max(0.0, elapsed), _last stays at the old future value so every
+    subsequent _refill_locked sees negative elapsed and never refills."""
+    import common.ratelimit as rl_module
+
+    bucket = AsyncTokenBucket(rate=1.0, capacity=5.0)
+    bucket._tokens = 3.0
+    bucket._last = 100.0
+
+    monkeypatch.setattr(rl_module.time, "monotonic", lambda: 99.0)
+    bucket._refill_locked()
+
+    # tokens unchanged (elapsed clamped to 0)
+    assert bucket._tokens == 3.0
+    # _last must be updated to 99.0 so the NEXT refill computes elapsed correctly
+    assert bucket._last == 99.0, (
+        "_last not updated after backward jump — "
+        "max(0.0, elapsed) fix is missing, causing future refills to skip"
+    )
+
+
 @pytest.mark.asyncio
 async def test_concurrent_acquires_serialize() -> None:
     """N concurrent acquirers at rate r should take ~N/r seconds total."""

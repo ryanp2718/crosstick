@@ -21,10 +21,12 @@ class AsyncTokenBucket:
 
     def _refill_locked(self) -> None:
         now = time.monotonic()
-        elapsed = now - self._last
-        if elapsed > 0:
-            self._tokens = min(self.capacity, self._tokens + elapsed * self.rate)
-            self._last = now
+        # Clamp elapsed to 0 on backward clock jumps (can occur on Windows under
+        # VM migration or NTP resets).  _last is always updated so the next
+        # refill measures from the backward point, not the old future timestamp.
+        elapsed = max(0.0, now - self._last)
+        self._tokens = min(self.capacity, self._tokens + elapsed * self.rate)
+        self._last = now
 
     async def acquire(self, tokens: float = 1.0) -> None:
         if tokens > self.capacity:
