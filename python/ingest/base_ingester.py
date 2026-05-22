@@ -180,7 +180,7 @@ class BaseIngester(ABC):
 
         self._shutdown = asyncio.Event()
         # New queue per connection; allocated in _connect_and_stream.
-        self._queue: asyncio.Queue[tuple[bytes, int]] | None = None
+        self._queue: asyncio.Queue[tuple[bytes, int] | None] | None = None
 
     # ─── abstract hooks ────────────────────────────────────────────────────
 
@@ -247,9 +247,10 @@ class BaseIngester(ABC):
     # ─── internals ─────────────────────────────────────────────────────────
 
     def _mark_all_stale(self, reason: str) -> None:
+        counter = book_resyncs.labels(exchange=self.exchange, reason=reason)
         for ctx in self.contexts.values():
             if ctx.state is SymbolState.LIVE:
-                book_resyncs.labels(exchange=self.exchange, reason=reason).inc()
+                counter.inc()
             if ctx.state is not SymbolState.STALE:
                 ctx.set_state(SymbolState.STALE, reason=reason)
 
@@ -286,9 +287,11 @@ class BaseIngester(ABC):
                 *(self._bootstrap_safe(sym) for sym in self.symbols),
                 return_exceptions=True,
             )
-            for r in results:
-                if isinstance(r, BaseException):
-                    raise r
+            failures = [r for r in results if isinstance(r, BaseException)]
+            if failures:
+                for exc in failures[1:]:
+                    log.error("additional bootstrap failure (suppressed): %s", exc)
+                raise failures[0]
 
             reader_task = asyncio.create_task(self._reader(ws), name="ingest-reader")
             applier_task = asyncio.create_task(self._applier(), name="ingest-applier")
@@ -376,7 +379,7 @@ class BaseIngester(ABC):
             # Signal applier to drain and exit.
             assert self._queue is not None
             try:
-                self._queue.put_nowait((b"", 0))  # sentinel
+                self._queue.put_nowait(None)
             except asyncio.QueueFull:
                 pass
 
@@ -384,9 +387,10 @@ class BaseIngester(ABC):
         """Drains the queue: parse → dispatch to process_event → handle errors."""
         assert self._queue is not None
         while True:
-            raw, ts = await self._queue.get()
-            if raw == b"" and ts == 0:
-                return  # sentinel from reader
+            item = await self._queue.get()
+            if item is None:
+                return
+            raw, ts = item
             try:
                 events = self.parse_message(raw, ts)
             except Exception as e:

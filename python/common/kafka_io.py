@@ -36,10 +36,10 @@ def brokers_from_env() -> list[str]:
 def normalize_symbol(symbol: str) -> str:
     """Coerce an exchange symbol to a valid Kafka topic name component.
 
-    Replaces '/' first (Kraken BTC/USD → BTC-USD), then substitutes any
-    remaining characters outside [a-zA-Z0-9._-] with '-'.
+    Substitutes any character outside [a-zA-Z0-9._-] (including '/') with '-'.
+    Kraken's BTC/USD becomes BTC-USD.
     """
-    return _UNSAFE.sub("-", symbol.replace("/", "-"))
+    return _UNSAFE.sub("-", symbol)
 
 
 def trade_topic(exchange: str, symbol: str) -> str:

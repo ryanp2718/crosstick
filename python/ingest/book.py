@@ -15,20 +15,16 @@ source of truth that prevents the two state machines from diverging.
 """
 from __future__ import annotations
 
-import enum
 import zlib
 from collections.abc import Iterable
 from decimal import Decimal
 
 from sortedcontainers import SortedDict
 
+from common.models import Side
+
 # A level is (price, size). Tuple, not dataclass, because allocation matters.
 Level = tuple[Decimal, Decimal]
-
-
-class Side(enum.StrEnum):
-    BID = "bid"
-    ASK = "ask"
 
 
 class BookInvariantError(Exception):
@@ -66,15 +62,15 @@ class OrderBook:
         return len(self._bids if side is Side.BID else self._asks)
 
     def top_n(self, side: Side, n: int) -> list[Level]:
-        # SortedKeysView supports O(log k) index access, so reading n items is
-        # O(n log k) — avoids the O(k) full-list materialization of list(keys)[…].
+        # SortedItemsView supports O(log k) indexed access and yields (price, size)
+        # tuples directly — one tree walk per item instead of two (key then value).
         if side is Side.BID:
-            keys = self._bids.keys()
-            count = min(n, len(keys))
-            return [(keys[-1 - i], self._bids[keys[-1 - i]]) for i in range(count)]
-        keys = self._asks.keys()
-        count = min(n, len(keys))
-        return [(keys[i], self._asks[keys[i]]) for i in range(count)]
+            items = self._bids.items()
+            count = min(n, len(items))
+            return [items[-1 - i] for i in range(count)]
+        items = self._asks.items()
+        count = min(n, len(items))
+        return [items[i] for i in range(count)]
 
     # ---- mutations -------------------------------------------------------
 
