@@ -378,6 +378,99 @@ def _resync_count(exchange: str, reason: str) -> float:
     return book_resyncs.labels(exchange=exchange, reason=reason)._value.get()
 
 
+def _ws_reconnect_count(exchange: str, reason: str) -> float:
+    from common.metrics import ws_reconnects
+    return ws_reconnects.labels(exchange=exchange, reason=reason)._value.get()
+
+
+# ─── base-class changes: ws_max_size + staleness watchdog (TDD) ─────────────
+
+
+@pytest.mark.asyncio
+async def test_ws_max_size_override_accepts_large_frame(
+    fake_server: FakeExchangeServer,
+) -> None:
+    """A frame larger than the 4 MiB default must be accepted when ws_max_size is
+    raised. Coinbase's BTC-USD snapshot is ~5 MiB; the default would close the
+    connection with 1009. Fails if base hardcodes max_size or ignores the param."""
+    big = "x" * (5 * 1024 * 1024)  # > 2**22 (4 MiB) default
+    fake_server.scripted = [
+        json.dumps({"sym": "X", "seq": 1, "kind": "trade", "pad": big})
+    ]
+    ing = make_ingester(fake_server, ws_max_size=2**24)  # 16 MiB
+    run_task = asyncio.create_task(ing.run())
+    for _ in range(150):
+        if len(ing.processed) >= 1:
+            break
+        await asyncio.sleep(0.02)
+    await ing.shutdown()
+    run_task.cancel()
+    try:
+        await run_task
+    except asyncio.CancelledError:
+        pass
+
+    assert len(ing.processed) >= 1, (
+        "a >4 MiB frame should be accepted when ws_max_size is raised"
+    )
+
+
+@pytest.mark.asyncio
+async def test_staleness_watchdog_reconnects_on_silent_feed(
+    fake_server: FakeExchangeServer,
+) -> None:
+    """A live socket with no data frames should trip the staleness watchdog and
+    force a reconnect, tagged ws_reconnects{reason=stale}."""
+    fake_server.scripted = []  # socket stays open, no frames ever
+    ing = make_ingester(fake_server, stale_timeout=0.2)
+    initial = _ws_reconnect_count("fake", "stale")
+
+    run_task = asyncio.create_task(ing.run())
+    for _ in range(200):
+        if fake_server.connections >= 2:
+            break
+        await asyncio.sleep(0.02)
+    await ing.shutdown()
+    run_task.cancel()
+    try:
+        await run_task
+    except asyncio.CancelledError:
+        pass
+
+    assert fake_server.connections >= 2, (
+        "staleness watchdog should force reconnect on a silent feed"
+    )
+    assert _ws_reconnect_count("fake", "stale") > initial, (
+        "expected ws_reconnects{reason=stale} to increment"
+    )
+
+
+@pytest.mark.asyncio
+async def test_staleness_watchdog_no_false_reconnect_when_active(
+    fake_server: FakeExchangeServer,
+) -> None:
+    """The watchdog must NOT reconnect while frames keep arriving faster than
+    stale_timeout, even past the timeout window."""
+    fake_server.scripted = [
+        json.dumps({"sym": "X", "seq": i, "kind": "trade"}) for i in range(60)
+    ]
+    fake_server.send_delay = 0.02  # ~50/s, well under stale_timeout
+    ing = make_ingester(fake_server, stale_timeout=0.3)
+    run_task = asyncio.create_task(ing.run())
+    await asyncio.sleep(0.7)  # > stale_timeout, but frames stream the whole time
+    conns = fake_server.connections
+    await ing.shutdown()
+    run_task.cancel()
+    try:
+        await run_task
+    except asyncio.CancelledError:
+        pass
+
+    assert conns == 1, (
+        f"watchdog falsely reconnected an active feed (connections={conns})"
+    )
+
+
 # ─── new tests (TDD: written before fixes) ────────────────────────────────
 
 

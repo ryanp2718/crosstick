@@ -158,6 +158,8 @@ class BaseIngester(ABC):
         backoff_cap: float = 30.0,
         ping_interval: float | None = 20.0,
         ping_timeout: float | None = 10.0,
+        ws_max_size: int = 2**22,
+        stale_timeout: float | None = None,
     ) -> None:
         self.exchange = exchange
         self.symbols = list(symbols)
@@ -168,6 +170,14 @@ class BaseIngester(ABC):
         self.queue_maxsize = queue_maxsize
         self.ping_interval = ping_interval
         self.ping_timeout = ping_timeout
+        # Per-frame WS receive cap. Coinbase's full-depth L2 snapshot is ~5 MiB,
+        # so the 4 MiB default is too small for it — drivers raise this as needed.
+        self.ws_max_size = ws_max_size
+        # Data-staleness watchdog: a socket can stay alive (heartbeats, pings)
+        # while market data goes silent. When set, reconnect if no frame arrives
+        # within this many seconds. None disables it (relies on ping/pong only).
+        self.stale_timeout = stale_timeout
+        self._last_msg_monotonic: float = 0.0
 
         # Per-symbol context.
         self.contexts: dict[str, SymbolContext] = {
@@ -274,7 +284,7 @@ class BaseIngester(ABC):
             self.ws_url,
             ping_interval=self.ping_interval,
             ping_timeout=self.ping_timeout,
-            max_size=2**22,  # 4 MiB; large enough for full depth snapshots
+            max_size=self.ws_max_size,
             close_timeout=1.0,
         ) as ws:
             self.backoff.reset()
@@ -299,6 +309,15 @@ class BaseIngester(ABC):
                 self._shutdown.wait(), name="ingest-shutdown-watch"
             )
             tasks = {reader_task, applier_task}
+            if self.stale_timeout is not None:
+                # Seed the clock now so the watchdog doesn't fire before any frame
+                # has had a chance to arrive on a fresh connection.
+                self._last_msg_monotonic = time.monotonic()
+                tasks.add(
+                    asyncio.create_task(
+                        self._staleness_watchdog(), name="ingest-watchdog"
+                    )
+                )
             try:
                 # Wait until any of: reader/applier exits (normal or resync),
                 # OR the shutdown event fires. Whichever happens, we cancel
@@ -343,6 +362,28 @@ class BaseIngester(ABC):
             await ws.send(msg)
             log.debug("subscribe sent: %s", msg[:200])
 
+    async def _staleness_watchdog(self) -> None:
+        """Reconnect if no WS frame arrives within `stale_timeout` seconds.
+
+        Returns (rather than raising) on trip: returning trips the
+        wait(FIRST_COMPLETED) in _connect_and_stream, which cancels the
+        reader/applier and lets run() reconnect — same wind-down path as a
+        clean reader exit. ping/pong catches dead sockets; this catches a live
+        socket whose data has gone silent.
+        """
+        assert self.stale_timeout is not None
+        interval = max(0.05, self.stale_timeout / 2)
+        while True:
+            await asyncio.sleep(interval)
+            idle = time.monotonic() - self._last_msg_monotonic
+            if idle > self.stale_timeout:
+                log.warning(
+                    "no WS frame for %.2fs (> %.2fs stale_timeout); reconnecting",
+                    idle, self.stale_timeout,
+                )
+                ws_reconnects.labels(exchange=self.exchange, reason="stale").inc()
+                return
+
     async def _reader(self, ws: websockets.WebSocketClientProtocol) -> None:
         """Pulls frames off the WS as fast as possible; pushes to bounded queue.
 
@@ -354,6 +395,7 @@ class BaseIngester(ABC):
         try:
             async for raw in ws:
                 local_recv_ts_ns = time.time_ns()
+                self._last_msg_monotonic = time.monotonic()
                 if isinstance(raw, str):
                     raw = raw.encode("utf-8")
                 bytes_received.labels(exchange=self.exchange).inc(len(raw))
