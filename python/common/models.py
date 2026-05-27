@@ -18,9 +18,10 @@ class Side(enum.StrEnum):
 class BookLevel(msgspec.Struct, frozen=True, array_like=True):
     """Decodes from a JSON array [price, size] — NOT a dict.
 
-    Compatible with Binance and Kraken wire format (both send arrays).
-    Coinbase sends objects {price_level, new_quantity} — do NOT reuse
-    BookLevel in the Coinbase driver; decode fields by key instead.
+    Matches Binance's wire format (string [price, qty] arrays), so the Binance
+    driver decodes levels straight into this. Coinbase sends objects
+    {price_level, new_quantity} and Kraken v2 sends objects {price, qty} as
+    JSON numbers — those drivers must decode by key, not reuse BookLevel.
     """
 
     price: str
