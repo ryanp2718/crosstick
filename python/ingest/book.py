@@ -131,6 +131,26 @@ class OrderBook:
                 )
         self.sequence = sequence
 
+    def trim(self, depth: int) -> tuple[list[Decimal], list[Decimal]]:
+        """Drop levels beyond the `depth` best on each side; return evicted prices.
+
+        Depth-limited feeds (Kraken v2 book) only track the top N levels. When a
+        level falls out of that window the exchange drops it WITHOUT sending an
+        explicit delete, so we must discard it ourselves — otherwise a stale deep
+        level resurfaces into our top-N when better levels are removed and the
+        book silently diverges from the exchange's (failing the checksum).
+
+        Returns (evicted_bid_prices, evicted_ask_prices) so the caller can relay
+        explicit deletes downstream, keeping the published delta self-consistent.
+        """
+        evicted_bids: list[Decimal] = []
+        evicted_asks: list[Decimal] = []
+        while len(self._bids) > depth:
+            evicted_bids.append(self._bids.popitem(0)[0])   # lowest bid = worst
+        while len(self._asks) > depth:
+            evicted_asks.append(self._asks.popitem(-1)[0])  # highest ask = worst
+        return evicted_bids, evicted_asks
+
     def clear(self) -> None:
         """Reset to empty state. Called by _reset_contexts() before each reconnect."""
         self._bids.clear()

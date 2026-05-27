@@ -189,3 +189,23 @@ def test_top_n_clamps_to_book_depth() -> None:
     b.apply_snapshot(1, [(D("100"), D("1")), (D("99"), D("1"))], [(D("101"), D("1"))])
     assert len(b.top_n(Side.BID, 10)) == 2
     assert len(b.top_n(Side.ASK, 10)) == 1
+
+
+def test_trim_drops_worst_levels_beyond_depth() -> None:
+    """trim(n) keeps the n best per side and discards the rest (depth-limited
+    feeds drop out-of-window levels without an explicit delete)."""
+    b = OrderBook(exchange="x", symbol="BTC-USD")
+    bids = [(D(str(p)), D("1")) for p in (100, 99, 98, 97)]
+    asks = [(D(str(p)), D("1")) for p in (101, 102, 103, 104)]
+    b.apply_snapshot(1, bids, asks)
+    b.trim(2)
+    assert [px for px, _ in b.top_n(Side.BID, 10)] == [D("100"), D("99")]
+    assert [px for px, _ in b.top_n(Side.ASK, 10)] == [D("101"), D("102")]
+    assert b.depth(Side.BID) == 2 and b.depth(Side.ASK) == 2
+
+
+def test_trim_noop_when_within_depth() -> None:
+    b = OrderBook(exchange="x", symbol="BTC-USD")
+    b.apply_snapshot(1, [(D("100"), D("1"))], [(D("101"), D("1"))])
+    b.trim(10)
+    assert b.depth(Side.BID) == 1 and b.depth(Side.ASK) == 1
