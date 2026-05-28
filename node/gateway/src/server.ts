@@ -17,6 +17,10 @@ const WS_PORT = Number(process.env.WS_PORT ?? 8080);
 const GROUP_ID = process.env.KAFKA_GROUP_ID ?? "gateway";
 // Per-client socket-buffer ceiling before we close+resync the slow consumer.
 const MAX_BUFFERED_BYTES = Number(process.env.WS_MAX_BUFFER_BYTES ?? 1_000_000);
+// Architectural ceiling for an individual Kafka message, mirroring
+// MAX_MESSAGE_BYTES in python/common/kafka_io.py. Coinbase's full L2 snapshot
+// is ~1.1 MiB on the wire, over kafkajs's 1 MiB default maxBytesPerPartition.
+const MAX_MESSAGE_BYTES = 8 * 1024 * 1024;
 
 // Regex subscription. NOTE: kafkajs matches these against topics that exist at
 // subscribe time; topics created later need a gateway restart to be picked up.
@@ -49,7 +53,13 @@ async function main(): Promise<void> {
   // ── Kafka in (book/trades) and out (md.bbo) ───────────────────────────────
   const kafka = new Kafka({ clientId: "gateway", brokers: BROKERS, logLevel: logLevel.WARN });
   const producer = kafka.producer({ allowAutoTopicCreation: true });
-  const consumer = kafka.consumer({ groupId: GROUP_ID });
+  const consumer = kafka.consumer({
+    groupId: GROUP_ID,
+    // Fetch ceiling per partition — must clear the largest message we expect
+    // to consume (Coinbase L2 snapshot ~1.1 MiB), else the broker truncates
+    // and the fetch loops without progress.
+    maxBytesPerPartition: MAX_MESSAGE_BYTES,
+  });
   await producer.connect();
   await consumer.connect();
   await consumer.subscribe({ topics: TOPIC_PATTERNS, fromBeginning: false });

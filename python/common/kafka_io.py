@@ -63,6 +63,17 @@ def bbo_topic(exchange: str, symbol: str) -> str:
 # ---------------------------------------------------------------------------
 
 
+# Architectural ceiling for an individual Kafka message (pre-compression).
+# Coinbase's full L2 snapshot re-encodes to ~1.1 MiB on the wire, over the
+# 1 MiB defaults at the producer, broker, and consumer. 8 MiB gives ~7x
+# headroom for snapshot growth; anything beyond that should fail loudly and
+# trigger a re-evaluation (cap depth? chunked snapshots?) rather than silent
+# limit-bumping. Mirror this constant in:
+#   - docker-compose.yml redpanda `--set redpanda.kafka_batch_max_bytes`
+#   - node/gateway/src/server.ts consumer `maxBytesPerPartition`
+MAX_MESSAGE_BYTES = 8 * 1024 * 1024
+
+
 async def make_producer(
     client_id: str | None = None,
     *,
@@ -71,6 +82,7 @@ async def make_producer(
     compression_type: str | None = "gzip",
     linger_ms: int = 5,
     max_batch_size: int = 64 * 1024,
+    max_request_size: int = MAX_MESSAGE_BYTES,
 ) -> AIOKafkaProducer:
     """Idempotent producer.
 
@@ -80,10 +92,15 @@ async def make_producer(
       cramjam/snappy/lz4 needed) and kafkajs decodes it built-in (no extra npm
       codec). The lz4 path looked attractive (faster) but the Node lz4 codecs
       are unmaintained against current Node, so gzip is the practical choice
-      end-to-end; at our message rates the extra CPU is negligible.
+      end-to-end; at our message rates the extra CPU is negligible. (Note:
+      compression doesn't relax `max_request_size` — aiokafka checks pre-
+      compression in producer.py:_serialize.)
     - `linger_ms=5`: small wait to batch; trades a few ms of latency for
       significant throughput gain (the firehose path uses pipelined `send()`,
       so this batching actually engages — see BaseIngester._emit).
+    - `max_request_size=MAX_MESSAGE_BYTES` (8 MiB) holds the architectural
+      ceiling end-to-end. A snapshot that exceeds this raises
+      MessageSizeTooLargeError at produce time — loud, not silent.
     """
     producer = AIOKafkaProducer(
         bootstrap_servers=brokers_from_env(),
@@ -93,6 +110,7 @@ async def make_producer(
         compression_type=compression_type,
         linger_ms=linger_ms,
         max_batch_size=max_batch_size,
+        max_request_size=max_request_size,
     )
     await producer.start()
     return producer
