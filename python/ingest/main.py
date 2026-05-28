@@ -60,19 +60,23 @@ async def amain() -> None:
 
     serve_metrics_in_background()  # port from $METRICS_PORT
     producer = await make_producer(client_id=f"ingest-{exchange}")
-    ingester = build_ingester(exchange, symbols, producer)
-
-    loop = asyncio.get_running_loop()
-    for sig in (signal.SIGINT, signal.SIGTERM):
-        try:
-            loop.add_signal_handler(sig, lambda: asyncio.ensure_future(ingester.shutdown()))
-        except NotImplementedError:
-            # Windows ProactorEventLoop lacks add_signal_handler; KeyboardInterrupt
-            # (handled in main) still stops a local dev run.
-            log.warning("signal handlers unavailable on this platform; use Ctrl+C")
-            break
-
+    # Anything between make_producer and the matching producer.stop() must be
+    # inside this try, or a construction failure (unknown EXCHANGE, driver
+    # __init__ error) leaks the producer's network connections and background
+    # sender task.
     try:
+        ingester = build_ingester(exchange, symbols, producer)
+
+        loop = asyncio.get_running_loop()
+        for sig in (signal.SIGINT, signal.SIGTERM):
+            try:
+                loop.add_signal_handler(sig, lambda: asyncio.ensure_future(ingester.shutdown()))
+            except NotImplementedError:
+                # Windows ProactorEventLoop lacks add_signal_handler;
+                # KeyboardInterrupt (handled in main) still stops a local dev run.
+                log.warning("signal handlers unavailable on this platform; use Ctrl+C")
+                break
+
         await ingester.run()
     finally:
         await producer.stop()
