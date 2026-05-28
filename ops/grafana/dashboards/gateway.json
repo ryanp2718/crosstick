@@ -1,0 +1,162 @@
+{
+  "title": "Gateway",
+  "uid": "gateway-overview",
+  "schemaVersion": 39,
+  "version": 1,
+  "editable": true,
+  "refresh": "5s",
+  "time": { "from": "now-15m", "to": "now" },
+  "timepicker": {},
+  "tags": ["gateway", "crypto-md"],
+  "panels": [
+    {
+      "id": 1,
+      "title": "Consumer lag (HWM − last consumed)",
+      "type": "timeseries",
+      "gridPos": { "x": 0, "y": 0, "w": 24, "h": 6 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [
+        {
+          "expr": "gateway_consumer_lag_messages",
+          "legendFormat": "{{topic}} p{{partition}}",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": { "drawStyle": "line", "fillOpacity": 10 }
+        }
+      },
+      "options": { "legend": { "displayMode": "table", "placement": "right", "calcs": ["mean", "max"] } }
+    },
+    {
+      "id": 2,
+      "title": "Messages consumed/sec by topic",
+      "type": "timeseries",
+      "gridPos": { "x": 0, "y": 6, "w": 12, "h": 8 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [
+        {
+          "expr": "sum by (topic) (rate(gateway_messages_consumed_total[1m]))",
+          "legendFormat": "{{topic}}",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ops",
+          "custom": { "drawStyle": "line", "fillOpacity": 15, "stacking": { "mode": "normal" } }
+        }
+      }
+    },
+    {
+      "id": 3,
+      "title": "BBO / delta ratio (%) — dedup paying off",
+      "type": "timeseries",
+      "gridPos": { "x": 12, "y": 6, "w": 12, "h": 8 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [
+        {
+          "expr": "100 * sum(rate(gateway_bbo_produced_total{result=\"ok\"}[1m])) / sum(rate(gateway_messages_consumed_total{topic=~\".+\\\\.deltas\",result=\"ok\"}[1m]))",
+          "legendFormat": "L1-move ratio",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percent",
+          "min": 0,
+          "max": 100,
+          "custom": { "drawStyle": "line", "fillOpacity": 20 }
+        }
+      }
+    },
+    {
+      "id": 4,
+      "title": "WS clients",
+      "type": "stat",
+      "gridPos": { "x": 0, "y": 14, "w": 6, "h": 4 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [{ "expr": "gateway_ws_clients", "refId": "A" }],
+      "fieldConfig": { "defaults": { "unit": "short" } },
+      "options": { "colorMode": "value", "graphMode": "none" }
+    },
+    {
+      "id": 5,
+      "title": "WS broadcasts/sec",
+      "type": "stat",
+      "gridPos": { "x": 6, "y": 14, "w": 6, "h": 4 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [{ "expr": "rate(gateway_ws_broadcasts_total[1m])", "refId": "A" }],
+      "fieldConfig": { "defaults": { "unit": "ops", "decimals": 1 } },
+      "options": { "colorMode": "value", "graphMode": "area" }
+    },
+    {
+      "id": 6,
+      "title": "WS slow-client drops",
+      "type": "stat",
+      "gridPos": { "x": 12, "y": 14, "w": 6, "h": 4 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [{ "expr": "gateway_ws_slow_drops_total", "refId": "A" }],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "red", "value": 1 }
+            ]
+          }
+        }
+      },
+      "options": { "colorMode": "background", "graphMode": "none" }
+    },
+    {
+      "id": 7,
+      "title": "Aggregator streams",
+      "type": "stat",
+      "gridPos": { "x": 18, "y": 14, "w": 6, "h": 4 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [{ "expr": "gateway_aggregator_streams", "refId": "A" }],
+      "fieldConfig": { "defaults": { "unit": "short" } },
+      "options": { "colorMode": "value", "graphMode": "none" }
+    },
+    {
+      "id": 8,
+      "title": "Event-loop lag max (ms) — Windows: mean/p99 ≈ 15ms timer floor, only max is informative",
+      "type": "timeseries",
+      "gridPos": { "x": 0, "y": 18, "w": 12, "h": 7 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [
+        { "expr": "gateway_nodejs_eventloop_lag_max_seconds * 1000", "legendFormat": "max", "refId": "A" },
+        { "expr": "gateway_nodejs_eventloop_lag_p99_seconds * 1000", "legendFormat": "p99", "refId": "B" },
+        { "expr": "gateway_nodejs_eventloop_lag_mean_seconds * 1000", "legendFormat": "mean", "refId": "C" }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ms",
+          "custom": { "drawStyle": "line", "fillOpacity": 5 }
+        }
+      }
+    },
+    {
+      "id": 9,
+      "title": "Memory (RSS, heap used)",
+      "type": "timeseries",
+      "gridPos": { "x": 12, "y": 18, "w": 12, "h": 7 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [
+        { "expr": "gateway_process_resident_memory_bytes", "legendFormat": "rss", "refId": "A" },
+        { "expr": "gateway_nodejs_heap_size_used_bytes", "legendFormat": "heap used", "refId": "B" }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "bytes",
+          "custom": { "drawStyle": "line", "fillOpacity": 5 }
+        }
+      }
+    }
+  ]
+}

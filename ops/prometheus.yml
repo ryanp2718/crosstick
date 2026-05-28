@@ -13,8 +13,10 @@ scrape_configs:
     static_configs:
       - targets: ["materializer:9110"]
   - job_name: gateway
+    # Dev mode runs the gateway on the host (port 8080, /metrics shared with WS).
+    # Container mode would target gateway:9120 once the image exposes it there.
     static_configs:
-      - targets: ["gateway:9120"]
+      - targets: ["host.docker.internal:8080"]
   - job_name: redpanda
     static_configs:
       - targets: ["redpanda:9644"]
