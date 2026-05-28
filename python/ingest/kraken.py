@@ -33,8 +33,8 @@ from decimal import Decimal
 
 import msgspec
 
-from common.kafka_io import book_delta_topic, book_snapshot_topic, latency_headers, trade_topic
-from common.models import BookDelta, BookLevel, BookSnapshot, Side, Trade, encode
+from common.kafka_io import book_delta_topic, book_snapshot_topic, trade_topic
+from common.models import BookDelta, BookLevel, BookSnapshot, Side, Trade
 from ingest.base_ingester import (
     BaseIngester,
     ParsedEvent,
@@ -278,10 +278,3 @@ class KrakenIngester(BaseIngester):
         got = kraken_checksum(asks, bids)
         if got != expected:
             raise ResyncRequired(f"crc mismatch: got {got} expected {expected}")
-
-    async def _emit(self, topic: str, msg, symbol: str, event: ParsedEvent) -> None:
-        await self.producer.send_and_wait(
-            topic, encode(msg),
-            key=f"{self.exchange}:{symbol}".encode(),
-            headers=latency_headers(event.local_recv_ts_ns, event.exchange_ts_ns),
-        )

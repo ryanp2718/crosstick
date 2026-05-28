@@ -34,6 +34,7 @@ import websockets.exceptions
 from aiokafka import AIOKafkaProducer
 
 from common.backoff import FullJitterBackoff
+from common.kafka_io import latency_headers
 from common.metrics import (
     book_resyncs,
     book_state,
@@ -43,6 +44,7 @@ from common.metrics import (
     queue_depth,
     ws_reconnects,
 )
+from common.models import encode
 from common.ratelimit import AsyncTokenBucket
 from ingest.book import BookInvariantError, OrderBook
 
@@ -191,6 +193,11 @@ class BaseIngester(ABC):
         self._shutdown = asyncio.Event()
         # New queue per connection; allocated in _connect_and_stream.
         self._queue: asyncio.Queue[tuple[bytes, int] | None] | None = None
+        # Per-connection delivery-failure signal. The producer's done-callback
+        # sets it; _connect_and_stream awaits it alongside reader/applier so a
+        # delivery failure tears the connection down (resync) instead of
+        # silently advancing past a gap. Reallocated per connection.
+        self._produce_failed: asyncio.Event | None = None
 
     # ─── abstract hooks ────────────────────────────────────────────────────
 
@@ -276,9 +283,48 @@ class BaseIngester(ABC):
             ctx.book.clear()
             ctx.set_state(SymbolState.BOOTSTRAP, reason="reconnect")
 
+    async def _emit(
+        self, topic: str, msg: object, symbol: str, event: ParsedEvent
+    ) -> None:
+        """Produce a market-data message via pipelined send().
+
+        ``send_and_wait`` would await the broker ack per message, capping
+        throughput at 1/RTT and defeating the producer's linger_ms batching.
+        ``send`` returns a delivery future immediately so the background sender
+        can batch and pipeline in-flight requests. ``enable_idempotence=True``
+        (see make_producer) keeps per-partition order and dedups retries, so
+        we keep exactly-once-into-broker.
+
+        Delivery failures arrive asynchronously on the returned future; the
+        done-callback (``_on_produce_done``) trips ``_produce_failed`` so the
+        connection tears down → reconnect → resnapshot, preserving the
+        no-silent-gap invariant.
+        """
+        fut = await self.producer.send(
+            topic, encode(msg),
+            key=f"{self.exchange}:{symbol}".encode(),
+            headers=latency_headers(event.local_recv_ts_ns, event.exchange_ts_ns),
+        )
+        fut.add_done_callback(self._on_produce_done)
+
+    def _on_produce_done(self, fut: asyncio.Future) -> None:
+        """Trip ``_produce_failed`` on delivery failure so the connection
+        resyncs instead of advancing past a gap. Calling ``fut.exception()``
+        also marks the exception as retrieved, suppressing asyncio's
+        unhandled-exception warning."""
+        exc = fut.exception()
+        if exc is None:
+            return
+        log.error("kafka produce failed; forcing resync: %s", exc)
+        book_resyncs.labels(exchange=self.exchange, reason="produce_failed").inc()
+        if self._produce_failed is not None:
+            self._produce_failed.set()
+
     async def _connect_and_stream(self) -> None:
         self._reset_contexts()
         self._queue = asyncio.Queue(maxsize=self.queue_maxsize)
+        # Fresh per-connection delivery-failure signal — see _emit().
+        self._produce_failed = asyncio.Event()
         log.info("connecting %s -> %s", self.exchange, self.ws_url)
         async with websockets.connect(
             self.ws_url,
@@ -308,7 +354,10 @@ class BaseIngester(ABC):
             shutdown_task = asyncio.create_task(
                 self._shutdown.wait(), name="ingest-shutdown-watch"
             )
-            tasks = {reader_task, applier_task}
+            produce_failed_task = asyncio.create_task(
+                self._produce_failed.wait(), name="ingest-produce-failed"
+            )
+            tasks = {reader_task, applier_task, produce_failed_task}
             if self.stale_timeout is not None:
                 # Seed the clock now so the watchdog doesn't fire before any frame
                 # has had a chance to arrive on a fresh connection.
@@ -334,7 +383,10 @@ class BaseIngester(ABC):
                 # Propagate the first real exception from reader/applier,
                 # ignoring CancelledError and the shutdown-watch result.
                 for t in done:
-                    if t is shutdown_task:
+                    if t is shutdown_task or t is produce_failed_task:
+                        # Event-completion tasks: they signal "wind down now",
+                        # not a failure to propagate. The resync metric is
+                        # already incremented by _on_produce_done.
                         continue
                     exc = t.exception()
                     if exc is not None and not isinstance(exc, asyncio.CancelledError):

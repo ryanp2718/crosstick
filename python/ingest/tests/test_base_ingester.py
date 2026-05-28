@@ -17,6 +17,7 @@ import websockets
 import websockets.exceptions
 import websockets.server
 
+from common.metrics import book_resyncs
 from ingest.base_ingester import (
     BaseIngester,
     ParsedEvent,
@@ -29,17 +30,30 @@ from ingest.base_ingester import (
 
 
 class FakeProducer:
-    """Minimal AIOKafkaProducer stand-in. Captures send_and_wait() calls."""
+    """Minimal AIOKafkaProducer stand-in. Captures send() (and send_and_wait())
+    calls; `fail_next` primes the next produce future to fail, exercising the
+    delivery-error → resync path."""
 
     def __init__(self) -> None:
         self.sent: list[tuple[str, bytes]] = []
         self.started = False
+        self.fail_next: BaseException | None = None
 
     async def start(self) -> None:
         self.started = True
 
     async def stop(self) -> None:
         self.started = False
+
+    async def send(self, topic: str, value: bytes, **kw: object) -> asyncio.Future:
+        self.sent.append((topic, value))
+        fut: asyncio.Future = asyncio.get_running_loop().create_future()
+        if self.fail_next is not None:
+            exc, self.fail_next = self.fail_next, None
+            fut.set_exception(exc)
+        else:
+            fut.set_result(None)
+        return fut
 
     async def send_and_wait(self, topic: str, value: bytes, **kw: object) -> None:
         self.sent.append((topic, value))
@@ -646,3 +660,74 @@ async def test_buffer_overflow_triggers_resync(
         "expected reconnect after buffer_append overflow — "
         "buffer_append() must raise ResyncRequired"
     )
+
+
+# ─── base _emit: pipelined send + resync-on-delivery-failure ──────────────
+
+
+def _make_ingester_for_emit() -> FakeIngester:
+    """A FakeIngester bound to a FakeProducer for direct _emit() unit tests."""
+    return FakeIngester(
+        exchange="emit-test", symbols=["X"], ws_url="ws://unused",
+        producer=FakeProducer(),
+    )
+
+
+def _trade_msg() -> object:
+    from common.models import Side, Trade
+    return Trade(
+        exchange="emit-test", symbol="X", trade_id="t1",
+        price="100.0", size="1.0", side=Side.BID,
+        exchange_ts_ns=1_000_000_000, local_ts_ns=2_000_000_000,
+    )
+
+
+def _trade_event() -> ParsedEvent:
+    return ParsedEvent(
+        symbol="X", kind="trade", sequence=1, raw_bytes=0,
+        exchange_ts_ns=1_000_000_000, local_recv_ts_ns=2_000_000_000,
+    )
+
+
+async def test_base_emit_uses_send_not_send_and_wait() -> None:
+    """The base _emit pipelines via producer.send() (not send_and_wait), so
+    linger_ms batching and idempotent in-flight requests can actually engage."""
+    ing = _make_ingester_for_emit()
+    ing._produce_failed = asyncio.Event()
+    await ing._emit("md.trades.emit-test.X", _trade_msg(), "X", _trade_event())
+    producer = ing.producer  # type: ignore[assignment]
+    assert len(producer.sent) == 1
+    assert producer.sent[0][0] == "md.trades.emit-test.X"
+    assert not ing._produce_failed.is_set()
+
+
+async def test_base_emit_resyncs_on_delivery_failure() -> None:
+    """A failed delivery future trips _produce_failed (so _connect_and_stream
+    tears the connection down → reconnect → resnapshot) and increments
+    book_resyncs(reason="produce_failed"). Preserves the no-silent-gap
+    invariant: never advance the published log past a delivery hole."""
+    before = book_resyncs.labels(
+        exchange="emit-test", reason="produce_failed"
+    )._value.get()
+
+    ing = _make_ingester_for_emit()
+    ing._produce_failed = asyncio.Event()
+    ing.producer.fail_next = RuntimeError("broker boom")  # type: ignore[attr-defined]
+
+    await ing._emit("md.trades.emit-test.X", _trade_msg(), "X", _trade_event())
+    # done-callback runs on the next loop tick via call_soon.
+    await asyncio.sleep(0)
+    assert ing._produce_failed.is_set()
+
+    after = book_resyncs.labels(
+        exchange="emit-test", reason="produce_failed"
+    )._value.get()
+    assert after == before + 1
+
+
+async def test_base_emit_success_does_not_trip_resync() -> None:
+    ing = _make_ingester_for_emit()
+    ing._produce_failed = asyncio.Event()
+    await ing._emit("md.trades.emit-test.X", _trade_msg(), "X", _trade_event())
+    await asyncio.sleep(0)
+    assert not ing._produce_failed.is_set()

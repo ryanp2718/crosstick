@@ -34,6 +34,11 @@ class RecordingProducer(FakeProducer):
         super().__init__()
         self.calls: list[tuple[str, bytes, dict[str, object]]] = []
 
+    async def send(self, topic: str, value: bytes, **kw: object) -> asyncio.Future:
+        fut = await super().send(topic, value)
+        self.calls.append((topic, value, kw))
+        return fut
+
     async def send_and_wait(self, topic: str, value: bytes, **kw: object) -> None:
         await super().send_and_wait(topic, value)
         self.calls.append((topic, value, kw))

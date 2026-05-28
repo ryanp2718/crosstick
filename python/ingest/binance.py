@@ -37,9 +37,9 @@ from decimal import Decimal
 import httpx
 import msgspec
 
-from common.kafka_io import book_delta_topic, book_snapshot_topic, latency_headers, trade_topic
+from common.kafka_io import book_delta_topic, book_snapshot_topic, trade_topic
 from common.metrics import book_resyncs
-from common.models import BookDelta, BookLevel, BookSnapshot, Side, Trade, encode
+from common.models import BookDelta, BookLevel, BookSnapshot, Side, Trade
 from ingest.base_ingester import (
     BaseIngester,
     ParsedEvent,
@@ -310,10 +310,3 @@ class BinanceIngester(BaseIngester):
         if self._client is not None:
             await self._client.aclose()
             self._client = None
-
-    async def _emit(self, topic: str, msg, symbol: str, event: ParsedEvent) -> None:
-        await self.producer.send_and_wait(
-            topic, encode(msg),
-            key=f"{self.exchange}:{symbol}".encode(),
-            headers=latency_headers(event.local_recv_ts_ns, event.exchange_ts_ns),
-        )
