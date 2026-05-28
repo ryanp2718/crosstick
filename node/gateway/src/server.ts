@@ -67,10 +67,16 @@ async function main(): Promise<void> {
       }
       if (result.publish) {
         const bbo = result.publish;
-        await producer.send({
-          topic: bboTopic(bbo.exchange, bbo.symbol),
-          messages: [{ key: `${bbo.exchange}:${bbo.symbol}`, value: JSON.stringify(bbo) }],
-        });
+        // Fire-and-forget: awaiting producer.send here would cap publish rate
+        // at 1/broker-RTT per partition (same antipattern the python ingester
+        // removed in a6d1fae). The gateway is stateless — a dropped md.bbo
+        // publish is recovered by the next L1 move; no resync needed.
+        producer
+          .send({
+            topic: bboTopic(bbo.exchange, bbo.symbol),
+            messages: [{ key: `${bbo.exchange}:${bbo.symbol}`, value: JSON.stringify(bbo) }],
+          })
+          .catch((err) => console.error("[gateway] kafka produce failed:", err));
       }
       if (result.broadcast) broadcaster.broadcast(result.broadcast);
     },
