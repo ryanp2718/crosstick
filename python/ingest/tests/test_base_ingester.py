@@ -731,3 +731,40 @@ async def test_base_emit_success_does_not_trip_resync() -> None:
     await ing._emit("md.trades.emit-test.X", _trade_msg(), "X", _trade_event())
     await asyncio.sleep(0)
     assert not ing._produce_failed.is_set()
+
+
+async def test_base_emit_callback_does_not_cross_connections() -> None:
+    """A delivery-failure callback from a prior connection must NOT trip the
+    *new* connection's _produce_failed event after a reconnect. Without per-
+    attach binding, the bound-method callback reads self._produce_failed at
+    fire time → stale callback signals the live connection → spurious resync."""
+    ing = _make_ingester_for_emit()
+
+    # Connection A: allocate event, issue a send whose future we control.
+    conn_a_event = asyncio.Event()
+    ing._produce_failed = conn_a_event
+    pending: asyncio.Future = asyncio.get_running_loop().create_future()
+
+    class StagedProducer:
+        sent: list[tuple[str, bytes]] = []
+
+        async def send(self, topic: str, value: bytes, **kw: object) -> asyncio.Future:
+            self.sent.append((topic, value))
+            return pending
+
+    ing.producer = StagedProducer()  # type: ignore[assignment]
+    await ing._emit("md.trades.emit-test.X", _trade_msg(), "X", _trade_event())
+
+    # Simulate _connect_and_stream allocating a fresh event for connection B.
+    conn_b_event = asyncio.Event()
+    ing._produce_failed = conn_b_event
+    assert conn_a_event is not conn_b_event
+
+    # Connection A's stale send now fails (broker noticed the closed conn).
+    pending.set_exception(RuntimeError("connection A: broker boom"))
+    await asyncio.sleep(0)
+
+    assert not conn_b_event.is_set(), (
+        "stale callback from prior connection tripped the new connection's "
+        "_produce_failed — would cause an unnecessary reconnect+resync"
+    )

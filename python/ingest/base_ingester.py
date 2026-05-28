@@ -305,20 +305,30 @@ class BaseIngester(ABC):
             key=f"{self.exchange}:{symbol}".encode(),
             headers=latency_headers(event.local_recv_ts_ns, event.exchange_ts_ns),
         )
-        fut.add_done_callback(self._on_produce_done)
+        # Capture the per-connection event at attach time. self._produce_failed
+        # is reallocated each cycle in _connect_and_stream; a bound-method
+        # callback would re-read it at fire time, so a stale failure from a
+        # torn-down connection could trip the *new* connection's event and
+        # cause a spurious reconnect+resync.
+        produce_failed = self._produce_failed
+        fut.add_done_callback(
+            lambda f: self._on_produce_done(f, produce_failed)
+        )
 
-    def _on_produce_done(self, fut: asyncio.Future) -> None:
-        """Trip ``_produce_failed`` on delivery failure so the connection
-        resyncs instead of advancing past a gap. Calling ``fut.exception()``
-        also marks the exception as retrieved, suppressing asyncio's
-        unhandled-exception warning."""
+    def _on_produce_done(
+        self, fut: asyncio.Future, produce_failed: asyncio.Event | None
+    ) -> None:
+        """Trip the bound-at-attach-time ``produce_failed`` event on delivery
+        failure so the connection resyncs instead of advancing past a gap.
+        Calling ``fut.exception()`` also marks the exception as retrieved,
+        suppressing asyncio's unhandled-exception warning."""
         exc = fut.exception()
         if exc is None:
             return
         log.error("kafka produce failed; forcing resync: %s", exc)
         book_resyncs.labels(exchange=self.exchange, reason="produce_failed").inc()
-        if self._produce_failed is not None:
-            self._produce_failed.set()
+        if produce_failed is not None:
+            produce_failed.set()
 
     async def _connect_and_stream(self) -> None:
         self._reset_contexts()
