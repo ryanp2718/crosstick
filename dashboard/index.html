@@ -1,0 +1,50 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>crypto-md gateway</title>
+  <link rel="icon" href="data:," />
+  <style>
+    :root { color-scheme: dark; }
+    body {
+      margin: 0; padding: 1.5rem 2rem;
+      font: 13px/1.4 ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+      background: #0e0f12; color: #e6e6e6;
+    }
+    header { display: flex; gap: 1rem; align-items: baseline; margin-bottom: 1rem; }
+    h1 { font-size: 1rem; font-weight: 600; margin: 0; }
+    #status { font-size: 0.85rem; padding: 2px 8px; border-radius: 3px; }
+    #status.up { background: #1b3b1b; color: #6fdc6f; }
+    #status.down { background: #3b1b1b; color: #ff7676; }
+    table { border-collapse: collapse; width: 100%; }
+    th, td { padding: 6px 12px; text-align: right; }
+    th { font-weight: 500; color: #8a8a8a; border-bottom: 1px solid #2a2a2a; text-align: right; }
+    th:first-child, td:first-child, th:nth-child(2), td:nth-child(2) { text-align: left; }
+    tr.flash-up td.bid { background: #143b14; transition: background 0s; }
+    tr.flash-down td.ask { background: #3b1414; transition: background 0s; }
+    td.bid, td.ask { transition: background 1s; }
+    td.num { font-variant-numeric: tabular-nums; }
+    .muted { color: #6a6a6a; }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>crypto-md gateway</h1>
+    <span id="status" class="down">disconnected</span>
+    <span class="muted" id="meta"></span>
+  </header>
+  <table>
+    <thead>
+      <tr>
+        <th>exchange</th><th>symbol</th>
+        <th>bid</th><th>bid sz</th>
+        <th>ask</th><th>ask sz</th>
+        <th>spread</th><th>mid</th>
+        <th>age</th>
+      </tr>
+    </thead>
+    <tbody id="rows"></tbody>
+  </table>
+  <script type="module" src="./app.js"></script>
+</body>
+</html>

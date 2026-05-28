@@ -60,4 +60,14 @@ describe("Aggregator", () => {
     const bbo = a.applyBook(other);
     expect(bbo).toMatchObject({ exchange: "coinbase", bid_px: "200" });
   });
+
+  it("snapshot() returns the latest BBO per stream", () => {
+    const a = new Aggregator();
+    expect(a.snapshot()).toEqual([]);
+    a.applyBook(snap(0, [["100", "1"]], [["101", "2"]]));
+    a.applyBook(delta(1, [["100.5", "3"]], []));
+    const snap1 = a.snapshot();
+    expect(snap1).toHaveLength(1);
+    expect(snap1[0]).toMatchObject({ exchange: "kraken", bid_px: "100.5" });
+  });
 });

@@ -1,4 +1,7 @@
+import { existsSync } from "node:fs";
+import { readFile } from "node:fs/promises";
 import http from "node:http";
+import path from "node:path";
 
 import { Kafka, logLevel } from "kafkajs";
 import { WebSocketServer } from "ws";
@@ -21,6 +24,21 @@ const MAX_BUFFERED_BYTES = Number(process.env.WS_MAX_BUFFER_BYTES ?? 1_000_000);
 // MAX_MESSAGE_BYTES in python/common/kafka_io.py. Coinbase's full L2 snapshot
 // is ~1.1 MiB on the wire, over kafkajs's 1 MiB default maxBytesPerPartition.
 const MAX_MESSAGE_BYTES = 8 * 1024 * 1024;
+// Resolve dashboard/ from CWD (container: /app/dashboard) with a dev fallback
+// (gateway run from node/gateway/ → ../../dashboard).
+const DASHBOARD_DIR = path.resolve(
+  process.env.DASHBOARD_DIR ??
+    (existsSync(path.resolve(process.cwd(), "dashboard"))
+      ? path.resolve(process.cwd(), "dashboard")
+      : path.resolve(process.cwd(), "..", "..", "dashboard")),
+);
+const MIME: Record<string, string> = {
+  ".html": "text/html; charset=utf-8",
+  ".js": "application/javascript; charset=utf-8",
+  ".css": "text/css; charset=utf-8",
+  ".svg": "image/svg+xml",
+  ".ico": "image/x-icon",
+};
 
 // Regex subscription. NOTE: kafkajs matches these against topics that exist at
 // subscribe time; topics created later need a gateway restart to be picked up.
@@ -28,15 +46,41 @@ const MAX_MESSAGE_BYTES = 8 * 1024 * 1024;
 // resubscribe is the production hardening.
 const TOPIC_PATTERNS = [/^md\.book\..+/, /^md\.trades\..+/];
 
+async function serveStatic(rel: string, res: http.ServerResponse): Promise<void> {
+  const full = path.resolve(DASHBOARD_DIR, rel);
+  // Path-traversal guard: resolved file must stay inside DASHBOARD_DIR.
+  if (full !== DASHBOARD_DIR && !full.startsWith(DASHBOARD_DIR + path.sep)) {
+    res.writeHead(403);
+    res.end();
+    return;
+  }
+  try {
+    const buf = await readFile(full);
+    res.writeHead(200, { "content-type": MIME[path.extname(full)] ?? "application/octet-stream" });
+    res.end(buf);
+  } catch {
+    res.writeHead(404);
+    res.end();
+  }
+}
+
 async function main(): Promise<void> {
   const agg = new Aggregator();
   const broadcaster = new Broadcaster(MAX_BUFFERED_BYTES);
 
-  // ── WS server (+ tiny HTTP for health/upgrade) ────────────────────────────
+  // ── WS server (+ tiny HTTP for health, dashboard, upgrade) ────────────────
   const httpServer = http.createServer((req, res) => {
     if (req.url === "/healthz") {
       res.writeHead(200, { "content-type": "text/plain" });
       res.end("ok");
+      return;
+    }
+    if (req.url === "/" || req.url === "/dashboard" || req.url === "/dashboard/") {
+      void serveStatic("index.html", res);
+      return;
+    }
+    if (req.url?.startsWith("/dashboard/")) {
+      void serveStatic(req.url.slice("/dashboard/".length), res);
       return;
     }
     res.writeHead(404);
@@ -44,6 +88,10 @@ async function main(): Promise<void> {
   });
   const wss = new WebSocketServer({ server: httpServer, path: "/ws" });
   wss.on("connection", (ws) => {
+    // Snapshot-on-connect before adding to broadcaster: dashboard renders
+    // immediately during quiet periods. Tiny window where broadcasts firing
+    // between these two calls are missed; self-heals on the next L1 move.
+    for (const bbo of agg.snapshot()) ws.send(JSON.stringify(bbo));
     broadcaster.add(ws);
     ws.on("close", () => broadcaster.remove(ws));
     ws.on("error", () => broadcaster.remove(ws));
