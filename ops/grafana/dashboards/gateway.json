@@ -2,7 +2,7 @@
   "title": "Gateway",
   "uid": "gateway-overview",
   "schemaVersion": 39,
-  "version": 1,
+  "version": 2,
   "editable": true,
   "refresh": "5s",
   "time": { "from": "now-15m", "to": "now" },
@@ -143,18 +143,41 @@
     },
     {
       "id": 9,
-      "title": "Memory (RSS, heap used)",
+      "title": "Memory breakdown (rss = heap_total + external + ~rest)",
       "type": "timeseries",
       "gridPos": { "x": 12, "y": 18, "w": 12, "h": 7 },
       "datasource": { "type": "prometheus", "uid": "prometheus" },
       "targets": [
         { "expr": "gateway_process_resident_memory_bytes", "legendFormat": "rss", "refId": "A" },
-        { "expr": "gateway_nodejs_heap_size_used_bytes", "legendFormat": "heap used", "refId": "B" }
+        { "expr": "gateway_nodejs_heap_size_total_bytes", "legendFormat": "heap_total (v8 reserved)", "refId": "B" },
+        { "expr": "gateway_nodejs_heap_size_used_bytes", "legendFormat": "heap_used", "refId": "C" },
+        { "expr": "gateway_nodejs_external_memory_bytes", "legendFormat": "external (buffers + native)", "refId": "D" }
       ],
       "fieldConfig": {
         "defaults": {
           "unit": "bytes",
           "custom": { "drawStyle": "line", "fillOpacity": 5 }
+        }
+      },
+      "options": { "legend": { "displayMode": "table", "placement": "bottom", "calcs": ["mean", "max"] } }
+    },
+    {
+      "id": 10,
+      "title": "GC pause-time per second by kind (ms/s) — spike here = stop-the-world cycle",
+      "type": "timeseries",
+      "gridPos": { "x": 0, "y": 25, "w": 24, "h": 6 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [
+        {
+          "expr": "1000 * rate(gateway_nodejs_gc_duration_seconds_sum[1m])",
+          "legendFormat": "{{kind}}",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ms",
+          "custom": { "drawStyle": "line", "fillOpacity": 15, "stacking": { "mode": "normal" } }
         }
       }
     }
