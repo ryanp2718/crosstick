@@ -1,3 +1,5 @@
+import { wsBroadcasts, wsSlowDrops } from "./metrics.js";
+
 // The minimal slice of ws.WebSocket the fan-out depends on, so the logic is
 // unit-testable with plain fakes instead of real sockets.
 export interface WsClient {
@@ -34,6 +36,7 @@ export class Broadcaster {
 
   broadcast(msg: unknown): void {
     const data = JSON.stringify(msg);
+    wsBroadcasts.inc();
     for (const c of this.clients) {
       if (c.readyState !== OPEN) {
         this.clients.delete(c);
@@ -42,6 +45,7 @@ export class Broadcaster {
       if (c.bufferedAmount > this.maxBufferedBytes) {
         c.close(1013, "slow consumer"); // 1013 = Try Again Later
         this.clients.delete(c);
+        wsSlowDrops.inc();
         continue;
       }
       c.send(data);

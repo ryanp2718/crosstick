@@ -9,6 +9,15 @@ import { WebSocketServer } from "ws";
 import { Aggregator } from "./aggregator.js";
 import { Broadcaster } from "./broadcaster.js";
 import { bboTopic, decodeMsg } from "./messages.js";
+import {
+  aggregatorStreams,
+  bboInflight,
+  bboProduced,
+  consumerLag,
+  messagesConsumed,
+  registry,
+  wsClients,
+} from "./metrics.js";
 import { routeMessage, type RouteResult } from "./router.js";
 
 // ── config (env, with dev-friendly defaults) ────────────────────────────────
@@ -68,11 +77,18 @@ async function main(): Promise<void> {
   const agg = new Aggregator();
   const broadcaster = new Broadcaster(MAX_BUFFERED_BYTES);
 
-  // ── WS server (+ tiny HTTP for health, dashboard, upgrade) ────────────────
+  // ── WS server (+ tiny HTTP for health, dashboard, metrics, upgrade) ──────
   const httpServer = http.createServer((req, res) => {
     if (req.url === "/healthz") {
       res.writeHead(200, { "content-type": "text/plain" });
       res.end("ok");
+      return;
+    }
+    if (req.url === "/metrics") {
+      void registry.metrics().then((body) => {
+        res.writeHead(200, { "content-type": registry.contentType });
+        res.end(body);
+      });
       return;
     }
     if (req.url === "/" || req.url === "/dashboard" || req.url === "/dashboard/") {
@@ -93,7 +109,12 @@ async function main(): Promise<void> {
     // between these two calls are missed; self-heals on the next L1 move.
     for (const bbo of agg.snapshot()) ws.send(JSON.stringify(bbo));
     broadcaster.add(ws);
-    ws.on("close", () => broadcaster.remove(ws));
+    wsClients.inc();
+    // "close" is guaranteed to fire exactly once (also after "error"); dec here.
+    ws.once("close", () => {
+      broadcaster.remove(ws);
+      wsClients.dec();
+    });
     ws.on("error", () => broadcaster.remove(ws));
   });
   httpServer.listen(WS_PORT, () => console.log(`[gateway] ws listening on :${WS_PORT}/ws`));
@@ -108,8 +129,10 @@ async function main(): Promise<void> {
     // and the fetch loops without progress.
     maxBytesPerPartition: MAX_MESSAGE_BYTES,
   });
+  const admin = kafka.admin();
   await producer.connect();
   await consumer.connect();
+  await admin.connect();
   await consumer.subscribe({ topics: TOPIC_PATTERNS, fromBeginning: false });
   console.log(`[gateway] consuming md.book.* / md.trades.* from ${BROKERS.join(",")}`);
 
@@ -120,18 +143,28 @@ async function main(): Promise<void> {
   const inFlight = new Set<Promise<unknown>>();
   const SHUTDOWN_DRAIN_MS = 5000;
 
+  // Last consumed offset per (topic, partition); used by the lag poll.
+  const lastOffsets = new Map<string, Map<number, bigint>>();
+
   await consumer.run({
-    eachMessage: async ({ message }) => {
+    eachMessage: async ({ topic, partition, message }) => {
       if (!message.value) return;
+      const tp = lastOffsets.get(topic) ?? new Map<number, bigint>();
+      tp.set(partition, BigInt(message.offset));
+      lastOffsets.set(topic, tp);
+
       let result: RouteResult;
       try {
         result = routeMessage(decodeMsg(message.value), agg);
       } catch (err) {
+        messagesConsumed.inc({ topic, result: "error" });
         console.error("[gateway] bad message, skipping:", err);
         return;
       }
+      messagesConsumed.inc({ topic, result: "ok" });
       if (result.publish) {
         const bbo = result.publish;
+        bboInflight.inc();
         // Fire-and-forget: awaiting producer.send here would cap publish rate
         // at 1/broker-RTT per partition (same antipattern the python ingester
         // removed in a6d1fae). The gateway is stateless — a dropped md.bbo
@@ -141,18 +174,48 @@ async function main(): Promise<void> {
             topic: bboTopic(bbo.exchange, bbo.symbol),
             messages: [{ key: `${bbo.exchange}:${bbo.symbol}`, value: JSON.stringify(bbo) }],
           })
-          .catch((err) => console.error("[gateway] kafka produce failed:", err))
-          .finally(() => inFlight.delete(p));
+          .then(() => bboProduced.inc({ result: "ok" }))
+          .catch((err) => {
+            bboProduced.inc({ result: "error" });
+            console.error("[gateway] kafka produce failed:", err);
+          })
+          .finally(() => {
+            inFlight.delete(p);
+            bboInflight.dec();
+          });
         inFlight.add(p);
       }
       if (result.broadcast) broadcaster.broadcast(result.broadcast);
     },
   });
 
+  // Periodic lag + aggregator-size refresh. fetchTopicOffsets returns the HWM
+  // (= offset of next message that *would* be written), so a fully caught-up
+  // consumer with lastConsumed = HWM - 1 yields lag 0.
+  const LAG_POLL_MS = 5000;
+  const lagPoll = setInterval(() => {
+    aggregatorStreams.set(agg.snapshot().length);
+    for (const [topic, partitions] of lastOffsets) {
+      admin
+        .fetchTopicOffsets(topic)
+        .then((offsets) => {
+          for (const { partition, offset } of offsets) {
+            const consumed = partitions.get(partition);
+            if (consumed === undefined) continue;
+            const lag = Number(BigInt(offset) - 1n - consumed);
+            consumerLag.set({ topic, partition: String(partition) }, Math.max(0, lag));
+          }
+        })
+        .catch((err) => console.error(`[gateway] lag poll failed for ${topic}:`, err));
+    }
+  }, LAG_POLL_MS);
+  lagPoll.unref();
+
   // ── graceful shutdown ─────────────────────────────────────────────────────
   const shutdown = async (sig: string): Promise<void> => {
     console.log(`[gateway] ${sig} → shutting down`);
     try {
+      clearInterval(lagPoll);
       // Stop accepting new messages (so no new sends are issued), then drain
       // any in-flight sends before disconnecting the producer — disconnect
       // aborts pending sends rather than flushing them.
@@ -165,6 +228,7 @@ async function main(): Promise<void> {
         ]);
       }
       await producer.disconnect();
+      await admin.disconnect();
       wss.close();
       httpServer.close();
     } finally {
