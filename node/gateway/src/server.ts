@@ -55,6 +55,13 @@ async function main(): Promise<void> {
   await consumer.subscribe({ topics: TOPIC_PATTERNS, fromBeginning: false });
   console.log(`[gateway] consuming md.book.* / md.trades.* from ${BROKERS.join(",")}`);
 
+  // In-flight send promises (post fix #1: fire-and-forget). Tracked so
+  // shutdown can drain them before producer.disconnect() — kafkajs's disconnect
+  // aborts pending sends rather than flushing (verified in
+  // node_modules/kafkajs/src/producer/index.js:230).
+  const inFlight = new Set<Promise<unknown>>();
+  const SHUTDOWN_DRAIN_MS = 5000;
+
   await consumer.run({
     eachMessage: async ({ message }) => {
       if (!message.value) return;
@@ -71,12 +78,14 @@ async function main(): Promise<void> {
         // at 1/broker-RTT per partition (same antipattern the python ingester
         // removed in a6d1fae). The gateway is stateless — a dropped md.bbo
         // publish is recovered by the next L1 move; no resync needed.
-        producer
+        const p: Promise<unknown> = producer
           .send({
             topic: bboTopic(bbo.exchange, bbo.symbol),
             messages: [{ key: `${bbo.exchange}:${bbo.symbol}`, value: JSON.stringify(bbo) }],
           })
-          .catch((err) => console.error("[gateway] kafka produce failed:", err));
+          .catch((err) => console.error("[gateway] kafka produce failed:", err))
+          .finally(() => inFlight.delete(p));
+        inFlight.add(p);
       }
       if (result.broadcast) broadcaster.broadcast(result.broadcast);
     },
@@ -86,7 +95,17 @@ async function main(): Promise<void> {
   const shutdown = async (sig: string): Promise<void> => {
     console.log(`[gateway] ${sig} → shutting down`);
     try {
+      // Stop accepting new messages (so no new sends are issued), then drain
+      // any in-flight sends before disconnecting the producer — disconnect
+      // aborts pending sends rather than flushing them.
       await consumer.disconnect();
+      if (inFlight.size > 0) {
+        console.log(`[gateway] draining ${inFlight.size} in-flight sends`);
+        await Promise.race([
+          Promise.allSettled([...inFlight]),
+          new Promise((r) => setTimeout(r, SHUTDOWN_DRAIN_MS)),
+        ]);
+      }
       await producer.disconnect();
       wss.close();
       httpServer.close();
