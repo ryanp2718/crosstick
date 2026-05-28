@@ -21,13 +21,6 @@ services:
       - --mode=dev-container
       - --smp=1
       - --default-log-level=warn
-      # Architectural message-size ceiling (8 MiB), mirroring MAX_MESSAGE_BYTES
-      # in python/common/kafka_io.py and node/gateway/src/server.ts. Default
-      # broker batch cap is ~1 MiB which rejects Coinbase's ~1.1 MiB L2
-      # snapshot. Verify the exact property name on Redpanda upgrade:
-      # `rpk cluster config get kafka_batch_max_bytes`.
-      - --set
-      - redpanda.kafka_batch_max_bytes=8388608
     ports:
       - "19092:19092"   # Kafka API (external)
       - "18081:18081"   # Schema Registry (external)
@@ -39,6 +32,18 @@ services:
       retries: 10
       start_period: 30s
     restart: unless-stopped
+
+  # Applies cluster-scoped configs that can't be passed as node `--set` flags.
+  # See MAX_MESSAGE_BYTES in python/common/kafka_io.py for the 8 MiB ceiling.
+  redpanda-init:
+    image: redpandadata/redpanda:latest
+    container_name: redpanda-init
+    depends_on:
+      redpanda:
+        condition: service_healthy
+    entrypoint: ["rpk", "-X", "admin.hosts=redpanda:9644"]
+    command: ["cluster", "config", "set", "kafka_batch_max_bytes", "8388608"]
+    restart: "no"
 
   redpanda-console:
     image: redpandadata/console:latest
