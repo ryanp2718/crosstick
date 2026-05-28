@@ -1,4 +1,9 @@
-import BTree from "sorted-btree";
+// sorted-btree's CJS module ships the class as both `module.exports` and
+// `.default`; the ESNext + esModuleInterop default-import lands on the wrapper
+// at runtime under tsx (vitest's transform papers over it). Unwrap explicitly.
+import BTreeImport from "sorted-btree";
+const BTree = ((BTreeImport as unknown) as { default?: typeof BTreeImport }).default
+  ?? BTreeImport;
 
 import { cmpDecimal, isZeroSize } from "./decimal.js";
 import type { WireLevel } from "./messages.js";
