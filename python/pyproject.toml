@@ -9,7 +9,6 @@ dependencies = [
     "msgspec==0.21.1",
     "sortedcontainers==2.4.0",
     "aiokafka==0.14.0",
-    "lz4==4.4.5",
     "pyarrow==24.0.0",
     "numpy==2.4.6",
     "prometheus-client==0.25.0",

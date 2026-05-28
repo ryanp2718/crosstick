@@ -68,7 +68,7 @@ async def make_producer(
     *,
     acks: str | int = "all",
     enable_idempotence: bool = True,
-    compression_type: str | None = "lz4",
+    compression_type: str | None = "gzip",
     linger_ms: int = 5,
     max_batch_size: int = 64 * 1024,
 ) -> AIOKafkaProducer:
@@ -76,9 +76,14 @@ async def make_producer(
 
     - `acks=all` + `enable_idempotence=True` → exactly-once-into-broker semantics
       (within a producer session). Caller still owns end-to-end dedup.
-    - `lz4` compression: fast, good ratio for JSON payloads.
+    - `gzip` compression: native on both sides — aiokafka via stdlib (no
+      cramjam/snappy/lz4 needed) and kafkajs decodes it built-in (no extra npm
+      codec). The lz4 path looked attractive (faster) but the Node lz4 codecs
+      are unmaintained against current Node, so gzip is the practical choice
+      end-to-end; at our message rates the extra CPU is negligible.
     - `linger_ms=5`: small wait to batch; trades a few ms of latency for
-      significant throughput gain.
+      significant throughput gain (the firehose path uses pipelined `send()`,
+      so this batching actually engages — see BaseIngester._emit).
     """
     producer = AIOKafkaProducer(
         bootstrap_servers=brokers_from_env(),
