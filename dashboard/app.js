@@ -80,15 +80,16 @@ function applyBbo(bbo) {
   st.bbo = bbo;
 }
 
-// Age-column tick.
+// Age-column tick. Always-ms format keeps the cell width stable (fixed col in
+// HTML); ages >9999ms overflow visibly, which is the right signal that
+// something upstream is actually slow.
 setInterval(() => {
   for (const st of state.values()) {
     if (!st.bbo) continue;
-    const ms = ageMs(st.bbo.local_ts_ns);
-    st.rowEl.children[8].textContent = ms < 1000 ? `${ms.toFixed(0)}ms` : `${(ms / 1000).toFixed(1)}s`;
+    st.rowEl.children[8].textContent = `${ageMs(st.bbo.local_ts_ns).toFixed(0)}ms`;
   }
   meta.textContent = `${state.size} streams · ${msgCount} msgs`;
-}, 250);
+}, 100);
 
 function connect() {
   const proto = location.protocol === "https:" ? "wss:" : "ws:";

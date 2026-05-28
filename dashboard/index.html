@@ -16,7 +16,7 @@
     #status { font-size: 0.85rem; padding: 2px 8px; border-radius: 3px; }
     #status.up { background: #1b3b1b; color: #6fdc6f; }
     #status.down { background: #3b1b1b; color: #ff7676; }
-    table { border-collapse: collapse; width: 100%; }
+    table { border-collapse: collapse; table-layout: fixed; }
     th, td { padding: 6px 12px; text-align: right; }
     th { font-weight: 500; color: #8a8a8a; border-bottom: 1px solid #2a2a2a; text-align: right; }
     th:first-child, td:first-child, th:nth-child(2), td:nth-child(2) { text-align: left; }
@@ -34,6 +34,13 @@
     <span class="muted" id="meta"></span>
   </header>
   <table>
+    <colgroup>
+      <col style="width: 7em" /><col style="width: 7em" />
+      <col style="width: 8em" /><col style="width: 6em" />
+      <col style="width: 8em" /><col style="width: 6em" />
+      <col style="width: 6em" /><col style="width: 8em" />
+      <col style="width: 5em" />
+    </colgroup>
     <thead>
       <tr>
         <th>exchange</th><th>symbol</th>
