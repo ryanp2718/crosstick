@@ -277,4 +277,8 @@ class KrakenIngester(BaseIngester):
         bids = [(str(px), str(sz)) for px, sz in ctx.book.top_n(Side.BID, 10)]
         got = kraken_checksum(asks, bids)
         if got != expected:
+            log.error(
+                "CRC MISMATCH %s/%s seq=%s got=%s expected=%s\n  asks=%s\n  bids=%s",
+                self.exchange, ctx.symbol, ctx.last_seq, got, expected, asks, bids,
+            )
             raise ResyncRequired(f"crc mismatch: got {got} expected {expected}")
