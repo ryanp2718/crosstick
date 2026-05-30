@@ -1,0 +1,41 @@
+# Canonical instrument map for cross-exchange NBBO.
+#
+# Each top-level key is the canonical_id (format: <BASE>-<QUOTE>, matches
+# Coinbase convention; human-readable; topic-safe). The gateway loads this at
+# startup, builds a (exchange, symbol) -> canonical_id lookup, and resolves
+# incoming BBOs to canonical instruments before NBBO aggregation.
+#
+# STRICT per-quote-asset bucketing: BTC-USD and BTC-USDT are SEPARATE canonical
+# instruments. USDT/USD is its own tradeable spread; collapsing them would
+# silently lie during a stablecoin depeg. See docs/DESIGN_nbbo.md "Strict
+# per-quote-asset bucketing" for rationale.
+#
+# Phase 1 ships with Coinbase-only constituents; Kraken/Binance venues are
+# added incrementally as their ingesters come up and pass single-venue
+# validation.
+instruments:
+  BTC-USD:
+    base: BTC
+    quote: USD
+    venues:
+      - { exchange: coinbase, symbol: BTC-USD }
+      - { exchange: kraken,   symbol: BTC/USD }
+
+  ETH-USD:
+    base: ETH
+    quote: USD
+    venues:
+      - { exchange: coinbase, symbol: ETH-USD }
+      - { exchange: kraken,   symbol: ETH/USD }
+
+  BTC-USDT:
+    base: BTC
+    quote: USDT
+    venues:
+      - { exchange: binance, symbol: BTCUSDT }
+
+  ETH-USDT:
+    base: ETH
+    quote: USDT
+    venues:
+      - { exchange: binance, symbol: ETHUSDT }

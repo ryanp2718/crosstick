@@ -8,16 +8,21 @@ import { WebSocketServer } from "ws";
 
 import { Aggregator } from "./aggregator.js";
 import { Broadcaster } from "./broadcaster.js";
-import { bboTopic, decodeMsg } from "./messages.js";
+import { loadCanonicalMap } from "./canonical.js";
+import { bboTopic, decodeMsg, nbboTopic } from "./messages.js";
 import {
   aggregatorStreams,
   bboInflight,
   bboProduced,
   consumerLag,
   messagesConsumed,
+  nbboConstituents,
+  nbboCrossed,
+  nbboProduced,
   registry,
   wsClients,
 } from "./metrics.js";
+import { NBBOAggregator } from "./nbbo.js";
 import { routeMessage, type RouteResult } from "./router.js";
 
 // ── config (env, with dev-friendly defaults) ────────────────────────────────
@@ -40,6 +45,12 @@ const DASHBOARD_DIR = path.resolve(
     (existsSync(path.resolve(process.cwd(), "dashboard"))
       ? path.resolve(process.cwd(), "dashboard")
       : path.resolve(process.cwd(), "..", "..", "dashboard")),
+);
+const INSTRUMENTS_FILE = path.resolve(
+  process.env.INSTRUMENTS_FILE ??
+    (existsSync(path.resolve(process.cwd(), "ops", "instruments.yml"))
+      ? path.resolve(process.cwd(), "ops", "instruments.yml")
+      : path.resolve(process.cwd(), "..", "..", "ops", "instruments.yml")),
 );
 const MIME: Record<string, string> = {
   ".html": "text/html; charset=utf-8",
@@ -74,7 +85,14 @@ async function serveStatic(rel: string, res: http.ServerResponse): Promise<void>
 }
 
 async function main(): Promise<void> {
+  // Load canonical map first — fail fast on a malformed instruments.yml
+  // instead of discovering it only when the first BBO routes through.
+  const canonicalMap = loadCanonicalMap(INSTRUMENTS_FILE);
+  console.log(
+    `[gateway] loaded ${canonicalMap.all().length} canonical instruments from ${INSTRUMENTS_FILE}`,
+  );
   const agg = new Aggregator();
+  const nbboAgg = new NBBOAggregator();
   const broadcaster = new Broadcaster(MAX_BUFFERED_BYTES);
 
   // ── WS server (+ tiny HTTP for health, dashboard, metrics, upgrade) ──────
@@ -108,6 +126,7 @@ async function main(): Promise<void> {
     // immediately during quiet periods. Tiny window where broadcasts firing
     // between these two calls are missed; self-heals on the next L1 move.
     for (const bbo of agg.snapshot()) ws.send(JSON.stringify(bbo));
+    for (const nbbo of nbboAgg.snapshot()) ws.send(JSON.stringify(nbbo));
     broadcaster.add(ws);
     wsClients.inc();
     // "close" is guaranteed to fire exactly once (also after "error"); dec here.
@@ -133,6 +152,23 @@ async function main(): Promise<void> {
   await producer.connect();
   await consumer.connect();
   await admin.connect();
+
+  // Pre-create md.nbbo.* topics as compacted so late-joining consumers can
+  // bootstrap from the latest message per canonical_id. Idempotent — kafkajs
+  // returns false (not an error) when the topic already exists.
+  const nbboTopics = canonicalMap.all().map((c) => ({
+    topic: nbboTopic(c.canonical_id),
+    numPartitions: 1,
+    configEntries: [{ name: "cleanup.policy", value: "compact" }],
+  }));
+  if (nbboTopics.length > 0) {
+    await admin.createTopics({ topics: nbboTopics, waitForLeaders: true });
+    console.log(
+      `[gateway] ensured ${nbboTopics.length} compacted md.nbbo.* topics: ` +
+        nbboTopics.map((t) => t.topic).join(", "),
+    );
+  }
+
   await consumer.subscribe({ topics: TOPIC_PATTERNS, fromBeginning: false });
   console.log(`[gateway] consuming md.book.* / md.trades.* from ${BROKERS.join(",")}`);
 
@@ -155,7 +191,7 @@ async function main(): Promise<void> {
 
       let result: RouteResult;
       try {
-        result = routeMessage(decodeMsg(message.value), agg);
+        result = routeMessage(decodeMsg(message.value), agg, canonicalMap, nbboAgg);
       } catch (err) {
         messagesConsumed.inc({ topic, result: "error" });
         console.error("[gateway] bad message, skipping:", err);
@@ -186,6 +222,31 @@ async function main(): Promise<void> {
         inFlight.add(p);
       }
       if (result.broadcast) broadcaster.broadcast(result.broadcast);
+
+      if (result.nbboPublish) {
+        const nbbo = result.nbboPublish;
+        nbboConstituents.set({ canonical_id: nbbo.canonical_id }, nbbo.constituents.length);
+        if (nbbo.spread < 0) nbboCrossed.inc({ canonical_id: nbbo.canonical_id });
+        bboInflight.inc();
+        // Same fire-and-forget pattern as md.bbo above. Compacted topic keyed
+        // by canonical_id so late consumers can bootstrap from the latest.
+        const p: Promise<unknown> = producer
+          .send({
+            topic: nbboTopic(nbbo.canonical_id),
+            messages: [{ key: nbbo.canonical_id, value: JSON.stringify(nbbo) }],
+          })
+          .then(() => nbboProduced.inc({ canonical_id: nbbo.canonical_id, result: "ok" }))
+          .catch((err) => {
+            nbboProduced.inc({ canonical_id: nbbo.canonical_id, result: "error" });
+            console.error("[gateway] kafka nbbo produce failed:", err);
+          })
+          .finally(() => {
+            inFlight.delete(p);
+            bboInflight.dec();
+          });
+        inFlight.add(p);
+      }
+      if (result.nbboBroadcast) broadcaster.broadcast(result.nbboBroadcast);
     },
   });
 

@@ -52,7 +52,33 @@ export interface BBOMsg {
   local_ts_ns: number;
 }
 
-export type StreamMsg = BookSnapshotMsg | BookDeltaMsg | TradeMsg | BBOMsg;
+// Cross-exchange NBBO, published to md.nbbo.<canonical_id> and broadcast on WS.
+// Per-leg ts/age surface staleness for consumers to filter at their own
+// threshold (see docs/DESIGN_nbbo.md "Per-leg staleness is the consumer's
+// call"). px/sz are JS numbers — single-exchange BBO topics carry the
+// string-precise values for consumers that need them.
+export interface NBBOLeg {
+  px: number;
+  sz: number;
+  exchange: string;
+  leg_ts_ns: number;
+  leg_age_ms: number;
+}
+
+export interface NBBOMsg {
+  t: "nbbo";
+  canonical_id: string;
+  base: string;
+  quote: string;
+  best_bid: NBBOLeg;
+  best_ask: NBBOLeg;
+  spread: number;
+  mid: number;
+  constituents: string[];
+  local_ts_ns: number;
+}
+
+export type StreamMsg = BookSnapshotMsg | BookDeltaMsg | TradeMsg | BBOMsg | NBBOMsg;
 
 // NOTE: *_ts_ns are epoch nanoseconds (~1.7e18), past Number.MAX_SAFE_INTEGER
 // (~9.0e15). JSON.parse rounds them to ~200ns granularity — negligible for the
@@ -73,4 +99,10 @@ export function normalizeSymbol(symbol: string): string {
 
 export function bboTopic(exchange: string, symbol: string): string {
   return `md.bbo.${exchange}.${normalizeSymbol(symbol)}`;
+}
+
+// canonical_id is constrained to <BASE>-<QUOTE> (see ops/instruments.yml),
+// all topic-safe characters — no normalization required.
+export function nbboTopic(canonical_id: string): string {
+  return `md.nbbo.${canonical_id}`;
 }

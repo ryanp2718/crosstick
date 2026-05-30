@@ -5,8 +5,10 @@
 const status = document.getElementById("status");
 const meta = document.getElementById("meta");
 const rows = document.getElementById("rows");
+const nbboRows = document.getElementById("nbbo-rows");
 
 const state = new Map(); // key -> { bbo, rowEl, prevBid, prevAsk }
+const nbboState = new Map(); // canonical_id -> { nbbo, rowEl }
 let msgCount = 0;
 
 function key(b) { return `${b.exchange}|${b.symbol}`; }
@@ -80,6 +82,45 @@ function applyBbo(bbo) {
   st.bbo = bbo;
 }
 
+function ensureNbboRow(canonical_id) {
+  let st = nbboState.get(canonical_id);
+  if (st) return st;
+  const tr = document.createElement("tr");
+  for (let i = 0; i < 10; i++) tr.appendChild(document.createElement("td"));
+  tr.children[0].textContent = canonical_id;
+  for (let i = 1; i < 10; i++) tr.children[i].className = "num";
+  // Insert sorted by canonical_id.
+  let inserted = false;
+  for (const existing of nbboRows.children) {
+    if (canonical_id < existing.children[0].textContent) {
+      nbboRows.insertBefore(tr, existing);
+      inserted = true;
+      break;
+    }
+  }
+  if (!inserted) nbboRows.appendChild(tr);
+  st = { nbbo: null, rowEl: tr };
+  nbboState.set(canonical_id, st);
+  return st;
+}
+
+function applyNbbo(nbbo) {
+  msgCount++;
+  const st = ensureNbboRow(nbbo.canonical_id);
+  st.rowEl.children[1].textContent = fmt(nbbo.best_bid.px);
+  st.rowEl.children[2].textContent = fmt(nbbo.best_bid.sz, 4);
+  st.rowEl.children[3].textContent = nbbo.best_bid.exchange;
+  st.rowEl.children[4].textContent = fmt(nbbo.best_ask.px);
+  st.rowEl.children[5].textContent = fmt(nbbo.best_ask.sz, 4);
+  st.rowEl.children[6].textContent = nbbo.best_ask.exchange;
+  const spreadCell = st.rowEl.children[7];
+  spreadCell.textContent = fmt(nbbo.spread.toString(), 4);
+  spreadCell.className = `num ${nbbo.spread < 0 ? "spread-neg" : "spread-pos"}`;
+  st.rowEl.children[8].textContent = fmt(nbbo.mid.toString());
+  st.rowEl.children[9].textContent = nbbo.constituents.join(",");
+  st.nbbo = nbbo;
+}
+
 // Age-column tick. Always-ms format keeps the cell width stable (fixed col in
 // HTML); ages >9999ms overflow visibly, which is the right signal that
 // something upstream is actually slow.
@@ -88,7 +129,7 @@ setInterval(() => {
     if (!st.bbo) continue;
     st.rowEl.children[8].textContent = `${ageMs(st.bbo.local_ts_ns).toFixed(0)}ms`;
   }
-  meta.textContent = `${state.size} streams · ${msgCount} msgs`;
+  meta.textContent = `${state.size} bbo · ${nbboState.size} nbbo · ${msgCount} msgs`;
 }, 100);
 
 function connect() {
@@ -103,7 +144,9 @@ function connect() {
   ws.onmessage = (ev) => {
     let msg;
     try { msg = JSON.parse(ev.data); } catch { return; }
-    if (msg && msg.t === "bbo") applyBbo(msg);
+    if (!msg) return;
+    if (msg.t === "bbo") applyBbo(msg);
+    else if (msg.t === "nbbo") applyNbbo(msg);
   };
 }
 

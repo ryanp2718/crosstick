@@ -24,6 +24,10 @@
     tr.flash-down td.ask { background: #3b1414; transition: background 0s; }
     td.bid, td.ask { transition: background 1s; }
     td.num { font-variant-numeric: tabular-nums; }
+    td.spread-neg { color: #ff7676; }
+    td.spread-pos { color: #6fdc6f; }
+    section { margin-bottom: 1.5rem; }
+    h2 { font-size: 0.85rem; font-weight: 500; color: #8a8a8a; margin: 0 0 0.5rem 0; text-transform: uppercase; letter-spacing: 0.05em; }
     .muted { color: #6a6a6a; }
   </style>
 </head>
@@ -33,25 +37,50 @@
     <span id="status" class="down">disconnected</span>
     <span class="muted" id="meta"></span>
   </header>
-  <table>
-    <colgroup>
-      <col style="width: 7em" /><col style="width: 7em" />
-      <col style="width: 8em" /><col style="width: 6em" />
-      <col style="width: 8em" /><col style="width: 6em" />
-      <col style="width: 6em" /><col style="width: 8em" />
-      <col style="width: 5em" />
-    </colgroup>
-    <thead>
-      <tr>
-        <th>exchange</th><th>symbol</th>
-        <th>bid</th><th>bid sz</th>
-        <th>ask</th><th>ask sz</th>
-        <th>spread</th><th>mid</th>
-        <th>age</th>
-      </tr>
-    </thead>
-    <tbody id="rows"></tbody>
-  </table>
+  <section>
+    <h2>NBBO (cross-exchange)</h2>
+    <table>
+      <colgroup>
+        <col style="width: 8em" />
+        <col style="width: 8em" /><col style="width: 6em" /><col style="width: 7em" />
+        <col style="width: 8em" /><col style="width: 6em" /><col style="width: 7em" />
+        <col style="width: 6em" /><col style="width: 8em" />
+        <col style="width: 12em" />
+      </colgroup>
+      <thead>
+        <tr>
+          <th>canonical</th>
+          <th>bid</th><th>bid sz</th><th>bid venue</th>
+          <th>ask</th><th>ask sz</th><th>ask venue</th>
+          <th>spread</th><th>mid</th>
+          <th>constituents</th>
+        </tr>
+      </thead>
+      <tbody id="nbbo-rows"></tbody>
+    </table>
+  </section>
+  <section>
+    <h2>BBO (per exchange)</h2>
+    <table>
+      <colgroup>
+        <col style="width: 7em" /><col style="width: 7em" />
+        <col style="width: 8em" /><col style="width: 6em" />
+        <col style="width: 8em" /><col style="width: 6em" />
+        <col style="width: 6em" /><col style="width: 8em" />
+        <col style="width: 5em" />
+      </colgroup>
+      <thead>
+        <tr>
+          <th>exchange</th><th>symbol</th>
+          <th>bid</th><th>bid sz</th>
+          <th>ask</th><th>ask sz</th>
+          <th>spread</th><th>mid</th>
+          <th>age</th>
+        </tr>
+      </thead>
+      <tbody id="rows"></tbody>
+    </table>
+  </section>
   <script type="module" src="/dashboard/app.js"></script>
 </body>
 </html>

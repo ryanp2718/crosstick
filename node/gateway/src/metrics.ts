@@ -56,3 +56,24 @@ export const aggregatorStreams = new Gauge({
   help: "Number of (exchange, symbol) streams tracked in the aggregator",
   registers: [registry],
 });
+
+export const nbboProduced = new Counter({
+  name: "gateway_nbbo_produced_total",
+  help: "NBBO messages produced to md.nbbo.* (counted on send completion)",
+  labelNames: ["canonical_id", "result"] as const,
+  registers: [registry],
+});
+
+export const nbboConstituents = new Gauge({
+  name: "gateway_nbbo_constituents",
+  help: "Number of venues currently contributing a leg to each canonical NBBO",
+  labelNames: ["canonical_id"] as const,
+  registers: [registry],
+});
+
+export const nbboCrossed = new Counter({
+  name: "gateway_nbbo_crossed_total",
+  help: "NBBO emissions with negative spread (best_bid >= best_ask across venues)",
+  labelNames: ["canonical_id"] as const,
+  registers: [registry],
+});

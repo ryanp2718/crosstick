@@ -22,6 +22,7 @@ RUN pnpm install --prod
 
 COPY --from=build /app/dist ./dist
 COPY dashboard ./dashboard
+COPY ops/instruments.yml ./ops/instruments.yml
 
 ENV NODE_ENV=production
 CMD ["node", "dist/server.js"]
