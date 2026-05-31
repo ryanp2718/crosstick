@@ -80,6 +80,17 @@ class Spread(msgspec.Struct, tag="spread", tag_field="t", frozen=True):
     local_ts_ns: int
 
 
+class Status(msgspec.Struct, tag="status", tag_field="t", frozen=True):
+    """Per-exchange venue health: connection-state liveness, not quote freshness.
+    'up' is a periodic heartbeat while streaming; 'down' is sent on graceful
+    shutdown. The gateway evicts a venue's NBBO legs on 'down' or missed
+    heartbeats (which covers a crash/kill that emits no 'down')."""
+
+    exchange: str
+    state: str  # "up" | "down"
+    ts_ns: int
+
+
 # ── Warehouse / batch types (NOT published by streaming ingesters) ─────────
 # VWAP is computed by dbt after the fact, not emitted on any Kafka topic.
 # Kept here for materializer pipelines that may need to decode archived data.
@@ -103,7 +114,7 @@ def encode(msg: msgspec.Struct) -> bytes:
 
 # Streaming decoder: covers only the types that ingesters and the gateway
 # actually produce.  VWAP is excluded — it is never on a live topic.
-_STREAMING_TYPES = BookSnapshot | BookDelta | Trade | BBO | Spread
+_STREAMING_TYPES = BookSnapshot | BookDelta | Trade | BBO | Spread | Status
 _DECODER = msgspec.json.Decoder(_STREAMING_TYPES)
 
 

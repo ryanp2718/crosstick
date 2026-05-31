@@ -58,6 +58,11 @@ def bbo_topic(exchange: str, symbol: str) -> str:
     return f"md.bbo.{exchange}.{normalize_symbol(symbol)}"
 
 
+def status_topic(exchange: str) -> str:
+    """Per-exchange venue-health topic (one WS connection per exchange)."""
+    return f"md.status.{exchange}"
+
+
 # ---------------------------------------------------------------------------
 # Producer
 # ---------------------------------------------------------------------------

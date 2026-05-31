@@ -9,7 +9,8 @@ import { WebSocketServer } from "ws";
 import { Aggregator } from "./aggregator.js";
 import { Broadcaster } from "./broadcaster.js";
 import { loadCanonicalMap } from "./canonical.js";
-import { bboTopic, decodeMsg, nbboTopic } from "./messages.js";
+import { bboTopic, decodeMsg, nbboTopic, statusTopic } from "./messages.js";
+import type { NBBOMsg, StatusMsg } from "./messages.js";
 import {
   aggregatorStreams,
   bboInflight,
@@ -20,6 +21,7 @@ import {
   nbboCrossed,
   nbboProduced,
   registry,
+  venueUp,
   wsClients,
 } from "./metrics.js";
 import { NBBOAggregator } from "./nbbo.js";
@@ -64,7 +66,10 @@ const MIME: Record<string, string> = {
 // subscribe time; topics created later need a gateway restart to be picked up.
 // Fine for the compose stack (ingesters produce on startup); a metadata-refresh
 // resubscribe is the production hardening.
-const TOPIC_PATTERNS = [/^md\.book\..+/, /^md\.trades\..+/];
+const TOPIC_PATTERNS = [/^md\.book\..+/, /^md\.trades\..+/, /^md\.status\..+/];
+// A venue is evicted from NBBO if no md.status heartbeat arrives within this
+// window (covers an ingester crash/kill that sends no graceful "down").
+const LIVENESS_TIMEOUT_MS = Number(process.env.NBBO_LIVENESS_TIMEOUT_MS ?? 5000);
 
 async function serveStatic(rel: string, res: http.ServerResponse): Promise<void> {
   const full = path.resolve(DASHBOARD_DIR, rel);
@@ -156,16 +161,28 @@ async function main(): Promise<void> {
   // Pre-create md.nbbo.* topics as compacted so late-joining consumers can
   // bootstrap from the latest message per canonical_id. Idempotent — kafkajs
   // returns false (not an error) when the topic already exists.
+  const compacted = [{ name: "cleanup.policy", value: "compact" }];
   const nbboTopics = canonicalMap.all().map((c) => ({
     topic: nbboTopic(c.canonical_id),
     numPartitions: 1,
-    configEntries: [{ name: "cleanup.policy", value: "compact" }],
+    configEntries: compacted,
   }));
-  if (nbboTopics.length > 0) {
-    await admin.createTopics({ topics: nbboTopics, waitForLeaders: true });
+  // One status topic per distinct venue across all instruments (compacted so a
+  // late/ restarted consumer reads the latest liveness per exchange).
+  const exchanges = [
+    ...new Set(canonicalMap.all().flatMap((c) => c.venues.map((v) => v.exchange))),
+  ];
+  const statusTopics = exchanges.map((ex) => ({
+    topic: statusTopic(ex),
+    numPartitions: 1,
+    configEntries: compacted,
+  }));
+  const toCreate = [...nbboTopics, ...statusTopics];
+  if (toCreate.length > 0) {
+    await admin.createTopics({ topics: toCreate, waitForLeaders: true });
     console.log(
-      `[gateway] ensured ${nbboTopics.length} compacted md.nbbo.* topics: ` +
-        nbboTopics.map((t) => t.topic).join(", "),
+      `[gateway] ensured ${nbboTopics.length} compacted md.nbbo.* + ` +
+        `${statusTopics.length} md.status.* topics`,
     );
   }
 
@@ -182,6 +199,42 @@ async function main(): Promise<void> {
   // Last consumed offset per (topic, partition); used by the lag poll.
   const lastOffsets = new Map<string, Map<number, bigint>>();
 
+  // Publish an NBBO to its compacted topic (fire-and-forget) + broadcast to WS.
+  // Reused by the live book path and by status-driven recompute.
+  const emitNbbo = (nbbo: NBBOMsg): void => {
+    nbboConstituents.set({ canonical_id: nbbo.canonical_id }, nbbo.constituents.length);
+    if (nbbo.spread < 0) nbboCrossed.inc({ canonical_id: nbbo.canonical_id });
+    bboInflight.inc();
+    const p: Promise<unknown> = producer
+      .send({
+        topic: nbboTopic(nbbo.canonical_id),
+        messages: [{ key: nbbo.canonical_id, value: JSON.stringify(nbbo) }],
+      })
+      .then(() => nbboProduced.inc({ canonical_id: nbbo.canonical_id, result: "ok" }))
+      .catch((err) => {
+        nbboProduced.inc({ canonical_id: nbbo.canonical_id, result: "error" });
+        console.error("[gateway] kafka nbbo produce failed:", err);
+      })
+      .finally(() => {
+        inFlight.delete(p);
+        bboInflight.dec();
+      });
+    inFlight.add(p);
+    broadcaster.broadcast(nbbo);
+  };
+
+  // Venue health: last md.status heartbeat per exchange. A status transition
+  // evicts/re-adds that venue's legs and re-emits the affected NBBOs so a
+  // crossed book from a dead leg clears immediately, not on the next tick.
+  const lastSeen = new Map<string, number>();
+  const handleStatus = (msg: StatusMsg): void => {
+    const now = Date.now();
+    lastSeen.set(msg.exchange, now);
+    const up = msg.state === "up";
+    venueUp.set({ exchange: msg.exchange }, up ? 1 : 0);
+    for (const nbbo of nbboAgg.setVenueDown(msg.exchange, !up, now)) emitNbbo(nbbo);
+  };
+
   await consumer.run({
     eachMessage: async ({ topic, partition, message }) => {
       if (!message.value) return;
@@ -191,7 +244,13 @@ async function main(): Promise<void> {
 
       let result: RouteResult;
       try {
-        result = routeMessage(decodeMsg(message.value), agg, canonicalMap, nbboAgg);
+        const decoded = decodeMsg(message.value);
+        if (decoded.t === "status") {
+          messagesConsumed.inc({ topic, result: "ok" });
+          handleStatus(decoded);
+          return;
+        }
+        result = routeMessage(decoded, agg, canonicalMap, nbboAgg);
       } catch (err) {
         messagesConsumed.inc({ topic, result: "error" });
         console.error("[gateway] bad message, skipping:", err);
@@ -223,32 +282,24 @@ async function main(): Promise<void> {
       }
       if (result.broadcast) broadcaster.broadcast(result.broadcast);
 
-      if (result.nbboPublish) {
-        const nbbo = result.nbboPublish;
-        nbboConstituents.set({ canonical_id: nbbo.canonical_id }, nbbo.constituents.length);
-        if (nbbo.spread < 0) nbboCrossed.inc({ canonical_id: nbbo.canonical_id });
-        bboInflight.inc();
-        // Same fire-and-forget pattern as md.bbo above. Compacted topic keyed
-        // by canonical_id so late consumers can bootstrap from the latest.
-        const p: Promise<unknown> = producer
-          .send({
-            topic: nbboTopic(nbbo.canonical_id),
-            messages: [{ key: nbbo.canonical_id, value: JSON.stringify(nbbo) }],
-          })
-          .then(() => nbboProduced.inc({ canonical_id: nbbo.canonical_id, result: "ok" }))
-          .catch((err) => {
-            nbboProduced.inc({ canonical_id: nbbo.canonical_id, result: "error" });
-            console.error("[gateway] kafka nbbo produce failed:", err);
-          })
-          .finally(() => {
-            inFlight.delete(p);
-            bboInflight.dec();
-          });
-        inFlight.add(p);
-      }
-      if (result.nbboBroadcast) broadcaster.broadcast(result.nbboBroadcast);
+      // nbboPublish and nbboBroadcast are the same object (see router.ts);
+      // emitNbbo does both the compacted-topic publish and the WS broadcast.
+      if (result.nbboPublish) emitNbbo(result.nbboPublish);
     },
   });
+
+  // Liveness sweep: evict a venue whose heartbeats stopped (crash/kill emits no
+  // graceful "down"). Idempotent — setVenueDown returns [] if already down.
+  const livenessSweep = setInterval(() => {
+    const now = Date.now();
+    for (const [exchange, seen] of lastSeen) {
+      if (now - seen > LIVENESS_TIMEOUT_MS) {
+        venueUp.set({ exchange }, 0);
+        for (const nbbo of nbboAgg.setVenueDown(exchange, true, now)) emitNbbo(nbbo);
+      }
+    }
+  }, 1000);
+  livenessSweep.unref();
 
   // Periodic lag + aggregator-size refresh. fetchTopicOffsets returns the HWM
   // (= offset of next message that *would* be written), so a fully caught-up
@@ -277,6 +328,7 @@ async function main(): Promise<void> {
     console.log(`[gateway] ${sig} → shutting down`);
     try {
       clearInterval(lagPoll);
+      clearInterval(livenessSweep);
       // Stop accepting new messages (so no new sends are issued), then drain
       // any in-flight sends before disconnecting the producer — disconnect
       // aborts pending sends rather than flushing them.
