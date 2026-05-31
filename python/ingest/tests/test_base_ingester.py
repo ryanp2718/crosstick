@@ -387,6 +387,56 @@ async def test_queue_full_aborts_connection_and_increments_resync(
     assert fake_server.connections >= 2, "expected reconnect after queue_full disconnect"
 
 
+def _status_msgs(producer: FakeProducer) -> list[tuple[str, dict]]:
+    """Decode the md.status.* messages captured by the fake producer."""
+    out: list[tuple[str, dict]] = []
+    for topic, value in producer.sent:
+        if topic.startswith("md.status."):
+            out.append((topic, json.loads(value)))
+    return out
+
+
+@pytest.mark.asyncio
+async def test_heartbeat_emits_up_while_connected(fake_server: FakeExchangeServer) -> None:
+    """A connected ingester emits periodic 'up' heartbeats on md.status.<exchange>
+    keyed by exchange. This is the liveness signal the gateway uses to evict a
+    venue whose ingester died (no graceful 'down')."""
+    fake_server.scripted = [json.dumps({"sym": "X", "seq": 1, "kind": "trade"})]
+    ing = make_ingester(fake_server, heartbeat_s=0.05)
+    run_task = asyncio.create_task(ing.run())
+    for _ in range(100):
+        if len([m for _, m in _status_msgs(ing.producer) if m["state"] == "up"]) >= 2:
+            break
+        await asyncio.sleep(0.02)
+    await ing.shutdown()
+    await asyncio.wait_for(run_task, timeout=3.0)
+
+    ups = _status_msgs(ing.producer)
+    up_only = [m for _, m in ups if m["state"] == "up"]
+    assert len(up_only) >= 2, "expected repeated 'up' heartbeats while connected"
+    assert all(t == "md.status.fake" for t, _ in ups), "status topic must be md.status.<exchange>"
+    assert all(m["exchange"] == "fake" for _, m in ups)
+
+
+@pytest.mark.asyncio
+async def test_graceful_shutdown_emits_down(fake_server: FakeExchangeServer) -> None:
+    """A graceful shutdown emits a final 'down' so the gateway evicts the venue
+    immediately (without waiting for the liveness timeout)."""
+    fake_server.scripted = [json.dumps({"sym": "X", "seq": 1, "kind": "trade"})]
+    ing = make_ingester(fake_server, heartbeat_s=10.0)  # large → isolate the down
+    run_task = asyncio.create_task(ing.run())
+    for _ in range(100):
+        if any(m["state"] == "up" for _, m in _status_msgs(ing.producer)):
+            break
+        await asyncio.sleep(0.02)
+    await ing.shutdown()
+    await asyncio.wait_for(run_task, timeout=3.0)
+
+    downs = [m for _, m in _status_msgs(ing.producer) if m["state"] == "down"]
+    assert len(downs) >= 1, "graceful shutdown must emit a 'down' status"
+    assert downs[-1]["exchange"] == "fake"
+
+
 def _resync_count(exchange: str, reason: str) -> float:
     from common.metrics import book_resyncs
     return book_resyncs.labels(exchange=exchange, reason=reason)._value.get()

@@ -78,7 +78,16 @@ export interface NBBOMsg {
   local_ts_ns: number;
 }
 
-export type StreamMsg = BookSnapshotMsg | BookDeltaMsg | TradeMsg | BBOMsg | NBBOMsg;
+// Per-exchange venue health from the ingester (md.status.<exchange>). Drives
+// connection-state leg eviction in the NBBO aggregator — see DESIGN_nbbo.md.
+export interface StatusMsg {
+  t: "status";
+  exchange: string;
+  state: "up" | "down";
+  ts_ns: number;
+}
+
+export type StreamMsg = BookSnapshotMsg | BookDeltaMsg | TradeMsg | BBOMsg | NBBOMsg | StatusMsg;
 
 // NOTE: *_ts_ns are epoch nanoseconds (~1.7e18), past Number.MAX_SAFE_INTEGER
 // (~9.0e15). JSON.parse rounds them to ~200ns granularity — negligible for the
@@ -105,4 +114,10 @@ export function bboTopic(exchange: string, symbol: string): string {
 // all topic-safe characters — no normalization required.
 export function nbboTopic(canonical_id: string): string {
   return `md.nbbo.${canonical_id}`;
+}
+
+// Per-exchange venue-health topic. Mirror of status_topic() in
+// python/common/kafka_io.py.
+export function statusTopic(exchange: string): string {
+  return `md.status.${exchange}`;
 }

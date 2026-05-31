@@ -77,3 +77,10 @@ export const nbboCrossed = new Counter({
   labelNames: ["canonical_id"] as const,
   registers: [registry],
 });
+
+export const venueUp = new Gauge({
+  name: "gateway_venue_up",
+  help: "Venue health from md.status.* / liveness timeout (1 up, 0 down)",
+  labelNames: ["exchange"] as const,
+  registers: [registry],
+});

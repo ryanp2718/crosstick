@@ -160,4 +160,70 @@ describe("NBBOAggregator", () => {
       expect(crossed!.best_ask.exchange).toBe("coinbase");
     });
   });
+
+  describe("venue-down eviction", () => {
+    it("evicts the down venue's leg, uncrossing a stale-leg cross", () => {
+      const agg = new NBBOAggregator();
+      agg.onBBO(BTC_USD, bbo("coinbase", "BTC-USD", "100", "1", "101", "1"), 1);
+      // kraken joins crossed: bid 102 > coinbase ask 101
+      const crossed = agg.onBBO(BTC_USD, bbo("kraken", "BTC/USD", "102", "1", "103", "1"), 2);
+      expect(crossed!.spread).toBe(-1);
+      expect(crossed!.best_bid.exchange).toBe("kraken");
+
+      const out = agg.setVenueDown("kraken", true, 3);
+      expect(out).toHaveLength(1);
+      expect(out[0].constituents).toEqual(["coinbase"]);
+      expect(out[0].best_bid.exchange).toBe("coinbase");
+      expect(out[0].best_ask.exchange).toBe("coinbase");
+      expect(out[0].spread).toBe(1); // 101 - 100, uncrossed
+    });
+
+    it("snapshot excludes down venues", () => {
+      const agg = new NBBOAggregator();
+      agg.onBBO(BTC_USD, bbo("coinbase", "BTC-USD", "100", "1", "101", "1"), 1);
+      agg.onBBO(BTC_USD, bbo("kraken", "BTC/USD", "102", "1", "103", "1"), 2);
+      agg.setVenueDown("kraken", true, 3);
+      const snap = agg.snapshot(4);
+      expect(snap).toHaveLength(1);
+      expect(snap[0].constituents).toEqual(["coinbase"]);
+      expect(snap[0].best_bid.exchange).toBe("coinbase");
+    });
+
+    it("setVenueDown(false) re-includes the venue's leg", () => {
+      const agg = new NBBOAggregator();
+      agg.onBBO(BTC_USD, bbo("coinbase", "BTC-USD", "100", "1", "101", "1"), 1);
+      agg.onBBO(BTC_USD, bbo("kraken", "BTC/USD", "102", "1", "103", "1"), 2);
+      agg.setVenueDown("kraken", true, 3);
+      const back = agg.setVenueDown("kraken", false, 4);
+      expect(back).toHaveLength(1);
+      expect(back[0].constituents.sort()).toEqual(["coinbase", "kraken"]);
+      expect(back[0].best_bid.exchange).toBe("kraken");
+      expect(back[0].spread).toBe(-1); // crossed again
+    });
+
+    it("returns [] for a venue with no legs", () => {
+      const agg = new NBBOAggregator();
+      agg.onBBO(BTC_USD, bbo("coinbase", "BTC-USD", "100", "1", "101", "1"), 1);
+      expect(agg.setVenueDown("binance", true, 2)).toEqual([]);
+    });
+
+    it("is idempotent — re-marking the current state returns []", () => {
+      const agg = new NBBOAggregator();
+      agg.onBBO(BTC_USD, bbo("coinbase", "BTC-USD", "100", "1", "101", "1"), 1);
+      agg.onBBO(BTC_USD, bbo("kraken", "BTC/USD", "102", "1", "103", "1"), 2);
+      expect(agg.setVenueDown("kraken", true, 3)).toHaveLength(1);
+      expect(agg.setVenueDown("kraken", true, 4)).toEqual([]); // already down
+    });
+
+    it("onBBO keeps a down venue excluded until it is marked back up", () => {
+      const agg = new NBBOAggregator();
+      agg.onBBO(BTC_USD, bbo("coinbase", "BTC-USD", "100", "1", "101", "1"), 1);
+      agg.onBBO(BTC_USD, bbo("kraken", "BTC/USD", "102", "1", "103", "1"), 2);
+      agg.setVenueDown("kraken", true, 3);
+      // fresh kraken quote arrives while still marked down → not in NBBO
+      const live = agg.onBBO(BTC_USD, bbo("kraken", "BTC/USD", "104", "1", "105", "1"), 4);
+      if (live) expect(live.constituents).toEqual(["coinbase"]);
+      expect(agg.snapshot(5)[0].constituents).toEqual(["coinbase"]);
+    });
+  });
 });

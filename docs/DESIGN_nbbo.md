@@ -95,6 +95,21 @@ consumer expects different behavior. Surfacing the age is honest; consumers
 with different tolerances (1s for HFT, 30s for dashboards) coexist without
 gateway changes.
 
+**Refinement (v1.1): connection-state eviction — NOT quote-age gating.** The
+above still holds for *quote freshness* (a quiet-but-live venue keeps its leg).
+But a stale leg from a **dead** ingester silently won the best slot and produced
+a persistent crossed NBBO (false arb) for hours in Phase-3 testing. The gateway
+cannot distinguish "venue quiet" from "venue dead" — it only sees `leg_age_ms`.
+The ingester can: it owns the WS connection. So ingesters now publish per-exchange
+liveness on `md.status.<exchange>` (heartbeat `up` while streaming; graceful
+`down` on shutdown), and the gateway **evicts a venue's legs from NBBO** on an
+explicit `down` or after `NBBO_LIVENESS_TIMEOUT_MS` (default 5s) with no
+heartbeat — which covers a crash/kill that emits no `down`. This is driven by
+real connection state, not a time-threshold on quotes, so it does not reintroduce
+the arbitrary gating rejected above. Evicted legs stay in the aggregator and
+rejoin automatically when the venue comes back. Consumers still get `leg_age_ms`
+for their own finer-grained freshness calls.
+
 ### Tie-break: larger size wins; alphabetical fallback
 
 When two venues quote the same best price on the same side, the venue with the
@@ -156,6 +171,24 @@ interface NBBOMsg {
 }
 ```
 
+### Venue-health status (v1.1)
+
+Ingesters publish per-exchange liveness to `md.status.<exchange>` (compacted,
+keyed by `exchange`); the gateway consumes it to drive connection-state leg
+eviction (see "Per-leg staleness is the consumer's call → Refinement").
+
+```ts
+interface StatusMsg {
+  t: 'status';
+  exchange: string;              // e.g. 'kraken'
+  state: 'up' | 'down';          // heartbeat while streaming; 'down' on graceful stop
+  ts_ns: number;                 // ingester emit time
+}
+```
+
+Mirrored Python type: `Status` in `python/common/models.py`; topic helpers
+`status_topic()` in `python/common/kafka_io.py` and `node/gateway/src/messages.ts`.
+
 ## Code architecture
 
 ```
@@ -209,8 +242,12 @@ side.
 ### Phase 3 — operational tests
 
 - Drop Kraken ingester mid-session → NBBO `leg_age_ms` for Kraken grows
-- Restart gateway → snapshot from compacted topic populates pre-startup state
-- Browser reconnect → NBBO snapshot replay works
+  (and, with v1.1 venue-health, the Kraken leg is evicted after the liveness
+  timeout and the book uncrosses). ✓ verified
+- Restart gateway → **external** consumers bootstrap current state from the
+  compacted `md.nbbo.*` topic; the gateway itself does NOT read `md.nbbo.*` back
+  — it re-derives NBBO purely from the live `md.book.*` log (Kappa-clean). ✓ verified
+- Browser reconnect → NBBO snapshot replay works (single- and two-leg). ✓ verified
 
 ## Out of scope (v1)
 
@@ -218,7 +255,9 @@ side.
   asked for
 - Liquidity-aggregated NBBO (`sum(sz)` across venues at top price) — separate
   analytic stream if asked for
-- Gateway-side staleness gating — surfacing `leg_age_ms` covers this
+- Gateway-side staleness gating *on quote age* — surfacing `leg_age_ms` covers
+  this. (Note: v1.1 adds *connection-state* eviction via `md.status.*`, which is
+  a liveness signal, not a quote-age threshold — see the Refinement above.)
 - Routing-grade NBBO (dedup on venue switches) — per-exchange BBO topics cover
   this consumer
 - Hot-reload of `instruments.yml` — gateway restart handles map changes for now

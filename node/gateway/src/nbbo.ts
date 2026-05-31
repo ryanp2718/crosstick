@@ -27,6 +27,9 @@ interface CanonicalState {
 
 export class NBBOAggregator {
   private readonly state = new Map<string, CanonicalState>();
+  // Venues evicted from NBBO computation on a connection-state signal (not a
+  // quote-age threshold). Legs stay in st.legs so a venue rejoins on recovery.
+  private readonly downVenues = new Set<string>();
 
   onBBO(canonical: CanonicalInstrument, msg: BBOMsg, nowMs: number = Date.now()): NBBOMsg | null {
     let st = this.state.get(canonical.canonical_id);
@@ -35,25 +38,51 @@ export class NBBOAggregator {
       this.state.set(canonical.canonical_id, st);
     }
     st.legs.set(msg.exchange, msg);
-    const computed = compute(st, nowMs);
+    const computed = compute(st, this.downVenues, nowMs);
     if (!computed) return null;
     if (st.lastTuple === computed.tuple) return null;
     st.lastTuple = computed.tuple;
     return computed.msg;
   }
 
+  // Mark a venue up/down. On an actual transition, recomputes every canonical
+  // holding a leg from that venue and returns the NBBOs to (re)publish — a
+  // constituents change is worth emitting even if the winning L1 is unchanged.
+  setVenueDown(exchange: string, down: boolean, nowMs: number = Date.now()): NBBOMsg[] {
+    if (down === this.downVenues.has(exchange)) return [];
+    if (down) this.downVenues.add(exchange);
+    else this.downVenues.delete(exchange);
+
+    const out: NBBOMsg[] = [];
+    for (const st of this.state.values()) {
+      if (!st.legs.has(exchange)) continue;
+      const computed = compute(st, this.downVenues, nowMs);
+      if (!computed) {
+        st.lastTuple = null; // no live legs left; reset so recovery re-emits
+        continue;
+      }
+      st.lastTuple = computed.tuple;
+      out.push(computed.msg);
+    }
+    return out;
+  }
+
   snapshot(nowMs: number = Date.now()): NBBOMsg[] {
     const out: NBBOMsg[] = [];
     for (const st of this.state.values()) {
-      const computed = compute(st, nowMs);
+      const computed = compute(st, this.downVenues, nowMs);
       if (computed) out.push(computed.msg);
     }
     return out;
   }
 }
 
-function compute(st: CanonicalState, nowMs: number): { msg: NBBOMsg; tuple: string } | null {
-  const exchanges = [...st.legs.keys()].sort();
+function compute(
+  st: CanonicalState,
+  downVenues: Set<string>,
+  nowMs: number,
+): { msg: NBBOMsg; tuple: string } | null {
+  const exchanges = [...st.legs.keys()].filter((ex) => !downVenues.has(ex)).sort();
   let bestBidLeg: BBOMsg | null = null;
   let bestAskLeg: BBOMsg | null = null;
   for (const ex of exchanges) {

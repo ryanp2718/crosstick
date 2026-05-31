@@ -11,6 +11,10 @@ const state = new Map(); // key -> { bbo, rowEl, prevBid, prevAsk }
 const nbboState = new Map(); // canonical_id -> { nbbo, rowEl }
 let msgCount = 0;
 
+// Grey an NBBO leg whose winning quote is older than this — a consumer-side
+// staleness call (the gateway never drops a stale leg; see DESIGN_nbbo.md).
+const STALE_MS = 3000;
+
 function key(b) { return `${b.exchange}|${b.symbol}`; }
 
 function fmt(s, places = 2) {
@@ -116,6 +120,7 @@ function applyNbbo(nbbo) {
   const spreadCell = st.rowEl.children[7];
   spreadCell.textContent = fmt(nbbo.spread.toString(), 4);
   spreadCell.className = `num ${nbbo.spread < 0 ? "spread-neg" : "spread-pos"}`;
+  spreadCell.title = nbbo.spread < 0 ? "crossed — check leg age (possible stale venue)" : "";
   st.rowEl.children[8].textContent = fmt(nbbo.mid.toString());
   st.rowEl.children[9].textContent = nbbo.constituents.join(",");
   st.nbbo = nbbo;
@@ -124,10 +129,21 @@ function applyNbbo(nbbo) {
 // Age-column tick. Always-ms format keeps the cell width stable (fixed col in
 // HTML); ages >9999ms overflow visibly, which is the right signal that
 // something upstream is actually slow.
+function setStale(cells, stale) {
+  for (const c of cells) c.classList.toggle("stale", stale);
+}
+
 setInterval(() => {
   for (const st of state.values()) {
     if (!st.bbo) continue;
     st.rowEl.children[8].textContent = `${ageMs(st.bbo.local_ts_ns).toFixed(0)}ms`;
+  }
+  // Grey each NBBO leg live as its winning quote ages, even with no new NBBO.
+  for (const st of nbboState.values()) {
+    if (!st.nbbo) continue;
+    const c = st.rowEl.children;
+    setStale([c[1], c[2], c[3]], ageMs(st.nbbo.best_bid.leg_ts_ns) > STALE_MS);
+    setStale([c[4], c[5], c[6]], ageMs(st.nbbo.best_ask.leg_ts_ns) > STALE_MS);
   }
   meta.textContent = `${state.size} bbo · ${nbboState.size} nbbo · ${msgCount} msgs`;
 }, 100);

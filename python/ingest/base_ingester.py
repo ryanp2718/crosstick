@@ -21,6 +21,7 @@ On `asyncio.QueueFull` we close the WS and let the connect-loop resync — see
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import enum
 import logging
 import time
@@ -34,7 +35,7 @@ import websockets.exceptions
 from aiokafka import AIOKafkaProducer
 
 from common.backoff import FullJitterBackoff
-from common.kafka_io import latency_headers
+from common.kafka_io import latency_headers, status_topic
 from common.metrics import (
     book_resyncs,
     book_state,
@@ -44,7 +45,7 @@ from common.metrics import (
     queue_depth,
     ws_reconnects,
 )
-from common.models import encode
+from common.models import Status, encode
 from common.ratelimit import AsyncTokenBucket
 from ingest.book import BookInvariantError, OrderBook
 
@@ -162,6 +163,7 @@ class BaseIngester(ABC):
         ping_timeout: float | None = 10.0,
         ws_max_size: int = 2**22,
         stale_timeout: float | None = None,
+        heartbeat_s: float = 2.0,
     ) -> None:
         self.exchange = exchange
         self.symbols = list(symbols)
@@ -180,6 +182,11 @@ class BaseIngester(ABC):
         # within this many seconds. None disables it (relies on ping/pong only).
         self.stale_timeout = stale_timeout
         self._last_msg_monotonic: float = 0.0
+        # Venue-health heartbeat: emit 'up' on md.status.<exchange> every
+        # heartbeat_s while streaming so the gateway can tell "alive" from a
+        # crashed ingester (which sends no graceful 'down'). See common.models.Status.
+        self.heartbeat_s = heartbeat_s
+        self._connected = False
 
         # Per-symbol context.
         self.contexts: dict[str, SymbolContext] = {
@@ -238,30 +245,61 @@ class BaseIngester(ABC):
         """Main loop. Returns when shutdown() is called and any in-flight
         connection cleanly closes."""
         log.info("ingester start: exchange=%s symbols=%s", self.exchange, self.symbols)
-        while not self._shutdown.is_set():
-            try:
-                await self._connect_and_stream()
-            except asyncio.CancelledError:
-                raise
-            except websockets.exceptions.ConnectionClosed as e:
-                log.warning("ws closed: %s", e)
-                ws_reconnects.labels(exchange=self.exchange, reason="closed").inc()
-            except Exception as e:
-                log.exception("ws loop error: %s", e)
-                ws_reconnects.labels(exchange=self.exchange, reason="error").inc()
-            finally:
-                self._mark_all_stale("connection_lost")
+        heartbeat = asyncio.create_task(self._heartbeat_loop(), name="ingest-heartbeat")
+        try:
+            while not self._shutdown.is_set():
+                try:
+                    await self._connect_and_stream()
+                except asyncio.CancelledError:
+                    raise
+                except websockets.exceptions.ConnectionClosed as e:
+                    log.warning("ws closed: %s", e)
+                    ws_reconnects.labels(exchange=self.exchange, reason="closed").inc()
+                except Exception as e:
+                    log.exception("ws loop error: %s", e)
+                    ws_reconnects.labels(exchange=self.exchange, reason="error").inc()
+                finally:
+                    self._mark_all_stale("connection_lost")
 
-            if self._shutdown.is_set():
-                break
-            delay = await self.backoff.sleep()
-            log.info("reconnect after %.2fs (attempt %d)", delay, self.backoff.attempt)
+                if self._shutdown.is_set():
+                    break
+                delay = await self.backoff.sleep()
+                log.info("reconnect after %.2fs (attempt %d)", delay, self.backoff.attempt)
+        finally:
+            heartbeat.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await heartbeat
+            # Best-effort graceful 'down' so the gateway evicts us immediately
+            # instead of waiting out its liveness timeout.
+            await self._send_status("down")
 
     async def shutdown(self) -> None:
         log.info("ingester shutdown requested")
         self._shutdown.set()
 
     # ─── internals ─────────────────────────────────────────────────────────
+
+    async def _send_status(self, state: str) -> None:
+        """Publish a venue-health status to md.status.<exchange>, keyed by
+        exchange. send_and_wait (not pipelined send) because these are rare and
+        we want the 'down' delivered before shutdown completes. Best-effort: a
+        failure here must not crash the ingester."""
+        try:
+            await self.producer.send_and_wait(
+                status_topic(self.exchange),
+                encode(Status(exchange=self.exchange, state=state, ts_ns=time.time_ns())),
+                key=self.exchange.encode(),
+            )
+        except Exception as e:  # noqa: BLE001 - liveness signal is best-effort
+            log.warning("status %s send failed: %s", state, e)
+
+    async def _heartbeat_loop(self) -> None:
+        """Emit an 'up' heartbeat every heartbeat_s while connected. Pauses
+        (no send) during reconnect/backoff so a missed beat means truly down."""
+        while not self._shutdown.is_set():
+            await asyncio.sleep(self.heartbeat_s)
+            if self._connected:
+                await self._send_status("up")
 
     def _mark_all_stale(self, reason: str) -> None:
         counter = book_resyncs.labels(exchange=self.exchange, reason=reason)
@@ -359,6 +397,11 @@ class BaseIngester(ABC):
                     log.error("additional bootstrap failure (suppressed): %s", exc)
                 raise failures[0]
 
+            # Streaming now: announce liveness immediately; the heartbeat loop
+            # keeps it fresh. Cleared in the finally below on any teardown.
+            self._connected = True
+            await self._send_status("up")
+
             reader_task = asyncio.create_task(self._reader(ws), name="ingest-reader")
             applier_task = asyncio.create_task(self._applier(), name="ingest-applier")
             shutdown_task = asyncio.create_task(
@@ -402,6 +445,7 @@ class BaseIngester(ABC):
                     if exc is not None and not isinstance(exc, asyncio.CancelledError):
                         raise exc
             finally:
+                self._connected = False
                 for t in tasks | {shutdown_task}:
                     if not t.done():
                         t.cancel()
