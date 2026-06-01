@@ -38,3 +38,6 @@ redis-data/
 
 # Logs
 *.log
+
+# Agent resume doc (local-only)
+HANDOFF.md
