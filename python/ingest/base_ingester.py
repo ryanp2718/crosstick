@@ -290,7 +290,7 @@ class BaseIngester(ABC):
                 encode(Status(exchange=self.exchange, state=state, ts_ns=time.time_ns())),
                 key=self.exchange.encode(),
             )
-        except Exception as e:  # noqa: BLE001 - liveness signal is best-effort
+        except Exception as e:
             log.warning("status %s send failed: %s", state, e)
 
     async def _heartbeat_loop(self) -> None:

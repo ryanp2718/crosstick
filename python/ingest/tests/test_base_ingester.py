@@ -796,7 +796,8 @@ async def test_base_emit_callback_does_not_cross_connections() -> None:
     pending: asyncio.Future = asyncio.get_running_loop().create_future()
 
     class StagedProducer:
-        sent: list[tuple[str, bytes]] = []
+        def __init__(self) -> None:
+            self.sent: list[tuple[str, bytes]] = []
 
         async def send(self, topic: str, value: bytes, **kw: object) -> asyncio.Future:
             self.sent.append((topic, value))
