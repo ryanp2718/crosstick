@@ -2,8 +2,8 @@
 
 **Real-time, cross-exchange cryptocurrency market-data platform.** Reconstructs
 full L2 order books from Coinbase, Binance, and Kraken, derives a live
-cross-exchange NBBO, and is built on a Kappa architecture where every derived
-stream is a replayable function of one durable log.
+cross-exchange NBBO, on a Kappa-shaped architecture with Redpanda as the single
+durable log and source of truth.
 
 > Status: the real-time half (ingest → transport → gateway → NBBO → dashboard) is
 > built and validated against live exchange data. The analytics half (lake,
@@ -41,10 +41,13 @@ stream is a replayable function of one durable log.
 
 ## Why it's interesting
 
-- **Kappa, replayable by construction.** Redpanda is the single source of truth;
-  every derived stream (`md.bbo.*`, `md.nbbo.*`) is a pure function of the raw
-  `md.book.*` log, so the gateway *re-derives* its state from the log on restart
-  rather than trusting a cache.
+- **Kappa-shaped, replayable topics.** Redpanda is the single source of truth, and
+  the per-venue `md.bbo.*` stream is a pure function of the raw `md.book.*` log. Two
+  caveats stated honestly: the cross-venue `md.nbbo.*` folds wall-clock venue-eviction
+  timing into its output, so it is not yet bit-reproducible under replay; and on
+  restart the gateway re-warms from the live edge (snapshot-offset seek is a roadmap
+  item), not a full log replay. The replayable spine is real — these two gaps are
+  tracked in [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md), not hidden.
 - **Real L2 order-book reconstruction.** Bounded-depth books per venue
   (`SortedDict`), CRC32 checksum validation against the exchange, and
   sequence-gap detection with buffering + resync — driven by a
@@ -61,7 +64,8 @@ stream is a replayable function of one durable log.
   are bounded; a slow consumer is dropped rather than allowed to stall fan-out
   for everyone.
 - **An honest size ceiling.** An 8 MiB limit is enforced end-to-end (producer →
-  broker → consumer); Coinbase's full L2 snapshot is ~1.1 MiB, so oversize fails
+  broker → consumer); Coinbase's re-encoded L2 snapshot message runs ~1.1 MiB at
+  current depth (the raw full-depth WS frame is larger, ~5 MiB), so oversize fails
   loudly instead of silently truncating.
 - **Observability first-class.** Prometheus metrics on every component, with a
   provisioned Grafana ops dashboard.
@@ -77,6 +81,7 @@ stream is a replayable function of one durable log.
 - [x] Venue-health liveness + NBBO leg eviction
 - [x] Browser dashboard — staleness-aware greying + crossed-book warnings
 - [x] Prometheus + Grafana ops dashboard
+- [x] CI gate (GitHub Actions) — vitest, pytest, ruff, tsc on push/PR
 
 **Roadmap (the analytics half of the diagram)**
 
@@ -85,7 +90,7 @@ stream is a replayable function of one durable log.
 - [ ] PySpark daily long-horizon roll-ups
 - [ ] Grafana board #2 (business metrics)
 - [ ] Airflow orchestration
-- [ ] CI (GitHub Actions) + cross-process integration harness
+- [ ] Cross-process integration harness (the biggest remaining test gap)
 
 ## Tech stack
 
@@ -107,7 +112,7 @@ python/            ingesters + analytics (uv-managed)
 node/gateway/      kafkajs → ws gateway: BBO, NBBO, backpressure (src/, test/)
 dashboard/         static WS client, served by the gateway
 ops/               instruments.yml, prometheus.yml, grafana provisioning
-docs/              design docs (DESIGN_nbbo.md, scale-out.md)
+docs/              design docs (ARCHITECTURE.md, DESIGN_nbbo.md, scale-out.md)
 docker-compose.yml redpanda, prometheus, grafana, ingesters, materializer, gateway
 ```
 
@@ -149,6 +154,8 @@ cd python; .venv\Scripts\python.exe -m pytest -q      # pytest — 120 tests
 
 The *why* behind the architecture lives in [`docs/`](docs/):
 
+- [`ARCHITECTURE.md`](docs/ARCHITECTURE.md) — system-wide stock-take: the
+  load-bearing decisions, the honest Kappa caveats, and the analytics-half spec
 - [`DESIGN_nbbo.md`](docs/DESIGN_nbbo.md) — cross-exchange NBBO: strict quote
   bucketing, tie-breaks, per-leg staleness, and connection-state venue eviction
 - [`scale-out.md`](docs/scale-out.md) — scaling the pipeline horizontally

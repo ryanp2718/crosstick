@@ -119,8 +119,8 @@ function applyNbbo(nbbo) {
   st.rowEl.children[6].textContent = nbbo.best_ask.exchange;
   const spreadCell = st.rowEl.children[7];
   spreadCell.textContent = fmt(nbbo.spread.toString(), 4);
-  spreadCell.className = `num ${nbbo.spread < 0 ? "spread-neg" : "spread-pos"}`;
-  spreadCell.title = nbbo.spread < 0 ? "crossed — check leg age (possible stale venue)" : "";
+  spreadCell.className = `num ${nbbo.crossed ? "spread-neg" : "spread-pos"}`;
+  spreadCell.title = nbbo.crossed ? "crossed — check leg age (possible stale venue)" : "";
   st.rowEl.children[8].textContent = fmt(nbbo.mid.toString());
   st.rowEl.children[9].textContent = nbbo.constituents.join(",");
   st.nbbo = nbbo;

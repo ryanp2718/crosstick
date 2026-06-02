@@ -1,5 +1,5 @@
 [project]
-name = "crypto-md"
+name = "crosstick"
 version = "0.1.0"
 description = "Polyglot crypto market-data ingest + analytics platform"
 requires-python = ">=3.11"

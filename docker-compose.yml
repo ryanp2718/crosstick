@@ -1,4 +1,4 @@
-name: crypto-md
+name: crosstick
 
 # Kappa architecture: Redpanda topics = source of truth.
 # Materializer projects topics to Parquet on MinIO; warehouse (DuckDB + dbt)

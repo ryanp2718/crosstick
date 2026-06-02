@@ -1,4 +1,5 @@
 import type { CanonicalInstrument } from "./canonical.js";
+import { cmpDecimal } from "./decimal.js";
 import type { BBOMsg, NBBOLeg, NBBOMsg } from "./messages.js";
 
 // Per-canonical_id NBBO aggregation. Caller is responsible for resolving an
@@ -93,6 +94,8 @@ function compute(
   if (!bestBidLeg || !bestAskLeg) return null;
 
   const tuple = `${bestBidLeg.bid_px}|${bestBidLeg.bid_sz}|${bestAskLeg.ask_px}|${bestAskLeg.ask_sz}`;
+  // Exact decimal compare, not Number(ask)-Number(bid) < 0 (float epsilon false-cross).
+  const crossed = cmpDecimal(bestAskLeg.ask_px, bestBidLeg.bid_px) < 0;
   const bid_px = Number(bestBidLeg.bid_px);
   const ask_px = Number(bestAskLeg.ask_px);
   const msg: NBBOMsg = {
@@ -102,6 +105,7 @@ function compute(
     quote: st.canonical.quote,
     best_bid: legFor(bestBidLeg, "bid", nowMs),
     best_ask: legFor(bestAskLeg, "ask", nowMs),
+    crossed,
     spread: ask_px - bid_px,
     mid: (ask_px + bid_px) / 2,
     constituents: exchanges,
@@ -114,22 +118,20 @@ function compute(
 // exchange. Caller iterates exchanges already sorted alphabetically and only
 // replaces on strict win, so alphabetical fallback is implicit (first wins).
 function beatsBid(candidate: BBOMsg, incumbent: BBOMsg): boolean {
-  const cp = Number(candidate.bid_px);
-  const ip = Number(incumbent.bid_px);
-  if (cp !== ip) return cp > ip;
-  return Number(candidate.bid_sz) > Number(incumbent.bid_sz);
+  const c = cmpDecimal(candidate.bid_px, incumbent.bid_px);
+  if (c !== 0) return c > 0;
+  return cmpDecimal(candidate.bid_sz, incumbent.bid_sz) > 0;
 }
 
 function beatsAsk(candidate: BBOMsg, incumbent: BBOMsg): boolean {
-  const cp = Number(candidate.ask_px);
-  const ip = Number(incumbent.ask_px);
-  if (cp !== ip) return cp < ip;
-  return Number(candidate.ask_sz) > Number(incumbent.ask_sz);
+  const c = cmpDecimal(candidate.ask_px, incumbent.ask_px);
+  if (c !== 0) return c < 0;
+  return cmpDecimal(candidate.ask_sz, incumbent.ask_sz) > 0;
 }
 
 function legFor(src: BBOMsg, side: "bid" | "ask", nowMs: number): NBBOLeg {
-  const px = side === "bid" ? Number(src.bid_px) : Number(src.ask_px);
-  const sz = side === "bid" ? Number(src.bid_sz) : Number(src.ask_sz);
+  const px = side === "bid" ? src.bid_px : src.ask_px;
+  const sz = side === "bid" ? src.bid_sz : src.ask_sz;
   return {
     px,
     sz,

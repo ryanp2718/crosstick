@@ -51,8 +51,8 @@ describe("NBBOAggregator", () => {
         spread: 1,
         mid: 100.5,
       });
-      expect(nbbo!.best_bid).toMatchObject({ px: 100, sz: 1, exchange: "coinbase" });
-      expect(nbbo!.best_ask).toMatchObject({ px: 101, sz: 2, exchange: "coinbase" });
+      expect(nbbo!.best_bid).toMatchObject({ px: "100", sz: "1", exchange: "coinbase" });
+      expect(nbbo!.best_ask).toMatchObject({ px: "101", sz: "2", exchange: "coinbase" });
     });
 
     it("dedupes when the same BBO is fed twice", () => {
@@ -68,7 +68,7 @@ describe("NBBOAggregator", () => {
       agg.onBBO(BTC_USD, bbo("coinbase", "BTC-USD", "100", "1", "101", "2"), 1);
       const next = agg.onBBO(BTC_USD, bbo("coinbase", "BTC-USD", "100", "3", "101", "2"), 2);
       expect(next).not.toBeNull();
-      expect(next!.best_bid.sz).toBe(3);
+      expect(next!.best_bid.sz).toBe("3");
     });
   });
 
@@ -78,8 +78,8 @@ describe("NBBOAggregator", () => {
       agg.onBBO(BTC_USD, bbo("coinbase", "BTC-USD", "100.0", "1", "101.0", "1"), 1);
       const nbbo = agg.onBBO(BTC_USD, bbo("kraken", "BTC/USD", "100.5", "1", "100.9", "1"), 2);
       expect(nbbo).not.toBeNull();
-      expect(nbbo!.best_bid).toMatchObject({ px: 100.5, exchange: "kraken" });
-      expect(nbbo!.best_ask).toMatchObject({ px: 100.9, exchange: "kraken" });
+      expect(nbbo!.best_bid).toMatchObject({ px: "100.5", exchange: "kraken" });
+      expect(nbbo!.best_ask).toMatchObject({ px: "100.9", exchange: "kraken" });
       expect(nbbo!.constituents.sort()).toEqual(["coinbase", "kraken"]);
     });
 
@@ -102,7 +102,7 @@ describe("NBBOAggregator", () => {
       const agg = new NBBOAggregator();
       agg.onBBO(BTC_USD, bbo("coinbase", "BTC-USD", "100", "1", "200", "1"), 1);
       const nbbo = agg.onBBO(BTC_USD, bbo("kraken", "BTC/USD", "100", "5", "200", "1"), 2);
-      expect(nbbo!.best_bid).toMatchObject({ exchange: "kraken", sz: 5 });
+      expect(nbbo!.best_bid).toMatchObject({ exchange: "kraken", sz: "5" });
     });
 
     it("alphabetical exchange wins on same price and size (visible via snapshot)", () => {
@@ -156,8 +156,34 @@ describe("NBBOAggregator", () => {
       expect(crossed).not.toBeNull();
       // best_bid = kraken@102, best_ask = coinbase@101 → spread = -1
       expect(crossed!.spread).toBe(-1);
+      expect(crossed!.crossed).toBe(true);
       expect(crossed!.best_bid.exchange).toBe("kraken");
       expect(crossed!.best_ask.exchange).toBe("coinbase");
+    });
+  });
+
+  describe("exact decimal handling", () => {
+    it("passes leg px/sz through as lossless strings (no Number() rounding)", () => {
+      const agg = new NBBOAggregator();
+      // 1e8 + 1e-8 exceeds float64's ~15-16 sig digits; Number() drops the
+      // trailing 1. Verbatim strings keep it exact for the downstream warehouse.
+      const px = "100000000.00000001";
+      const nbbo = agg.onBBO(
+        BTC_USD,
+        bbo("coinbase", "BTC-USD", px, "0.10000000", "100000000.00000002", "0.20000000"),
+        1,
+      );
+      expect(nbbo!.best_bid.px).toBe(px);
+      expect(nbbo!.best_bid.sz).toBe("0.10000000");
+      expect(nbbo!.crossed).toBe(false);
+    });
+
+    it("flags crossed via exact comparison and clears it when uncrossed", () => {
+      const agg = new NBBOAggregator();
+      const uncrossed = agg.onBBO(BTC_USD, bbo("coinbase", "BTC-USD", "100", "1", "101", "1"), 1);
+      expect(uncrossed!.crossed).toBe(false);
+      const crossed = agg.onBBO(BTC_USD, bbo("kraken", "BTC/USD", "102", "1", "103", "1"), 2);
+      expect(crossed!.crossed).toBe(true);
     });
   });
 

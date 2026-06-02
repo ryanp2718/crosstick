@@ -1,9 +1,8 @@
-// Exact ordering for non-negative decimal *price* strings, without floats.
+// Exact ordering for non-negative decimal strings (prices and sizes), no floats.
 //
-// Prices arrive as strings ("45285.2", "0.05005"). Parsing to a JS number would
-// risk precision loss on long fractions, so levels are sorted by comparing the
-// raw digits. Sizes are never compared — only stored and emitted verbatim — so
-// they never go through here.
+// Values arrive as strings ("45285.2", "0.05005"). Parsing to a JS number would
+// risk precision loss on long fractions, so they are compared by raw digits.
+// Used for book-level ordering and NBBO winner + size-tie-break selection.
 export function cmpDecimal(a: string, b: string): number {
   const dotA = a.indexOf(".");
   const dotB = b.indexOf(".");
