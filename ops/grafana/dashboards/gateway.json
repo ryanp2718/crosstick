@@ -7,7 +7,7 @@
   "refresh": "5s",
   "time": { "from": "now-15m", "to": "now" },
   "timepicker": {},
-  "tags": ["gateway", "crypto-md"],
+  "tags": ["gateway", "crosstick"],
   "panels": [
     {
       "id": 1,
