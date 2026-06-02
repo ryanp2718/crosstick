@@ -203,7 +203,7 @@ async function main(): Promise<void> {
   // Reused by the live book path and by status-driven recompute.
   const emitNbbo = (nbbo: NBBOMsg): void => {
     nbboConstituents.set({ canonical_id: nbbo.canonical_id }, nbbo.constituents.length);
-    if (nbbo.spread < 0) nbboCrossed.inc({ canonical_id: nbbo.canonical_id });
+    if (nbbo.crossed) nbboCrossed.inc({ canonical_id: nbbo.canonical_id });
     bboInflight.inc();
     const p: Promise<unknown> = producer
       .send({

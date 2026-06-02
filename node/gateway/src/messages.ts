@@ -55,11 +55,11 @@ export interface BBOMsg {
 // Cross-exchange NBBO, published to md.nbbo.<canonical_id> and broadcast on WS.
 // Per-leg ts/age surface staleness for consumers to filter at their own
 // threshold (see docs/DESIGN_nbbo.md "Per-leg staleness is the consumer's
-// call"). px/sz are JS numbers — single-exchange BBO topics carry the
-// string-precise values for consumers that need them.
+// call"). px/sz are the exact source decimal strings, passed through verbatim
+// (lossless) so the md.nbbo log feeds downstream exact-decimal arithmetic.
 export interface NBBOLeg {
-  px: number;
-  sz: number;
+  px: string;
+  sz: string;
   exchange: string;
   leg_ts_ns: number;
   leg_age_ms: number;
@@ -72,6 +72,8 @@ export interface NBBOMsg {
   quote: string;
   best_bid: NBBOLeg;
   best_ask: NBBOLeg;
+  // Exact cmpDecimal(ask,bid) < 0 — not the float spread (epsilon false-positives).
+  crossed: boolean;
   spread: number;
   mid: number;
   constituents: string[];
