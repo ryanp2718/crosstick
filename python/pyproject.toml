@@ -20,12 +20,19 @@ dev = [
     "pytest==9.0.3",
     "pytest-asyncio==1.3.0",
     "ruff==0.15.13",
+    "testcontainers==4.14.2",
 ]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["ingest/tests", "analytics/tests"]
 pythonpath = ["."]
+# Integration tests need Docker (testcontainers); excluded by default so the
+# unit suite stays fast. CI runs them in a separate job via `-m integration`.
+addopts = "-m 'not integration'"
+markers = [
+    "integration: requires Docker (testcontainers); run with -m integration",
+]
 
 [tool.ruff]
 line-length = 100
