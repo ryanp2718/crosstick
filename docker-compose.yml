@@ -157,30 +157,33 @@ services:
     restart: unless-stopped
 
   # ─── stream materializer (Kappa: stream → Parquet projection) ─────────────
-  # Disabled until Phase 1: materializer.main does not exist yet, so this
-  # service crash-loops under `restart: unless-stopped`. Re-enable when it lands.
-  # materializer:
-  #   build:
-  #     context: ./python
-  #     dockerfile: Dockerfile
-  #   command: ["python", "-m", "materializer.main"]
-  #   environment:
-  #     KAFKA_BROKERS: redpanda:9092
-  #     S3_ENDPOINT: http://minio:9000
-  #     S3_ACCESS_KEY: minio
-  #     S3_SECRET_KEY: minio12345
-  #     S3_BUCKET: lake
-  #     METRICS_PORT: "9110"
-  #     FLUSH_INTERVAL_SEC: "60"
-  #     FLUSH_BYTES: "16777216"   # 16 MiB
-  #   ports:
-  #     - "9110:9110"
-  #   depends_on:
-  #     redpanda:
-  #       condition: service_healthy
-  #     minio:
-  #       condition: service_healthy
-  #   restart: unless-stopped
+  materializer:
+    build:
+      context: ./python
+      dockerfile: Dockerfile
+    command: ["python", "-m", "materializer.main"]
+    environment:
+      KAFKA_BROKERS: redpanda:9092
+      S3_ENDPOINT: http://minio:9000
+      S3_ACCESS_KEY: minio
+      S3_SECRET_KEY: minio12345
+      S3_BUCKET: lake
+      INSTRUMENTS_FILE: /app/ops/instruments.yml
+      METRICS_PORT: "9110"
+      # Size-dominant flush: the interval is the bronze-lag bound for cold
+      # topics, not the primary trigger (DESIGN_analytics.md → Partitioning).
+      FLUSH_INTERVAL_SEC: "900"
+      FLUSH_BYTES: "16777216"   # 16 MiB
+    volumes:
+      - ./ops/instruments.yml:/app/ops/instruments.yml:ro
+    ports:
+      - "9110:9110"
+    depends_on:
+      redpanda:
+        condition: service_healthy
+      minio-init:
+        condition: service_completed_successfully
+    restart: unless-stopped
 
   # ─── Node gateway: fanout + live BBO/spread derivation ────────────────────
   gateway:
