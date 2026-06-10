@@ -50,3 +50,33 @@ jobs:
       - run: uv sync --frozen
       - run: uv run ruff check .
       - run: uv run pytest -q
+
+  # Replay harness: testcontainers Redpanda + the real Node gateway in the loop.
+  # Needs Docker (present on ubuntu runners) and the gateway's node_modules
+  # (the test builds dist/ itself via the installed tsc).
+  integration:
+    name: integration (replay harness)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          package_json_file: node/gateway/package.json
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: node/gateway/pnpm-lock.yaml
+      - run: pnpm install --frozen-lockfile
+        working-directory: node/gateway
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+          cache-dependency-glob: python/uv.lock
+          python-version: "3.12"
+      - run: uv sync --frozen
+        working-directory: python
+      # CLI -m overrides the default `-m 'not integration'` in addopts.
+      - run: uv run pytest -q -m integration
+        working-directory: python
