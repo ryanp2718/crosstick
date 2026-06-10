@@ -167,9 +167,10 @@ migration. *Refactor session.*
 ## D7 — Documentation drift
 
 **Finding & decision.**
-- `kafka_io.py` cites `docs/data-contracts.md`, which does not exist (only
-  `DESIGN_nbbo.md`, `scale-out.md`, this file). Write `data-contracts.md` (natural
-  home for the topic/schema contract) or fix the reference.
+- **Resolved:** `data-contracts.md` now exists (topics, payloads, keys, headers,
+  retention, corpus format). The false "native symbol preserved as a record
+  header" claim in `kafka_io.py` was fixed at the same time (it lives in the
+  message body's `symbol` field).
 - Coinbase snapshot size is quoted as **~1.1 MiB** (`kafka_io.py`, `server.ts`)
   and **~5 MiB** (`base_ingester.py`). These measure different things — re-encoded
   Kafka message at current depth vs. raw full-depth WS frame — say so.

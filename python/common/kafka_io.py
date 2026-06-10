@@ -7,8 +7,8 @@ Topic naming conventions (documented in `docs/data-contracts.md`):
 - md.bbo.{exchange}.{symbol}           (published by gateway)
 
 Symbols are normalized: '/' is replaced with '-' (Kafka disallows '/' in topic
-names). The native exchange symbol form is preserved as a record header for
-downstream consumers that need to round-trip it.
+names). The native exchange symbol form is preserved in the message body (the
+`symbol` field) for downstream consumers that need to round-trip it.
 """
 from __future__ import annotations
 
