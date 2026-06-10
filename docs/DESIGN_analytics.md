@@ -5,11 +5,12 @@ streaming spine (ingest → Redpanda → gateway → NBBO) feeds. Companion to
 `ARCHITECTURE.md` (→ "The analytics seam", D1–D7), `DESIGN_nbbo.md` (NBBO
 semantics, strict per-quote bucketing, `instruments.yml`), and `scale-out.md`.
 
-Status: **design, pre-build.** The compose file already scaffolds this half
-(`materializer` service, `lake`/`silver`/`gold` MinIO buckets, "DuckDB + dbt"
-warehouse, `airflow + spark` pencilled in), but `python/materializer/` does not
-exist and `python/analytics/` is package stubs. This doc specifies what gets
-built and records the decisions + open concerns so the "why" survives.
+Status: **Phases 0–1 built.** Phase 0 (golden corpus + capture/replay +
+testcontainers harness) and Phase 1 (`python/materializer` → bronze Parquet on
+MinIO, exactly-once via start-offset object keys) are implemented and
+integration-tested; the lake/topic contract lives in `data-contracts.md`.
+Phases 2+ remain design. This doc records the decisions + open concerns so the
+"why" survives.
 
 ## Goal
 
@@ -77,11 +78,18 @@ loses the catalog-free property. Keep bronze dumb.
 *after* the Parquet PUT). That gives **at-least-once**: a crash between PUT and
 offset-commit re-reads and re-PUTs the same batch.
 
-- **Decision:** name each object deterministically from its offset range —
-  `{topic}/{partition}/{start_offset}-{end_offset}.parquet` — so a re-PUT
-  **overwrites the identical key** rather than appending a duplicate. That turns
-  at-least-once into effectively exactly-once *at the file grain*, with no
-  downstream dedup needed for bronze.
+- **Decision (refined at build time):** name each object deterministically by
+  its **start offset only** — `…/{partition:03d}-{start_offset:012d}.parquet` —
+  so a re-PUT **overwrites the identical key** rather than appending a
+  duplicate. The originally sketched `{start}-{end}` range key is *not* safely
+  deterministic: a chunk's end offset depends on the wall-clock age flush, so a
+  crash-retry could cut at a different end and leave an overlapping stale
+  object. The start offset is always the committed consumer offset (and the
+  materializer keeps at most one PUT un-committed), so start-only keys make the
+  overwrite exact — the Kafka Connect S3-sink convention. End offset + count
+  live in the Parquet footer metadata. That turns at-least-once into
+  effectively exactly-once *at the file grain*, with no downstream dedup needed
+  for bronze. Layout details: `data-contracts.md` → "Bronze lake".
 - Silver transforms additionally dedup on a natural key
   (`exchange, symbol, sequence` for book events; `exchange, trade_id` for trades)
   as defence in depth.
@@ -304,9 +312,8 @@ Genuinely unresolved — flagged for verification / decision, not yet locked.
    Iceberg compaction; size-dominant flush + coarse partitioning for cold symbols
    mitigates but doesn't fully solve. Revisit if cold-symbol file counts bite.
 
-7. **`docs/data-contracts.md` is missing** (`ARCHITECTURE.md` D7): `kafka_io.py`
-   cites it but it doesn't exist. The lake/topic schema contract needs a home —
-   either write `data-contracts.md` or fold the contract here. Cleanup.
+7. **Resolved:** `data-contracts.md` now exists and is the home for the
+   topic/payload/bronze-lake/corpus contract (`ARCHITECTURE.md` D7).
 
 8. **Replay determinism depends on the D1/D2 refactor.** The Phase-3
    byte-identical acceptance test cannot pass until wall-clock eviction (D1) and

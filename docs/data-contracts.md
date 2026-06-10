@@ -77,6 +77,44 @@ Firehose records (book + trades) carry latency-tracking headers
 
 Status and gateway-derived records (bbo/nbbo) carry no headers.
 
+## Bronze lake (materializer)
+
+The materializer (`python/materializer`) projects every `md.*` topic verbatim
+to Parquet on the `lake` bucket — the insurance layer of the medallion plan
+(`DESIGN_analytics.md`). Object paths are Hive-partitioned, canonical-resolved
+via `ops/instruments.yml`:
+
+| Dataset | Source topics | Path |
+|---|---|---|
+| `book_snapshots`, `book_deltas` | `md.book.*` | `{dataset}/exchange={ex}/symbol={canonical}/date={YYYY-MM-DD}/` |
+| `trades` | `md.trades.*` | same |
+| `bbo` | `md.bbo.*` | same |
+| `status` | `md.status.*` | `status/exchange={ex}/date=…/` |
+| `nbbo` | `md.nbbo.*` | `nbbo/symbol={canonical}/date=…/` |
+
+- **Object naming:** `{partition:03d}-{start_offset:012d}.parquet` — keyed by
+  the chunk's **start offset only** (Kafka Connect S3-sink convention). The
+  end offset of a chunk is wall-clock-dependent (the age flush), but the start
+  is always the committed consumer offset — so a crash-retry rewrites the
+  *identical* key, turning at-least-once into exactly-once at the file grain.
+  End offset and record count live in the Parquet footer metadata
+  (`crosstick:start_offset` / `end_offset` / `record_count` /
+  `format = bronze-v1`). Chunks are contiguous per topic-partition, so a
+  sorted listing implies coverage.
+- **Rows are corpus-shaped:** the columns are exactly the `CorpusRecord`
+  fields below (`topic`, `partition`, `offset`, `timestamp_ms`, `key`,
+  `value`, `headers`) — any bronze slice reads back as replay fodder.
+- **Chunk cuts:** size-dominant (`FLUSH_BYTES`, 16 MiB), plus a UTC
+  date-boundary cut (keeps `date=` partitions honest) and an age sweep
+  (`FLUSH_INTERVAL_SEC` — the bronze-lag bound for cold topics, not the
+  primary trigger). Compression is zstd.
+- **Commit discipline:** offsets are committed only *after* the Parquet PUT,
+  one chunk at a time — at most one PUT is ever un-committed, which is what
+  makes the start-offset overwrite argument airtight. The consumer group
+  (`materializer`) is the durable "how far has bronze got" cursor.
+- Unmapped `(exchange, symbol)` pairs partition by the normalized native
+  symbol (warn-once) — bronze never drops data over missing reference data.
+
 ## Corpus format (replay harness)
 
 A corpus is a gzipped JSON-lines file (`.jsonl.gz`), one `CorpusRecord` per
