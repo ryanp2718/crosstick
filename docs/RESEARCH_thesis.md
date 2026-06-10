@@ -71,7 +71,9 @@ from equities/FX — each is simultaneously a hazard and a source of signal.
 - **Perpetual futures + funding rate.** The dominant instrument by volume is the
   perp, kept near spot by a periodic **funding payment** between longs and shorts.
   → *Enables* the marquee crypto-native trade family (carry / funding basis) and a
-  rich predictive signal — **but only if we capture it** (we do not today; §6).
+  rich predictive signal — the **settled funding series is REST-backfillable**
+  after the fact; what is only capturable live is the perp *microstructure*
+  around it (§6).
 - **Inflated / wash volume & venue risk.** Reported volume is unreliable; venues
   fail, freeze withdrawals, or vanish. → *Bars* trusting headline volume; →
   *Enables* (forces) a data-quality floor that scores venues — which we are
@@ -119,8 +121,8 @@ have it), and where it lands in the build.
 | Order-flow imbalance (OFI) | L2 `book.*.deltas` event stream | ✅ (full fidelity) | silver event-grain → feature store |
 | Realized/queue microstructure | event-grain book reconstruction (replay) | ✅ via replay (Phase 3) | feature store (Phase 5) |
 | Market-quality TCA | trades as-of NBBO/BBO | ✅ | silver enriched trades |
-| **Funding basis / carry** | **perp mark+index, funding rate, OI** | ❌ **not captured** | **new ingest + bronze (§6)** |
-| **Liquidation pressure** | **perp liquidation stream** | ❌ | **new ingest (§6)** |
+| **Funding basis / carry** | **perp mark+index, funding rate, OI** | ❌ not captured — but settled funding + mark/index klines are REST-backfillable; only fine-grained OI (~30-day window) decays | **new ingest + bronze (§6)** |
+| **Liquidation sampling** | **perp liquidation stream** — Binance WS pushes ≤1 order/sec, a *sample* of the tape, not the tape | ❌ unbackfillable | **new ingest (§6)** |
 
 Everything above the rule is buildable on the data we already record. Everything
 below it is gated on one decision.
@@ -151,12 +153,23 @@ its contract.**
 
 Three reasons, strongest first:
 
-1. **You cannot backfill what you didn't record.** This is already the stated
-   rationale for the bronze layer (`DESIGN_analytics.md` → "capture full fidelity
-   now, query later"). Applied to funding it is decisive: every day we run
-   spot-only is a day of funding-rate, open-interest, and liquidation history
-   that is **permanently lost**. Spot L2 we could re-record later; the funding
-   time series we skip is gone forever. The asymmetry of regret points one way.
+1. **"You cannot backfill what you didn't record" — true, but apply it to the
+   right streams.** Verified against current Binance derivatives docs (2026-06):
+   the settled funding-rate series is backfillable after the fact via REST
+   ([fundingRate history](https://developers.binance.com/docs/derivatives/usds-margined-futures/market-data/rest-api/Get-Funding-Rate-History)),
+   as are mark/index-price klines — so the marquee carry inputs are **not**
+   being lost daily. What is genuinely unbackfillable: market-wide
+   **liquidations** (the REST history endpoint was removed; the
+   [WS stream](https://developers.binance.com/docs/derivatives/usds-margined-futures/websocket-market-streams/Liquidation-Order-Streams)
+   pushes at most one order per second — a sample, not the tape), **open
+   interest** beyond a ~30-day window
+   ([openInterestHist](https://developers.binance.com/docs/derivatives/usds-margined-futures/market-data/rest-api/Open-Interest-Statistics)),
+   and full-fidelity **perp L2 + trades** (no venue serves historical books).
+   The asymmetry of regret still points at capture — but at perp
+   *microstructure*, which is exactly what this platform is differentiated at
+   capturing, not at the funding series itself. That reorders the Phase 1.5
+   priority list: perp L2/trades + liquidations + OI poller first; funding
+   modeling deferred and backfilled when the basis mart is built.
 2. **It is the difference between a spot data lake and a credible crypto research
    platform.** Perps are the dominant instrument and funding is *the* crypto-native
    signal; the carry trade is the most capacity-rich, most defensible strategy
@@ -173,13 +186,21 @@ Three reasons, strongest first:
 research focus is the cross-venue / stablecoin-basis microstructure for its own
 sake, and you'd rather ship the medallion + replay + feature store end-to-end on a
 *frozen* spot data domain before widening. This is the cleaner build; it just
-accepts the permanent loss of the funding history accumulated in the meantime.
+accepts the permanent loss of the perp *microstructure* (liquidations,
+fine-grained OI, perp L2) accumulated in the meantime — the settled funding
+series itself can be backfilled later either way.
 
 **A middle path worth naming:** capture perps + funding to **bronze now**
 (cheap, append-only, stops the clock on lost history) but defer all *silver/gold
 funding modeling* until after the spot spine is proven. This buys the
 irreversible thing (the data) without paying the modeling cost early. Strawman
 leans here if "Phase 1.5 full" feels too eager.
+
+**Sequencing reality-check.** Until the Phase 1 materializer lands, *nothing*
+is durably captured — the log's retention (now 30 days; was the 7-day Redpanda
+default until 2026-06) is the only horizon. "Capture perps now" stops no clock
+before bronze exists; the materializer is the actual clock-stopper, which is
+why it precedes any perp work regardless of how §6 is resolved.
 
 ---
 
