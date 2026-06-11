@@ -1,33 +1,43 @@
-"""Phase 0b — gateway-in-the-loop integration.
+"""Gateway-in-the-loop integration + replay determinism (Phase 0b / Phase 3).
 
 Replays the golden corpus's gateway *inputs* (md.book.* / md.trades.* /
-md.status.*) into an ephemeral Redpanda, runs the real Node gateway against it,
-and asserts the gateway's derived *outputs* (md.bbo.* per-exchange, md.nbbo.*
-cross-venue) — closing the integration gap end-to-end across the language seam.
+md.status.*) into an ephemeral Redpanda, runs the real Node gateway against
+it, and asserts the derived *outputs* (md.bbo.* per exchange, md.nbbo.* cross-
+venue) — closing the integration gap end-to-end across the language seam.
 
-Why this shape:
-  * The gateway derives BBO/NBBO from the book; it does NOT consume md.bbo. So
-    the corpus's synthetic md.bbo records are excluded from the replay — we feed
-    the gateway only what an ingester emits and check what the gateway computes.
-  * Replay is TWO-PHASE against the live gateway: snapshots first, then deltas
-    only once each stream's snapshot BBO has been emitted. Snapshots and deltas
-    live on separate topics with no cross-topic order guarantee, and the gateway
-    drops a delta that arrives before its snapshot — so a single-shot replay is
-    non-deterministic. The barrier recreates the live snapshot-then-delta time
-    ordering. (Making the gateway replay-safe regardless of order is the D2 fix
-    in Phase 3.)
-  * Per-exchange md.bbo is asserted as an exact ordered sequence (single topic,
-    single partition → deterministic). This carries the PLANTED crossed book:
-    the gateway's Book has no crossed-guard (the ingester already validated), so
-    the crossed binance delta surfaces as a crossed BBO — proof it propagates.
-  * NBBO carries Date.now()-based local_ts_ns/leg_age_ms (D1, fixed in Phase 3),
-    so only the deterministic fields are asserted (px/sz/exchange/crossed/
-    constituents), and only on the *latest* compacted value per canonical.
-  * The binance "down" status is excluded from the replay: its only wire-visible
-    effect is evicting a single-venue canonical's NBBO into silence (unobservable
-    here, and covered by the gateway's own nbbo unit tests), and including it
-    would make BTC-USDT's NBBO depend on cross-topic fetch ordering. Venue-down
-    detection is a Phase 2 (data-quality) concern over the md.status log.
+Three tests:
+
+  1. **In-order replay** → exact golden BBO sequences + NBBO end-state. Single
+     shot: the aggregator buffers pre-snapshot deltas (D2a), so the pre-D2
+     two-phase snapshot-then-delta barrier is gone.
+  2. **Adversarial order** — every delta and trade replayed BEFORE any
+     snapshot or status — converges to the same end state, with each stream's
+     buffered deltas drained and coalesced into a single BBO. End-to-end proof
+     of the D2a order-insensitivity through a real broker and gateway.
+  3. **Byte-identical determinism** — the same paced replay run twice against
+     fresh state must produce byte-identical md.bbo.* and md.nbbo.* streams.
+     The Phase 3 acceptance test (DESIGN_analytics.md): any wall-clock leakage
+     into NBBO timestamps, leg ages, or eviction (D1) differs across runs and
+     fails this.
+
+Harness mechanics worth knowing:
+
+  * Replay is PACED: each record is produced only after the gateway's /metrics
+    consumed-counter shows the previous one processed. The broker guarantees
+    no cross-topic consumption order, so pacing is what pins the gateway's
+    merge order to replay order — making the exact-sequence and byte-identity
+    assertions deterministic rather than racy.
+  * Replay starts only after the gateway logs its warm-start seek plan (D2b).
+    Corpus timestamps are years old, so a record produced before the
+    live-edge seek executes would be skipped by it.
+  * md.* topic names are fixed by contract, so every gateway session deletes
+    and recreates its topics — tests are independent of each other and of
+    execution order within the shared Redpanda container.
+  * The corpus's synthetic md.bbo records are excluded from replay: the
+    gateway derives BBO from books, it does not consume md.bbo. The binance
+    "down" status IS replayed (pre-D2a it was excluded as order-racy): binance
+    holds the only BTC-USDT leg, so evicting it emits nothing and the
+    compacted NBBO end-state stays the planted crossed book.
 
 Requires Docker (testcontainers) AND node on PATH with the gateway's deps
 installed (`pnpm -C node/gateway install`); skips otherwise. Run with:
@@ -45,13 +55,18 @@ import subprocess
 import urllib.request
 import uuid
 from collections import defaultdict
+from collections.abc import Callable
 from pathlib import Path
 
 import pytest
 
-from analytics.corpus import CorpusRecord, read_corpus
+from analytics.corpus import CorpusRecord
 from analytics.replay import replay_corpus
-from analytics.tests.kafka_admin import create_single_partition_topics, seed_group_offsets
+from analytics.tests.kafka_admin import (
+    create_single_partition_topics,
+    delete_topics,
+    seed_group_offsets,
+)
 from common.kafka_io import bbo_topic, make_consumer, make_producer
 from common.models import BBO, decode
 
@@ -85,21 +100,19 @@ EXPECTED_BBO: dict[str, list[tuple[str, str, str, str]]] = {
 # Gateway publishes md.nbbo.<canonical_id> (node/gateway/src/messages.ts).
 NBBO_BTC_USD = "md.nbbo.BTC-USD"
 NBBO_BTC_USDT = "md.nbbo.BTC-USDT"
+OUTPUT_TOPICS = [*EXPECTED_BBO.keys(), NBBO_BTC_USD, NBBO_BTC_USDT]
+
+CompletePredicate = Callable[[dict[str, list]], bool]
 
 
 def _is_gateway_input(r: CorpusRecord) -> bool:
-    """Records the gateway actually consumes, excluding the binance 'down'
-    status (see module docstring)."""
-    if r.topic.startswith(("md.book.", "md.trades.")):
-        return True
-    if r.topic.startswith("md.status."):
-        return decode(r.value).state == "up"
-    return False
+    """Records the gateway actually consumes (everything but synthetic md.bbo)."""
+    return r.topic.startswith(("md.book.", "md.trades.", "md.status."))
 
 
-def _is_snapshot_phase(r: CorpusRecord) -> bool:
-    """Phase-1 records: snapshots seed the books, status sets venue health.
-    Everything else (deltas, trades) is phase 2."""
+def _is_seed_phase(r: CorpusRecord) -> bool:
+    """Snapshots seed the books, status sets venue health; everything else
+    (deltas, trades) is the part the adversarial ordering front-loads."""
     return r.topic.endswith(".snapshots") or r.topic.startswith("md.status.")
 
 
@@ -110,14 +123,6 @@ def _free_port() -> int:
         return s.getsockname()[1]
     finally:
         s.close()
-
-
-def _healthz_ok(port: int) -> bool:
-    try:
-        with urllib.request.urlopen(f"http://127.0.0.1:{port}/healthz", timeout=1) as resp:
-            return resp.status == 200
-    except Exception:
-        return False
 
 
 @pytest.fixture(scope="module")
@@ -157,6 +162,9 @@ def brokers(redpanda, monkeypatch: pytest.MonkeyPatch) -> str:
 def _start_gateway(bootstrap: str, group_id: str, ws_port: int, log_path: Path):
     node = shutil.which("node")
     assert node is not None
+    # No NBBO_LIVENESS_TIMEOUT_MS override: eviction is measured in log time
+    # (D1), and the corpus spans ~20ms of stream time — far under the 5s
+    # default — so wall-clock pacing delays can't evict anything spuriously.
     env = {
         **os.environ,
         "KAFKA_BROKERS": bootstrap,
@@ -164,8 +172,6 @@ def _start_gateway(bootstrap: str, group_id: str, ws_port: int, log_path: Path):
         "WS_PORT": str(ws_port),
         "INSTRUMENTS_FILE": str(INSTRUMENTS_FILE),
         "DASHBOARD_DIR": str(DASHBOARD_DIR),
-        # Disable the 5s liveness sweep so it can't evict venues mid-test.
-        "NBBO_LIVENESS_TIMEOUT_MS": "600000",
     }
     log_fh = log_path.open("w", encoding="utf-8")
     proc = subprocess.Popen(
@@ -178,16 +184,48 @@ def _start_gateway(bootstrap: str, group_id: str, ws_port: int, log_path: Path):
     return proc, log_fh
 
 
-def _bbo_counts_ready(by_topic: dict[str, list], n: int) -> bool:
-    return all(len(by_topic.get(t, [])) >= n for t in EXPECTED_BBO)
-
-
-def _outputs_complete(by_topic: dict[str, list]) -> bool:
-    return bool(
-        _bbo_counts_ready(by_topic, 3)
-        and by_topic.get(NBBO_BTC_USD)
-        and by_topic.get(NBBO_BTC_USDT)
+def _consumed_total(ws_port: int) -> int:
+    """Sum gateway_messages_consumed_total across labels from /metrics."""
+    try:
+        with urllib.request.urlopen(f"http://127.0.0.1:{ws_port}/metrics", timeout=2) as resp:
+            text = resp.read().decode()
+    except Exception:
+        return -1
+    return sum(
+        int(float(line.rsplit(" ", 1)[1]))
+        for line in text.splitlines()
+        if line.startswith("gateway_messages_consumed_total{")
     )
+
+
+async def _await_log(proc, log_path: Path, needle: str, deadline_sec: float = 30.0) -> None:
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + deadline_sec
+    while loop.time() < deadline:
+        if needle in log_path.read_text(errors="replace"):
+            return
+        assert proc.poll() is None, f"gateway exited:\n{log_path.read_text(errors='replace')}"
+        await asyncio.sleep(0.2)
+    raise AssertionError(f"{needle!r} never logged:\n{log_path.read_text(errors='replace')}")
+
+
+async def _paced_replay(
+    producer, records: list[CorpusRecord], ws_port: int, log_path: Path
+) -> None:
+    """Replay one record at a time, waiting until the gateway's consumed
+    counter reflects it before producing the next (see module docstring)."""
+    base = _consumed_total(ws_port)
+    assert base >= 0, f"gateway /metrics unreachable:\n{log_path.read_text(errors='replace')}"
+    loop = asyncio.get_running_loop()
+    for i, r in enumerate(records, start=1):
+        await replay_corpus(producer, [r])
+        deadline = loop.time() + 10.0
+        while _consumed_total(ws_port) < base + i:
+            assert loop.time() < deadline, (
+                f"gateway never consumed record {i}/{len(records)} ({r.topic}):\n"
+                f"{log_path.read_text(errors='replace')}"
+            )
+            await asyncio.sleep(0.01)
 
 
 async def _drain_until(consumer, by_topic, predicate, deadline_sec: float) -> bool:
@@ -204,57 +242,38 @@ async def _drain_until(consumer, by_topic, predicate, deadline_sec: float) -> bo
     return predicate(by_topic)
 
 
-async def _await_healthz(proc, ws_port: int, log_path: Path) -> None:
-    loop = asyncio.get_running_loop()
-    deadline = loop.time() + 30.0
-    while loop.time() < deadline and not _healthz_ok(ws_port):
-        if proc.poll() is not None:
-            break
-        await asyncio.sleep(0.5)
-    assert _healthz_ok(ws_port), f"gateway not healthy:\n{log_path.read_text(errors='replace')}"
-
-
-@pytest.mark.asyncio
-async def test_gateway_derives_bbo_and_nbbo_from_replay(
-    brokers: str, gateway_built: Path, golden_corpus_path: Path, tmp_path: Path
-) -> None:
-    records = [r for r in read_corpus(golden_corpus_path) if _is_gateway_input(r)]
+async def _replay_session(
+    bootstrap: str,
+    records: list[CorpusRecord],
+    tmp_path: Path,
+    name: str,
+    complete: CompletePredicate,
+) -> dict[str, list]:
+    """Reset topics, start a fresh gateway, pace-replay `records`, and return
+    the captured derived outputs per topic."""
     input_topics = sorted({r.topic for r in records})
-    output_topics = [*EXPECTED_BBO.keys(), NBBO_BTC_USD, NBBO_BTC_USDT]
-    # Snapshots (+ status) replay first; deltas (+ trades) only after the gateway
-    # has emitted each stream's snapshot BBO. The gateway drops a delta with no
-    # snapshot yet, and snapshot/delta live on separate topics with no
-    # cross-topic order guarantee — so we recreate the live time ordering.
-    snapshots = [r for r in records if _is_snapshot_phase(r)]
-    deltas = [r for r in records if not _is_snapshot_phase(r)]
-
+    await delete_topics(input_topics + OUTPUT_TOPICS)
     # Topics must exist before the gateway's regex subscription resolves, and
     # single-partition keeps per-topic order deterministic.
-    await create_single_partition_topics(input_topics + output_topics)
+    await create_single_partition_topics(input_topics + OUTPUT_TOPICS)
 
-    group_id = f"gateway-{uuid.uuid4().hex}"
+    group_id = f"gateway-{name}-{uuid.uuid4().hex}"
     # Park the gateway's fromBeginning:false consumer at 0 so it reads every
     # record we replay after it starts (no startup skip race).
     await seed_group_offsets(group_id, input_topics, offset=0)
 
     ws_port = _free_port()
-    log_path = tmp_path / "gateway.log"
-    proc, log_fh = _start_gateway(brokers, group_id, ws_port, log_path)
-    producer = await make_producer(client_id="phase0b-replay")
+    log_path = tmp_path / f"gateway-{name}.log"
+    proc, log_fh = _start_gateway(bootstrap, group_id, ws_port, log_path)
+    producer = await make_producer(client_id=f"replay-{name}")
     out = await make_consumer(
-        *output_topics, group_id=f"phase0b-out-{uuid.uuid4().hex}", auto_offset_reset="earliest"
+        *OUTPUT_TOPICS, group_id=f"out-{name}-{uuid.uuid4().hex}", auto_offset_reset="earliest"
     )
     by_topic: dict[str, list] = defaultdict(list)
     try:
-        await _await_healthz(proc, ws_port, log_path)
-
-        await replay_corpus(producer, snapshots)
-        assert await _drain_until(out, by_topic, lambda bt: _bbo_counts_ready(bt, 1), 30.0), (
-            f"snapshot BBOs never arrived:\n{log_path.read_text(errors='replace')}"
-        )
-
-        await replay_corpus(producer, deltas)
-        assert await _drain_until(out, by_topic, _outputs_complete, 30.0), (
+        await _await_log(proc, log_path, "warm-start: planned")
+        await _paced_replay(producer, records, ws_port, log_path)
+        assert await _drain_until(out, by_topic, complete, 30.0), (
             f"derived outputs incomplete: { {k: len(v) for k, v in by_topic.items()} }\n"
             f"{log_path.read_text(errors='replace')}"
         )
@@ -267,21 +286,25 @@ async def test_gateway_derives_bbo_and_nbbo_from_replay(
         except subprocess.TimeoutExpired:
             proc.kill()
         log_fh.close()
+    return by_topic
 
-    gateway_log = log_path.read_text(errors="replace")
 
-    # ── per-exchange md.bbo: exact ordered sequence (round-trips into BBO) ────
-    for topic, expected in EXPECTED_BBO.items():
-        decoded = [decode(m.value) for m in by_topic.get(topic, [])]
-        assert all(isinstance(b, BBO) for b in decoded), f"{topic} did not round-trip into BBO"
-        got = [(b.bid_px, b.bid_sz, b.ask_px, b.ask_sz) for b in decoded]
-        assert got == expected, f"{topic} BBO mismatch\n got={got}\n exp={expected}\n{gateway_log}"
+def _bbo_counts_ready(by_topic: dict[str, list], n: int) -> bool:
+    return all(len(by_topic.get(t, [])) >= n for t in EXPECTED_BBO)
 
-    # The planted crossed binance book surfaces as a crossed per-exchange BBO.
-    bn_last = decode(by_topic[bbo_topic("binance", "BTCUSDT")][-1].value)
-    assert bn_last.bid_px == "65040.00" and bn_last.ask_px == "65030.00"
 
-    # ── md.nbbo: latest value per canonical, deterministic fields only ───────
+def _nbbo_present(by_topic: dict[str, list]) -> bool:
+    return bool(by_topic.get(NBBO_BTC_USD) and by_topic.get(NBBO_BTC_USDT))
+
+
+def _outputs_complete(by_topic: dict[str, list]) -> bool:
+    return _bbo_counts_ready(by_topic, 3) and _nbbo_present(by_topic)
+
+
+def _assert_nbbo_end_state(by_topic: dict[str, list]) -> None:
+    """Latest compacted value per canonical — deterministic fields only (the
+    adversarial run reaches the same values at different stream-clock points,
+    so timestamps/leg ages are asserted via the determinism test instead)."""
     btc_usd = json.loads(by_topic[NBBO_BTC_USD][-1].value)
     assert btc_usd["best_bid"]["exchange"] == "coinbase"
     assert btc_usd["best_bid"]["px"] == "64995.00" and btc_usd["best_bid"]["sz"] == "0.5"
@@ -290,9 +313,81 @@ async def test_gateway_derives_bbo_and_nbbo_from_replay(
     assert btc_usd["crossed"] is False
     assert btc_usd["constituents"] == ["coinbase", "kraken"]
 
+    # The planted crossed book → crossed NBBO. The binance "down" that follows
+    # evicts the only BTC-USDT leg, which emits nothing — so the crossed record
+    # is, correctly, the final compacted value.
     btc_usdt = json.loads(by_topic[NBBO_BTC_USDT][-1].value)
     assert btc_usdt["best_bid"]["exchange"] == "binance"
     assert btc_usdt["best_bid"]["px"] == "65040.00"
     assert btc_usdt["best_ask"]["px"] == "65030.00"
-    assert btc_usdt["crossed"] is True  # planted crossed book → crossed NBBO
+    assert btc_usdt["crossed"] is True
     assert btc_usdt["constituents"] == ["binance"]
+
+
+@pytest.mark.asyncio
+async def test_gateway_derives_bbo_and_nbbo_from_replay(
+    brokers: str, gateway_built: Path, golden_records: list[CorpusRecord], tmp_path: Path
+) -> None:
+    records = [r for r in golden_records if _is_gateway_input(r)]
+    by_topic = await _replay_session(brokers, records, tmp_path, "inorder", _outputs_complete)
+
+    # ── per-exchange md.bbo: exact ordered sequence (round-trips into BBO) ────
+    for topic, expected in EXPECTED_BBO.items():
+        decoded = [decode(m.value) for m in by_topic.get(topic, [])]
+        assert all(isinstance(b, BBO) for b in decoded), f"{topic} did not round-trip into BBO"
+        got = [(b.bid_px, b.bid_sz, b.ask_px, b.ask_sz) for b in decoded]
+        assert got == expected, f"{topic} BBO mismatch\n got={got}\n exp={expected}"
+
+    # The planted crossed binance book surfaces as a crossed per-exchange BBO.
+    bn_last = decode(by_topic[bbo_topic("binance", "BTCUSDT")][-1].value)
+    assert bn_last.bid_px == "65040.00" and bn_last.ask_px == "65030.00"
+
+    _assert_nbbo_end_state(by_topic)
+
+
+@pytest.mark.asyncio
+async def test_gateway_converges_from_adversarial_replay_order(
+    brokers: str, gateway_built: Path, golden_records: list[CorpusRecord], tmp_path: Path
+) -> None:
+    """D2a end-to-end: every delta and trade arrives before any snapshot or
+    status. The gateway buffers the orphan deltas, drains them when each
+    snapshot lands, and must converge to the same end state as in-order."""
+    records = [r for r in golden_records if _is_gateway_input(r)]
+    adversarial = [r for r in records if not _is_seed_phase(r)] + [
+        r for r in records if _is_seed_phase(r)
+    ]
+
+    def complete(bt: dict[str, list]) -> bool:
+        return _bbo_counts_ready(bt, 1) and _nbbo_present(bt)
+
+    by_topic = await _replay_session(brokers, adversarial, tmp_path, "adversarial", complete)
+
+    # Each stream's buffered deltas drain in one batch → exactly one coalesced
+    # BBO per exchange, equal to the in-order run's FINAL BBO (same book, and
+    # same ts fields: they come from the last delta that mutated the book).
+    for topic, expected in EXPECTED_BBO.items():
+        decoded = [decode(m.value) for m in by_topic.get(topic, [])]
+        got = [(b.bid_px, b.bid_sz, b.ask_px, b.ask_sz) for b in decoded]
+        assert got == [expected[-1]], f"{topic} did not coalesce to final state\n got={got}"
+
+    _assert_nbbo_end_state(by_topic)
+
+
+@pytest.mark.asyncio
+async def test_replayed_nbbo_is_byte_identical_across_runs(
+    brokers: str, gateway_built: Path, golden_records: list[CorpusRecord], tmp_path: Path
+) -> None:
+    """Phase 3 acceptance (DESIGN_analytics.md): the same replay run twice
+    against fresh state produces byte-identical derived streams. NBBO
+    timestamps, leg ages, and eviction all derive from the stream clock (D1) —
+    any Date.now() leakage would differ between runs and fail here."""
+    records = [r for r in golden_records if _is_gateway_input(r)]
+    runs: list[dict[str, list[tuple[bytes, bytes]]]] = []
+    for name in ("det1", "det2"):
+        by_topic = await _replay_session(brokers, records, tmp_path, name, _outputs_complete)
+        runs.append({t: [(m.key, m.value) for m in msgs] for t, msgs in by_topic.items()})
+
+    first, second = runs
+    assert set(first) == set(second)
+    for topic in sorted(first):
+        assert first[topic] == second[topic], f"{topic} differs between identical replays"

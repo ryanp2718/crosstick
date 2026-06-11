@@ -5,6 +5,8 @@ tests can reuse them.
 """
 from __future__ import annotations
 
+import asyncio
+
 from aiokafka.admin import AIOKafkaAdminClient, NewTopic
 from aiokafka.errors import TopicAlreadyExistsError
 
@@ -22,6 +24,30 @@ async def create_single_partition_topics(topics: list[str]) -> None:
         )
     except TopicAlreadyExistsError:
         pass
+    finally:
+        await admin.close()
+
+
+async def delete_topics(topics: list[str]) -> None:
+    """Delete whichever of `topics` exist and wait until the broker forgets
+    them, so an immediate re-create can't race the asynchronous deletion.
+
+    The md.* topic names are fixed by contract, so tests that need a clean log
+    (fresh offsets, no prior test's records) reset topics rather than rename.
+    """
+    admin = AIOKafkaAdminClient(bootstrap_servers=brokers_from_env())
+    await admin.start()
+    try:
+        targets = set(topics)
+        existing = targets & set(await admin.list_topics())
+        if existing:
+            await admin.delete_topics(list(existing))
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + 10.0
+        while leftover := targets & set(await admin.list_topics()):
+            if loop.time() > deadline:
+                raise TimeoutError(f"topics still present after delete: {sorted(leftover)}")
+            await asyncio.sleep(0.1)
     finally:
         await admin.close()
 
