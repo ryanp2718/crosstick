@@ -96,11 +96,19 @@ EXPECTED_BBO: dict[str, list[tuple[str, str, str, str]]] = {
         ("64970.00", "5.0", "65030.00", "3.0"),
         ("65040.00", "1.0", "65030.00", "3.0"),  # PLANTED crossed: bid >= ask
     ],
+    bbo_topic("binance-futures", "BTCUSDT"): [
+        ("64965.00", "8.0", "65035.00", "7.0"),
+        ("64965.00", "6.5", "65035.00", "7.0"),
+        ("64965.00", "6.5", "65040.00", "2.5"),
+    ],
 }
 # Gateway publishes md.nbbo.<canonical_id> (node/gateway/src/messages.ts).
+# The perp buckets separately from spot BTC-USDT despite sharing the native
+# symbol BTCUSDT — that distinct-canonical routing is what's under test here.
 NBBO_BTC_USD = "md.nbbo.BTC-USD"
 NBBO_BTC_USDT = "md.nbbo.BTC-USDT"
-OUTPUT_TOPICS = [*EXPECTED_BBO.keys(), NBBO_BTC_USD, NBBO_BTC_USDT]
+NBBO_BTC_USDT_PERP = "md.nbbo.BTC-USDT-PERP"
+OUTPUT_TOPICS = [*EXPECTED_BBO.keys(), NBBO_BTC_USD, NBBO_BTC_USDT, NBBO_BTC_USDT_PERP]
 
 CompletePredicate = Callable[[dict[str, list]], bool]
 
@@ -294,7 +302,11 @@ def _bbo_counts_ready(by_topic: dict[str, list], n: int) -> bool:
 
 
 def _nbbo_present(by_topic: dict[str, list]) -> bool:
-    return bool(by_topic.get(NBBO_BTC_USD) and by_topic.get(NBBO_BTC_USDT))
+    return bool(
+        by_topic.get(NBBO_BTC_USD)
+        and by_topic.get(NBBO_BTC_USDT)
+        and by_topic.get(NBBO_BTC_USDT_PERP)
+    )
 
 
 def _outputs_complete(by_topic: dict[str, list]) -> bool:
@@ -322,6 +334,15 @@ def _assert_nbbo_end_state(by_topic: dict[str, list]) -> None:
     assert btc_usdt["best_ask"]["px"] == "65030.00"
     assert btc_usdt["crossed"] is True
     assert btc_usdt["constituents"] == ["binance"]
+
+    # The perp buckets apart from spot BTC-USDT (same native symbol BTCUSDT,
+    # distinct canonical) and survives the spot-binance "down" eviction.
+    perp = json.loads(by_topic[NBBO_BTC_USDT_PERP][-1].value)
+    assert perp["best_bid"]["exchange"] == "binance-futures"
+    assert perp["best_bid"]["px"] == "64965.00" and perp["best_bid"]["sz"] == "6.5"
+    assert perp["best_ask"]["px"] == "65040.00" and perp["best_ask"]["sz"] == "2.5"
+    assert perp["crossed"] is False
+    assert perp["constituents"] == ["binance-futures"]
 
 
 @pytest.mark.asyncio

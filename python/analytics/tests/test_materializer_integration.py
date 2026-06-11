@@ -171,6 +171,12 @@ async def test_bronze_equals_corpus_and_survives_lost_commit(
     assert any("book_deltas/exchange=binance/symbol=BTC-USDT/" in p for p in paths)
     assert any("book_snapshots/exchange=kraken/symbol=BTC-USD/" in p for p in paths)
     assert any(f"{bucket}/status/exchange=" in p for p in paths)
+    # Perp datasets resolve to the distinct BTC-USDT-PERP canonical (not spot's
+    # BTC-USDT) despite the shared native symbol BTCUSDT.
+    assert any("book_deltas/exchange=binance-futures/symbol=BTC-USDT-PERP/" in p for p in paths)
+    assert any("mark_price/exchange=binance-futures/symbol=BTC-USDT-PERP/" in p for p in paths)
+    assert any("liquidations/exchange=binance-futures/symbol=BTC-USDT-PERP/" in p for p in paths)
+    assert any("open_interest/exchange=binance-futures/symbol=BTC-USDT-PERP/" in p for p in paths)
 
     # ── crash recovery: "PUT landed, commit lost" on the busiest topic ───────
     victim = max(topics, key=lambda t: sum(r.topic == t for r in records))
