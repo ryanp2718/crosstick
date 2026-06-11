@@ -819,3 +819,95 @@ async def test_base_emit_callback_does_not_cross_connections() -> None:
         "stale callback from prior connection tripped the new connection's "
         "_produce_failed — would cause an unnecessary reconnect+resync"
     )
+
+
+# ─── periodic snapshot re-emission (bounds the D2 warm-start delta tail) ───
+
+
+def _book_snaps(producer: FakeProducer) -> list[dict]:
+    return [
+        json.loads(value)
+        for topic, value in producer.sent
+        if topic == "md.book.fake.X.snapshots"
+    ]
+
+
+class BookedIngester(FakeIngester):
+    """FakeIngester whose bootstrap also warms a real local book."""
+
+    async def bootstrap(self, symbol: str) -> None:
+        from decimal import Decimal as D
+        await super().bootstrap(symbol)
+        self.contexts[symbol].book.apply_snapshot(
+            7,
+            [(D("100.5"), D("2")), (D("100.0"), D("1"))],
+            [(D("101.0"), D("3"))],
+        )
+
+
+@pytest.mark.asyncio
+async def test_periodic_snapshot_reemits_live_book(
+    fake_server: FakeExchangeServer,
+) -> None:
+    """While LIVE, the full local book is re-published to the snapshot topic
+    every snapshot_interval_s, at the book's current sequence."""
+    fake_server.scripted = [json.dumps({"sym": "X", "seq": 1, "kind": "trade"})]
+    ing = BookedIngester(
+        exchange="fake", symbols=["X"], ws_url=fake_server.url,
+        producer=FakeProducer(), subscribe_rate=100.0, subscribe_capacity=100.0,
+        queue_maxsize=100, backoff_base=0.001, backoff_cap=0.01,
+        ping_interval=None, ping_timeout=None,
+        snapshot_interval_s=0.05,
+    )
+    run_task = asyncio.create_task(ing.run())
+    for _ in range(150):
+        if len(_book_snaps(ing.producer)) >= 2:
+            break
+        await asyncio.sleep(0.02)
+    await ing.shutdown()
+    await asyncio.wait_for(run_task, timeout=3.0)
+
+    snaps = _book_snaps(ing.producer)
+    assert len(snaps) >= 2, "expected repeated periodic snapshots while LIVE"
+    s = snaps[0]
+    assert s["t"] == "snap"
+    assert s["sequence"] == 7
+    # Full book, decimal strings preserved; bids best-first, asks best-first.
+    assert s["bids"] == [["100.5", "2"], ["100.0", "1"]]
+    assert s["asks"] == [["101.0", "3"]]
+    assert s["exchange_ts_ns"] == 0  # locally generated, no exchange event
+    assert s["local_ts_ns"] > 0
+
+
+@pytest.mark.asyncio
+async def test_periodic_snapshot_skips_unwarmed_book(
+    fake_server: FakeExchangeServer,
+) -> None:
+    """A LIVE symbol whose book is empty (sequence < 0 — trade-only ingester)
+    must not emit snapshots: an empty snap would wipe consumers' books."""
+    fake_server.scripted = [json.dumps({"sym": "X", "seq": 1, "kind": "trade"})]
+    ing = make_ingester(fake_server, snapshot_interval_s=0.03)
+    run_task = asyncio.create_task(ing.run())
+    await asyncio.sleep(0.25)
+    await ing.shutdown()
+    await asyncio.wait_for(run_task, timeout=3.0)
+    assert _book_snaps(ing.producer) == []
+
+
+@pytest.mark.asyncio
+async def test_periodic_snapshot_none_disables(
+    fake_server: FakeExchangeServer,
+) -> None:
+    fake_server.scripted = [json.dumps({"sym": "X", "seq": 1, "kind": "trade"})]
+    ing = BookedIngester(
+        exchange="fake", symbols=["X"], ws_url=fake_server.url,
+        producer=FakeProducer(), subscribe_rate=100.0, subscribe_capacity=100.0,
+        queue_maxsize=100, backoff_base=0.001, backoff_cap=0.01,
+        ping_interval=None, ping_timeout=None,
+        snapshot_interval_s=None,
+    )
+    run_task = asyncio.create_task(ing.run())
+    await asyncio.sleep(0.25)
+    await ing.shutdown()
+    await asyncio.wait_for(run_task, timeout=3.0)
+    assert _book_snaps(ing.producer) == []
