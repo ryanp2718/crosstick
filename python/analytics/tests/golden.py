@@ -19,6 +19,13 @@ PLANTED HARD EVENTS (Phase 2 data-quality must detect these):
 One logical asset (BTC) across three venues, spanning the USD vs USDT quote
 split (coinbase/kraken BTC-USD, binance BTCUSDT) so strict per-quote bucketing
 is exercised too.
+
+The binance-futures perp segment (BTCUSDT -> canonical BTC-USDT-PERP) covers
+the derivatives datasets (markprice / liquidations / openinterest) and plants
+a FALSE-POSITIVE TRAP for Phase 2: futures book sequences are update-ids,
+monotonic but NOT contiguous on a healthy stream (continuity lives in `pu`,
+which doesn't survive normalization) — a naive seq+1 gap detector would flag
+a perfectly healthy perp stream.
 """
 from __future__ import annotations
 
@@ -30,6 +37,9 @@ from common.kafka_io import (
     book_delta_topic,
     book_snapshot_topic,
     latency_headers,
+    liquidation_topic,
+    markprice_topic,
+    openinterest_topic,
     status_topic,
     trade_topic,
 )
@@ -38,6 +48,9 @@ from common.models import (
     BookDelta,
     BookLevel,
     BookSnapshot,
+    Liquidation,
+    MarkPrice,
+    OpenInterest,
     Side,
     Status,
     Trade,
@@ -47,6 +60,7 @@ from common.models import (
 BASE_NS = 1_700_000_000_000_000_000  # fixed origin so the corpus is deterministic
 LAG_NS = 2_000_000  # exchange_ts precedes local_recv by 2ms
 STEP_NS = 1_000_000  # 1ms between records
+NEXT_FUNDING_NS = BASE_NS + 8 * 3600 * 1_000_000_000  # fixed next-funding instant
 
 # A message factory takes (exchange_ts_ns, local_ts_ns) and stamps the body so
 # it stays consistent with the record's latency headers.
@@ -85,6 +99,30 @@ def _trade(ex: str, sym: str, tid: str, px: str, sz: str, side: Side) -> MsgFact
 def _bbo(ex: str, sym: str, bpx: str, bsz: str, apx: str, asz: str) -> MsgFactory:
     return lambda ex_ts, lo_ts: BBO(
         exchange=ex, symbol=sym, bid_px=bpx, bid_sz=bsz, ask_px=apx, ask_sz=asz,
+        exchange_ts_ns=ex_ts, local_ts_ns=lo_ts,
+    )
+
+
+def _mark(ex: str, sym: str, mark: str, index: str, settle: str, funding: str) -> MsgFactory:
+    return lambda ex_ts, lo_ts: MarkPrice(
+        exchange=ex, symbol=sym, mark_price=mark, index_price=index,
+        est_settle_price=settle, funding_rate=funding,
+        next_funding_ts_ns=NEXT_FUNDING_NS,
+        exchange_ts_ns=ex_ts, local_ts_ns=lo_ts,
+    )
+
+
+def _liq(ex: str, sym: str, side: Side, px: str, avg: str, sz: str) -> MsgFactory:
+    return lambda ex_ts, lo_ts: Liquidation(
+        exchange=ex, symbol=sym, side=side, price=px, avg_price=avg,
+        orig_size=sz, filled_size=sz, status="FILLED",
+        exchange_ts_ns=ex_ts, local_ts_ns=lo_ts,
+    )
+
+
+def _oi(ex: str, sym: str, oi: str) -> MsgFactory:
+    return lambda ex_ts, lo_ts: OpenInterest(
+        exchange=ex, symbol=sym, open_interest=oi,
         exchange_ts_ns=ex_ts, local_ts_ns=lo_ts,
     )
 
@@ -141,6 +179,7 @@ def build_golden_records() -> list[CorpusRecord]:
     log.status("coinbase", "up")
     log.status("kraken", "up")
     log.status("binance", "up")
+    log.status("binance-futures", "up")
 
     # ── coinbase BTC-USD: clean snapshot → deltas → trade ──────────────────
     cb, s_cb = "coinbase", "BTC-USD"
@@ -185,7 +224,35 @@ def build_golden_records() -> list[CorpusRecord]:
     log.md(book_delta_topic(bn, s_bn), bn, s_bn, _delta(bn, s_bn, 1002, [("65040.00", "1.0")], []))
     log.md(trade_topic(bn, s_bn), bn, s_bn, _trade(bn, s_bn, "bn-1", "65035.00", "0.20", Side.BID))
 
+    # ── binance-futures BTCUSDT (perp → BTC-USDT-PERP) ──────────────────────
+    # Delta sequences are futures update-ids: monotonic but NOT contiguous on a
+    # healthy stream (PLANTED false-positive trap for Phase 2 gap detection).
+    bf, s_bf = "binance-futures", "BTCUSDT"
+    log.md(
+        book_snapshot_topic(bf, s_bf), bf, s_bf,
+        _snap(bf, s_bf, 5000,
+              [("64965.00", "8.0"), ("64960.00", "3.0")],
+              [("65035.00", "7.0"), ("65040.00", "2.5")]),
+    )
+    log.md(book_delta_topic(bf, s_bf), bf, s_bf, _delta(bf, s_bf, 5004, [("64965.00", "6.5")], []))
+    log.md(
+        trade_topic(bf, s_bf), bf, s_bf,
+        _trade(bf, s_bf, "210001", "65001.00", "0.25", Side.ASK),
+    )
+    log.md(book_delta_topic(bf, s_bf), bf, s_bf, _delta(bf, s_bf, 5009, [], [("65035.00", "0")]))
+    log.md(
+        markprice_topic(bf, s_bf), bf, s_bf,
+        _mark(bf, s_bf, "65001.23", "64998.50", "65000.00", "0.00010000"),
+    )
+    log.md(
+        liquidation_topic(bf, s_bf), bf, s_bf,
+        _liq(bf, s_bf, Side.ASK, "64950.00", "64952.10", "0.500"),
+    )
+    log.md(openinterest_topic(bf, s_bf), bf, s_bf, _oi(bf, s_bf, "85123.456"))
+
     # ── PLANTED venue down, then a surviving venue keeps quoting ────────────
+    # (Spot binance only: binance-futures is a distinct exchange id and its
+    #  perp legs must survive this eviction.)
     log.status("binance", "down")
     log.md(bbo_topic(cb, s_cb), cb, s_cb, _bbo(cb, s_cb, "64995.00", "0.5", "65020.00", "0.8"))
 

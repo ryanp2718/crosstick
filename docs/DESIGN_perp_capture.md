@@ -118,8 +118,10 @@ it's deferred until a named consumer exists.
   round-trip via `models.decode`, topic/key/header conventions.
 - **Bronze:** `parse_topic` + `object_key` cases for the two datasets,
   including canonical resolution to `*-PERP`.
-- **Integration (follow-up):** extend the golden corpus with perp topics so
-  the bronze==corpus and gateway tests cover them; tracked, not in slice 1.
+- **Integration:** the golden corpus carries a binance-futures segment (book,
+  tape, markprice, liquidation, openinterest), so the bronze==corpus and
+  gateway tests cover the perp path, including the BTC-USDT-PERP vs BTC-USDT
+  canonical split.
 
 ## Out of scope (v1)
 
