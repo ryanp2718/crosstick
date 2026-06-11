@@ -139,7 +139,8 @@ services:
         condition: service_healthy
     restart: unless-stopped
 
-  # Perp capture slice 1: liquidations + mark/funding (DESIGN_perp_capture.md).
+  # Perp capture: liquidations, mark/funding, open-interest poll, L2 book +
+  # aggTrade tape (DESIGN_perp_capture.md slices 1-3).
   ingest-binance-futures:
     build:
       context: ./python

@@ -113,6 +113,20 @@ class MarkPrice(msgspec.Struct, tag="mark", tag_field="t", frozen=True):
     local_ts_ns: int
 
 
+class OpenInterest(msgspec.Struct, tag="oi", tag_field="t", frozen=True):
+    """Total open interest for a derivatives instrument.
+
+    REST-polled — Binance has no OI stream — so the cadence is the ingester's
+    poll interval, not an exchange event clock. `exchange_ts_ns` is the
+    venue's response timestamp. (DESIGN_perp_capture.md slice 2.)"""
+
+    exchange: str
+    symbol: str
+    open_interest: str
+    exchange_ts_ns: int
+    local_ts_ns: int
+
+
 class Status(msgspec.Struct, tag="status", tag_field="t", frozen=True):
     """Per-exchange venue health: connection-state liveness, not quote freshness.
     'up' is a periodic heartbeat while streaming; 'down' is sent on graceful
@@ -149,6 +163,7 @@ def encode(msg: msgspec.Struct) -> bytes:
 # actually produce.  VWAP is excluded — it is never on a live topic.
 _STREAMING_TYPES = (
     BookSnapshot | BookDelta | Trade | BBO | Spread | Status | Liquidation | MarkPrice
+    | OpenInterest
 )
 _DECODER = msgspec.json.Decoder(_STREAMING_TYPES)
 

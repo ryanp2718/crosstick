@@ -13,6 +13,7 @@ from common.kafka_io import (
     liquidation_topic,
     markprice_topic,
     normalize_symbol,
+    openinterest_topic,
     status_topic,
     trade_topic,
 )
@@ -37,6 +38,9 @@ def test_topic_names() -> None:
     )
     assert markprice_topic("binance-futures", "ETHUSDT") == (
         "md.markprice.binance-futures.ETHUSDT"
+    )
+    assert openinterest_topic("binance-futures", "BTCUSDT") == (
+        "md.openinterest.binance-futures.BTCUSDT"
     )
 
 

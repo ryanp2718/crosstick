@@ -38,6 +38,10 @@ INSTRUMENTS_FILE = REPO_ROOT / "ops" / "instruments.yml"
             "md.markprice.binance-futures.ETHUSDT",
             TopicMeta("mark_price", "binance-futures", "ETHUSDT"),
         ),
+        (
+            "md.openinterest.binance-futures.BTCUSDT",
+            TopicMeta("open_interest", "binance-futures", "BTCUSDT"),
+        ),
     ],
 )
 def test_parse_topic(topic: str, expected: TopicMeta) -> None:
@@ -92,6 +96,11 @@ def test_object_key_layouts() -> None:
     assert object_key(liq, cmap, 0, 3, "2023-11-14") == (
         "liquidations/exchange=binance-futures/symbol=BTC-USDT-PERP/date=2023-11-14/"
         "000-000000000003.parquet"
+    )
+    oi = parse_topic("md.openinterest.binance-futures.BTCUSDT")
+    assert object_key(oi, cmap, 0, 9, "2023-11-14") == (
+        "open_interest/exchange=binance-futures/symbol=BTC-USDT-PERP/date=2023-11-14/"
+        "000-000000000009.parquet"
     )
 
 
