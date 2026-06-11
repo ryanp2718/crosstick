@@ -26,6 +26,7 @@ import {
 } from "./metrics.js";
 import { NBBOAggregator } from "./nbbo.js";
 import { routeMessage, type RouteResult } from "./router.js";
+import { planWarmStart } from "./warmstart.js";
 
 // ── config (env, with dev-friendly defaults) ────────────────────────────────
 const BROKERS = (process.env.KAFKA_BROKERS ?? "localhost:19092")
@@ -72,6 +73,11 @@ const TOPIC_PATTERNS = [/^md\.book\..+/, /^md\.trades\..+/, /^md\.status\..+/];
 // sends no graceful "down"). Measured in log time, not wall clock, so eviction
 // replays deterministically (D1). Ingesters heartbeat every 2s.
 const LIVENESS_TIMEOUT_MS = Number(process.env.NBBO_LIVENESS_TIMEOUT_MS ?? 5000);
+// Warm-start lookback (D2b): how far back to search for a book snapshot on
+// restart. Must exceed the ingesters' snapshot_interval_s (300s) so a healthy
+// stream always has one inside the window; 2x gives slack for a venue that
+// missed an interval. See src/warmstart.ts for the per-topic-class seek rules.
+const WARMSTART_LOOKBACK_MS = Number(process.env.WARMSTART_LOOKBACK_MS ?? 600_000);
 
 async function serveStatic(rel: string, res: http.ServerResponse): Promise<void> {
   const full = path.resolve(DASHBOARD_DIR, rel);
@@ -315,6 +321,21 @@ async function main(): Promise<void> {
       if (result.nbboPublish) emitNbbo(result.nbboPublish);
     },
   });
+
+  // Warm-start seeks (D2b): re-derive in-memory state from the log instead of
+  // resuming at committed group offsets with empty books. Must run after
+  // consumer.run() — kafkajs only accepts seek() on a running consumer. A few
+  // messages may consume from the old position before the seeks land; the
+  // aggregator's order-insensitivity (D2a) makes that prefix harmless.
+  const warmTopics = (await admin.listTopics()).filter((t) =>
+    TOPIC_PATTERNS.some((re) => re.test(t)),
+  );
+  const seeks = await planWarmStart(admin, warmTopics, Date.now(), WARMSTART_LOOKBACK_MS);
+  for (const s of seeks) consumer.seek(s);
+  console.log(
+    `[gateway] warm-start: planned ${seeks.length} seeks across ${warmTopics.length} topics ` +
+      `(lookback ${WARMSTART_LOOKBACK_MS}ms)`,
+  );
 
   // Periodic lag + aggregator-size refresh. fetchTopicOffsets returns the HWM
   // (= offset of next message that *would* be written), so a fully caught-up
