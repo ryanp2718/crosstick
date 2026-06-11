@@ -42,12 +42,14 @@ durable log and source of truth.
 ## Why it's interesting
 
 - **Kappa-shaped, replayable topics.** Redpanda is the single source of truth, and
-  the per-venue `md.bbo.*` stream is a pure function of the raw `md.book.*` log. Two
-  caveats stated honestly: the cross-venue `md.nbbo.*` folds wall-clock venue-eviction
-  timing into its output, so it is not yet bit-reproducible under replay; and on
-  restart the gateway re-warms from the live edge (snapshot-offset seek is a roadmap
-  item), not a full log replay. The replayable spine is real — these two gaps are
-  tracked in [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md), not hidden.
+  every derived stream is a pure function of the raw log: `md.bbo.*` derives from
+  `md.book.*`, and `md.nbbo.*` is stamped and evicted in **stream time** (max
+  event-time across consumed messages, never `Date.now()`), so a replay reproduces
+  it byte-for-byte. On restart the gateway re-derives its books from the log —
+  seeking each topic by class (latest snapshot, deltas from a bounded lookback,
+  status from earliest) rather than re-warming from the live edge. The history of
+  these two gaps (D1, D2) and how they were closed is in
+  [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md).
 - **Real L2 order-book reconstruction.** Bounded-depth books per venue
   (`SortedDict`), CRC32 checksum validation against the exchange, and
   sequence-gap detection with buffering + resync — driven by a
