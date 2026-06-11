@@ -67,8 +67,10 @@ const MIME: Record<string, string> = {
 // Fine for the compose stack (ingesters produce on startup); a metadata-refresh
 // resubscribe is the production hardening.
 const TOPIC_PATTERNS = [/^md\.book\..+/, /^md\.trades\..+/, /^md\.status\..+/];
-// A venue is evicted from NBBO if no md.status heartbeat arrives within this
-// window (covers an ingester crash/kill that sends no graceful "down").
+// A venue is evicted from NBBO when the stream clock moves more than this far
+// past its last md.status heartbeat ts_ns (covers an ingester crash/kill that
+// sends no graceful "down"). Measured in log time, not wall clock, so eviction
+// replays deterministically (D1). Ingesters heartbeat every 2s.
 const LIVENESS_TIMEOUT_MS = Number(process.env.NBBO_LIVENESS_TIMEOUT_MS ?? 5000);
 
 async function serveStatic(rel: string, res: http.ServerResponse): Promise<void> {
@@ -99,6 +101,14 @@ async function main(): Promise<void> {
   const agg = new Aggregator();
   const nbboAgg = new NBBOAggregator();
   const broadcaster = new Broadcaster(MAX_BUFFERED_BYTES);
+
+  // Stream clock: max event-time (ns→ms) across consumed messages. Every NBBO
+  // timestamp, leg age, and liveness-eviction decision derives from it instead
+  // of Date.now(), so md.nbbo.* is a pure function of the log (D1). Tradeoff:
+  // if ALL ingesters go silent the clock freezes and nothing is evicted — but
+  // then nothing is emitted either; per-leg ages are the consumer's staleness
+  // signal, and ingester liveness is alerted on independently via Prometheus.
+  let streamNowMs = 0;
 
   // ── WS server (+ tiny HTTP for health, dashboard, metrics, upgrade) ──────
   const httpServer = http.createServer((req, res) => {
@@ -131,7 +141,7 @@ async function main(): Promise<void> {
     // immediately during quiet periods. Tiny window where broadcasts firing
     // between these two calls are missed; self-heals on the next L1 move.
     for (const bbo of agg.snapshot()) ws.send(JSON.stringify(bbo));
-    for (const nbbo of nbboAgg.snapshot()) ws.send(JSON.stringify(nbbo));
+    for (const nbbo of nbboAgg.snapshot(streamNowMs)) ws.send(JSON.stringify(nbbo));
     broadcaster.add(ws);
     wsClients.inc();
     // "close" is guaranteed to fire exactly once (also after "error"); dec here.
@@ -223,16 +233,29 @@ async function main(): Promise<void> {
     broadcaster.broadcast(nbbo);
   };
 
-  // Venue health: last md.status heartbeat per exchange. A status transition
-  // evicts/re-adds that venue's legs and re-emits the affected NBBOs so a
-  // crossed book from a dead leg clears immediately, not on the next tick.
-  const lastSeen = new Map<string, number>();
+  // Venue health: last md.status heartbeat per exchange, in heartbeat log time
+  // (ts_ns, not consume time). A status transition evicts/re-adds that venue's
+  // legs and re-emits the affected NBBOs so a crossed book from a dead leg
+  // clears immediately, not on the next tick.
+  const lastSeenMs = new Map<string, number>();
   const handleStatus = (msg: StatusMsg): void => {
-    const now = Date.now();
-    lastSeen.set(msg.exchange, now);
+    lastSeenMs.set(msg.exchange, msg.ts_ns / 1e6);
     const up = msg.state === "up";
     venueUp.set({ exchange: msg.exchange }, up ? 1 : 0);
-    for (const nbbo of nbboAgg.setVenueDown(msg.exchange, !up, now)) emitNbbo(nbbo);
+    for (const nbbo of nbboAgg.setVenueDown(msg.exchange, !up, streamNowMs)) emitNbbo(nbbo);
+  };
+
+  // Missed-heartbeat eviction, evaluated as the stream clock advances (every
+  // consumed message) rather than on a wall-clock interval: a replayed log
+  // reproduces the same evictions at the same points in the stream.
+  // setVenueDown is idempotent, so re-checking an already-down venue is free.
+  const evictSilentVenues = (): void => {
+    for (const [exchange, seenMs] of lastSeenMs) {
+      if (streamNowMs - seenMs > LIVENESS_TIMEOUT_MS) {
+        venueUp.set({ exchange }, 0);
+        for (const nbbo of nbboAgg.setVenueDown(exchange, true, streamNowMs)) emitNbbo(nbbo);
+      }
+    }
   };
 
   await consumer.run({
@@ -245,12 +268,17 @@ async function main(): Promise<void> {
       let result: RouteResult;
       try {
         const decoded = decodeMsg(message.value);
+        // Advance the stream clock, then evict before routing so the NBBO
+        // computed for this message already excludes newly-silent venues.
+        const eventTimeNs = decoded.t === "status" ? decoded.ts_ns : decoded.local_ts_ns;
+        streamNowMs = Math.max(streamNowMs, eventTimeNs / 1e6);
+        evictSilentVenues();
         if (decoded.t === "status") {
           messagesConsumed.inc({ topic, result: "ok" });
           handleStatus(decoded);
           return;
         }
-        result = routeMessage(decoded, agg, canonicalMap, nbboAgg);
+        result = routeMessage(decoded, agg, canonicalMap, nbboAgg, streamNowMs);
       } catch (err) {
         messagesConsumed.inc({ topic, result: "error" });
         console.error("[gateway] bad message, skipping:", err);
@@ -288,19 +316,6 @@ async function main(): Promise<void> {
     },
   });
 
-  // Liveness sweep: evict a venue whose heartbeats stopped (crash/kill emits no
-  // graceful "down"). Idempotent — setVenueDown returns [] if already down.
-  const livenessSweep = setInterval(() => {
-    const now = Date.now();
-    for (const [exchange, seen] of lastSeen) {
-      if (now - seen > LIVENESS_TIMEOUT_MS) {
-        venueUp.set({ exchange }, 0);
-        for (const nbbo of nbboAgg.setVenueDown(exchange, true, now)) emitNbbo(nbbo);
-      }
-    }
-  }, 1000);
-  livenessSweep.unref();
-
   // Periodic lag + aggregator-size refresh. fetchTopicOffsets returns the HWM
   // (= offset of next message that *would* be written), so a fully caught-up
   // consumer with lastConsumed = HWM - 1 yields lag 0.
@@ -328,7 +343,6 @@ async function main(): Promise<void> {
     console.log(`[gateway] ${sig} → shutting down`);
     try {
       clearInterval(lagPoll);
-      clearInterval(livenessSweep);
       // Stop accepting new messages (so no new sends are issued), then drain
       // any in-flight sends before disconnecting the producer — disconnect
       // aborts pending sends rather than flushing them.

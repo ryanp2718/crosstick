@@ -6,6 +6,11 @@ import type { BBOMsg, NBBOLeg, NBBOMsg } from "./messages.js";
 // incoming BBO to its CanonicalInstrument (via CanonicalMap.lookup) before
 // calling onBBO — this class knows nothing about the venue→canonical map.
 //
+// nowMs is always caller-supplied (no Date.now() default): the server passes
+// stream time — the max event-time across consumed messages — so every NBBO
+// timestamp and leg age is a pure function of the log and replays byte-for-
+// byte (D1 in ARCHITECTURE.md).
+//
 // Semantics:
 //   - leg storage: latest BBOMsg per (canonical_id, exchange); a leg never
 //     expires here (per-leg staleness is the consumer's call — they read
@@ -32,7 +37,7 @@ export class NBBOAggregator {
   // quote-age threshold). Legs stay in st.legs so a venue rejoins on recovery.
   private readonly downVenues = new Set<string>();
 
-  onBBO(canonical: CanonicalInstrument, msg: BBOMsg, nowMs: number = Date.now()): NBBOMsg | null {
+  onBBO(canonical: CanonicalInstrument, msg: BBOMsg, nowMs: number): NBBOMsg | null {
     let st = this.state.get(canonical.canonical_id);
     if (!st) {
       st = { canonical, legs: new Map(), lastTuple: null };
@@ -49,7 +54,7 @@ export class NBBOAggregator {
   // Mark a venue up/down. On an actual transition, recomputes every canonical
   // holding a leg from that venue and returns the NBBOs to (re)publish — a
   // constituents change is worth emitting even if the winning L1 is unchanged.
-  setVenueDown(exchange: string, down: boolean, nowMs: number = Date.now()): NBBOMsg[] {
+  setVenueDown(exchange: string, down: boolean, nowMs: number): NBBOMsg[] {
     if (down === this.downVenues.has(exchange)) return [];
     if (down) this.downVenues.add(exchange);
     else this.downVenues.delete(exchange);
@@ -68,7 +73,7 @@ export class NBBOAggregator {
     return out;
   }
 
-  snapshot(nowMs: number = Date.now()): NBBOMsg[] {
+  snapshot(nowMs: number): NBBOMsg[] {
     const out: NBBOMsg[] = [];
     for (const st of this.state.values()) {
       const computed = compute(st, this.downVenues, nowMs);
