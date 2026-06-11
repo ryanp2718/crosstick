@@ -20,18 +20,20 @@ const EMPTY: RouteResult = {
 // Pure decision layer between the Kafka consumer and the producer/fan-out.
 // Book messages drive per-exchange BBO derivation; if the (exchange, symbol)
 // is mapped to a canonical instrument, the BBO also feeds NBBO aggregation.
-// Trades are relayed to clients only.
+// Trades are relayed to clients only. nowMs is the caller's stream time (max
+// input event-time), not wall clock — see D1 in ARCHITECTURE.md.
 export function routeMessage(
   msg: StreamMsg,
   agg: Aggregator,
   canonicalMap: CanonicalMap,
   nbboAgg: NBBOAggregator,
+  nowMs: number,
 ): RouteResult {
   if (msg.t === "snap" || msg.t === "delta") {
     const bbo = agg.applyBook(msg);
     if (!bbo) return EMPTY;
     const canonical = canonicalMap.lookup(bbo.exchange, bbo.symbol);
-    const nbbo = canonical ? nbboAgg.onBBO(canonical, bbo) : null;
+    const nbbo = canonical ? nbboAgg.onBBO(canonical, bbo, nowMs) : null;
     return { publish: bbo, broadcast: bbo, nbboPublish: nbbo, nbboBroadcast: nbbo };
   }
   if (msg.t === "trade") {

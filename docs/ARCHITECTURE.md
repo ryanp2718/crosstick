@@ -13,13 +13,14 @@ scaling calls).
 What's built is solid: real L2 reconstruction with a disciplined per-symbol state
 machine, a stateless derivation gateway, cross-exchange NBBO with connection-state
 venue eviction, and first-class observability. But the headline Kappa claim —
-"every derived stream is a pure function of the raw log" — is **stronger than the
-implementation delivers** in two specific places (D1, D2). Naming the gap is the
-point of this doc; overclaiming it is the failure mode.
+"every derived stream is a pure function of the raw log" — was **stronger than the
+implementation delivered** in two specific places (D1, D2). Naming the gap is the
+point of this doc; overclaiming it is the failure mode. *Both were closed in the
+gateway-replay refactor (2026-06) — resolution notes inline below.*
 
 ---
 
-## D1 — NBBO is not yet a replayable function of the log
+## D1 — NBBO is not yet a replayable function of the log *(resolved)*
 
 **Finding.** `md.bbo.*` is a pure function of `md.book.*`. `md.nbbo.*` is **not**,
 because three wall-clock inputs leak into the computation:
@@ -43,10 +44,17 @@ heartbeats already carry the timestamp. Treat NBBO compute timestamps the same w
 (derive from input message time, not wall clock) so a replay reproduces byte-for-
 byte. *Refactor session.*
 
-**Until then,** state it plainly in the README: `md.nbbo.*` carries wall-clock
-eviction and is not bit-reproducible under replay.
+**Resolved (gateway-replay, 2026-06).** The gateway now maintains a **stream
+clock** — the max event-time (ns) across consumed messages — and every NBBO
+timestamp, leg age, and liveness-eviction decision derives from it; `Date.now()`
+no longer feeds the computation (`nbbo.ts` takes caller-supplied `nowMs`,
+`server.ts` evaluates missed-heartbeat eviction per consumed message against
+heartbeat `ts_ns` gaps; the `setInterval` sweep is gone). Tradeoff, documented in
+`server.ts`: if **all** ingesters go silent the clock freezes and nothing is
+evicted — but nothing is emitted either; per-leg ages remain the consumer's
+staleness signal and ingester liveness is alerted on independently.
 
-## D2 — Restart re-warms from the live edge, not log replay
+## D2 — Restart re-warms from the live edge, not log replay *(resolved)*
 
 **Finding.** The gateway claims to "re-derive state from the log on restart." As
 built it subscribes `fromBeginning: false` (`server.ts`); `Aggregator` /
@@ -59,6 +67,21 @@ offset** per book topic and replay forward.
 restart re-warms from the live edge today, snapshot-offset seek is a roadmap
 item." The seek-and-replay mechanism is a concrete future task, not a claim to
 make in the present tense. *README now; mechanism is a tracked roadmap item.*
+
+**Resolved (gateway-replay, 2026-06), in three pieces:**
+
+1. **Order-insensitive aggregator** (`aggregator.ts`) — deltas arriving before
+   their stream's snapshot are buffered (bounded, drop-oldest) and drained
+   seq-guarded when the snapshot lands, so cross-topic consumption order —
+   replay, warm restart, live race — converges to the same book.
+2. **Periodic snapshot re-emission** (`base_ingester.py`) — each LIVE symbol's
+   local book is re-published every `snapshot_interval_s` (default 300 s), so
+   the delta tail any warm start must replay is bounded to one interval.
+3. **Warm-start seek** (`warmstart.ts`) — on restart the gateway plans one seek
+   per (topic, partition) by topic class: `.snapshots` → latest snapshot inside
+   the lookback (else live edge), `.deltas` → first offset after now−lookback,
+   trades → live edge, status → earliest (compacted). Books and venue health
+   re-derive from the log instead of waiting on the ingester edge.
 
 ## D3 — NBBO numeric correctness: exact comparison in-process, exact arithmetic downstream
 

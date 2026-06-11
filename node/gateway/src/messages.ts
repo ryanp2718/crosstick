@@ -57,6 +57,9 @@ export interface BBOMsg {
 // threshold (see docs/DESIGN_nbbo.md "Per-leg staleness is the consumer's
 // call"). px/sz are the exact source decimal strings, passed through verbatim
 // (lossless) so the md.nbbo log feeds downstream exact-decimal arithmetic.
+// local_ts_ns and leg_age_ms are stream time — the max input event-time at
+// compute, not wall clock — so md.nbbo.* replays deterministically (D1). In
+// live operation stream time tracks wall clock within consumer lag (ms).
 export interface NBBOLeg {
   px: string;
   sz: string;

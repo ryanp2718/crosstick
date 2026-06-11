@@ -42,6 +42,16 @@ mechanically.
 - `NBBOMsg` is gateway-emitted JSON defined only in `messages.ts`; the Python
   streaming decoder (`models.decode`) does not cover it. `Spread` and `VWAP`
   exist in `models.py` but are not published on any live topic.
+- `md.book.*.snapshots` carries bootstrap/resync snapshots **and** periodic
+  re-emissions of the live local book (every `snapshot_interval_s`, default
+  300 s). Re-emitted snapshots are shape-identical, with `sequence` = the
+  book's current sequence and `exchange_ts_ns = 0` (locally generated, no
+  exchange event behind them); they bound the delta tail a warm-starting
+  consumer must replay to one interval.
+- `NBBOMsg.local_ts_ns` and per-leg `leg_age_ms` are **stream time** — the max
+  event-time across the gateway's consumed messages at compute, not wall
+  clock — so `md.nbbo.*` replays byte-for-byte (D1 in `ARCHITECTURE.md`). In
+  live operation stream time tracks wall clock within consumer lag (ms).
 
 ## Retention
 

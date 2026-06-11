@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+﻿import { describe, expect, it } from "vitest";
 
 import { Aggregator } from "../src/aggregator.js";
 import { CanonicalMap } from "../src/canonical.js";
@@ -25,7 +25,7 @@ describe("routeMessage", () => {
       t: "snap", exchange: "kraken", symbol: "BTC/USD", sequence: 0,
       bids: [["100", "1"]], asks: [["101", "2"]], exchange_ts_ns: 1, local_ts_ns: 2,
     };
-    const r = routeMessage(snap, agg, mappedCanonicalMap, nbboAgg);
+    const r = routeMessage(snap, agg, mappedCanonicalMap, nbboAgg, 2);
     expect(r.publish).toMatchObject({ t: "bbo", bid_px: "100", ask_px: "101" });
     expect(r.broadcast).toBe(r.publish);
   });
@@ -37,7 +37,7 @@ describe("routeMessage", () => {
       t: "snap", exchange: "kraken", symbol: "BTC/USD", sequence: 0,
       bids: [["100", "1"]], asks: [], exchange_ts_ns: 1, local_ts_ns: 2,
     };
-    const r = routeMessage(oneSided, agg, mappedCanonicalMap, nbboAgg);
+    const r = routeMessage(oneSided, agg, mappedCanonicalMap, nbboAgg, 2);
     expect(r.publish).toBeNull();
     expect(r.broadcast).toBeNull();
     expect(r.nbboPublish).toBeNull();
@@ -51,7 +51,7 @@ describe("routeMessage", () => {
       t: "trade", exchange: "kraken", symbol: "BTC/USD", trade_id: "1",
       price: "100", size: "0.5", side: "bid", exchange_ts_ns: 1, local_ts_ns: 2,
     };
-    const r = routeMessage(trade, agg, mappedCanonicalMap, nbboAgg);
+    const r = routeMessage(trade, agg, mappedCanonicalMap, nbboAgg, 2);
     expect(r.publish).toBeNull();
     expect(r.broadcast).toBe(trade);
     expect(r.nbboPublish).toBeNull();
@@ -64,9 +64,24 @@ describe("routeMessage", () => {
       t: "snap", exchange: "kraken", symbol: "BTC/USD", sequence: 0,
       bids: [["100", "1"]], asks: [["101", "2"]], exchange_ts_ns: 1, local_ts_ns: 2,
     };
-    const r = routeMessage(snap, agg, mappedCanonicalMap, nbboAgg);
+    const r = routeMessage(snap, agg, mappedCanonicalMap, nbboAgg, 2);
     expect(r.nbboPublish).toMatchObject({ t: "nbbo", canonical_id: "BTC-USD" });
     expect(r.nbboBroadcast).toBe(r.nbboPublish);
+  });
+
+  it("stamps NBBO from the caller's stream time, not wall clock (D1)", () => {
+    const agg = new Aggregator();
+    const nbboAgg = new NBBOAggregator();
+    const tsNs = 1_700_000_000_000_000_000;
+    const snap: BookSnapshotMsg = {
+      t: "snap", exchange: "kraken", symbol: "BTC/USD", sequence: 0,
+      bids: [["100", "1"]], asks: [["101", "2"]],
+      exchange_ts_ns: tsNs, local_ts_ns: tsNs,
+    };
+    const nowMs = tsNs / 1e6 + 25;
+    const r = routeMessage(snap, agg, mappedCanonicalMap, nbboAgg, nowMs);
+    expect(r.nbboPublish!.local_ts_ns).toBe(nowMs * 1e6);
+    expect(r.nbboPublish!.best_bid.leg_age_ms).toBe(25);
   });
 
   it("skips NBBO when the venue is not mapped", () => {
@@ -76,7 +91,7 @@ describe("routeMessage", () => {
       t: "snap", exchange: "kraken", symbol: "BTC/USD", sequence: 0,
       bids: [["100", "1"]], asks: [["101", "2"]], exchange_ts_ns: 1, local_ts_ns: 2,
     };
-    const r = routeMessage(snap, agg, emptyCanonicalMap, nbboAgg);
+    const r = routeMessage(snap, agg, emptyCanonicalMap, nbboAgg, 2);
     expect(r.publish).not.toBeNull();
     expect(r.nbboPublish).toBeNull();
   });

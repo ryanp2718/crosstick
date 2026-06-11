@@ -35,7 +35,7 @@ import websockets.exceptions
 from aiokafka import AIOKafkaProducer
 
 from common.backoff import FullJitterBackoff
-from common.kafka_io import latency_headers, status_topic
+from common.kafka_io import book_snapshot_topic, latency_headers, status_topic
 from common.metrics import (
     book_resyncs,
     book_state,
@@ -45,7 +45,7 @@ from common.metrics import (
     queue_depth,
     ws_reconnects,
 )
-from common.models import Status, encode
+from common.models import BookLevel, BookSnapshot, Side, Status, encode
 from common.ratelimit import AsyncTokenBucket
 from ingest.book import BookInvariantError, OrderBook
 
@@ -167,6 +167,7 @@ class BaseIngester(ABC):
         ws_max_size: int = 2**22,
         stale_timeout: float | None = None,
         heartbeat_s: float = 2.0,
+        snapshot_interval_s: float | None = 300.0,
     ) -> None:
         self.exchange = exchange
         self.symbols = list(symbols)
@@ -189,6 +190,13 @@ class BaseIngester(ABC):
         # heartbeat_s while streaming so the gateway can tell "alive" from a
         # crashed ingester (which sends no graceful 'down'). See common.models.Status.
         self.heartbeat_s = heartbeat_s
+        # Periodic re-snapshot: without it a snapshot exists only at
+        # bootstrap/resync, so any consumer warming up from the log would have
+        # to replay an unbounded delta tail. Re-emitting the local book every
+        # snapshot_interval_s bounds that tail to one interval — the keystone
+        # of the gateway's warm restart (D2) and of bounded replay seeks.
+        # None disables (book-less ingesters like binance-futures skip anyway).
+        self.snapshot_interval_s = snapshot_interval_s
         self._connected = False
 
         # Per-symbol context.
@@ -249,6 +257,7 @@ class BaseIngester(ABC):
         connection cleanly closes."""
         log.info("ingester start: exchange=%s symbols=%s", self.exchange, self.symbols)
         heartbeat = asyncio.create_task(self._heartbeat_loop(), name="ingest-heartbeat")
+        snapshotter = asyncio.create_task(self._snapshot_loop(), name="ingest-snapshotter")
         try:
             while not self._shutdown.is_set():
                 try:
@@ -270,8 +279,11 @@ class BaseIngester(ABC):
                 log.info("reconnect after %.2fs (attempt %d)", delay, self.backoff.attempt)
         finally:
             heartbeat.cancel()
+            snapshotter.cancel()
             with contextlib.suppress(asyncio.CancelledError):
                 await heartbeat
+            with contextlib.suppress(asyncio.CancelledError):
+                await snapshotter
             # Best-effort graceful 'down' so the gateway evicts us immediately
             # instead of waiting out its liveness timeout.
             await self._send_status("down")
@@ -303,6 +315,57 @@ class BaseIngester(ABC):
             await asyncio.sleep(self.heartbeat_s)
             if self._connected:
                 await self._send_status("up")
+
+    async def _snapshot_loop(self) -> None:
+        """Re-emit each LIVE symbol's local book to its snapshot topic every
+        snapshot_interval_s (see __init__ — bounds the delta tail a warm
+        consumer must replay). Skips while disconnected: a STALE book is the
+        previous connection's state and must not be republished as current."""
+        if self.snapshot_interval_s is None:
+            return
+        while not self._shutdown.is_set():
+            await asyncio.sleep(self.snapshot_interval_s)
+            if not self._connected:
+                continue
+            for ctx in self.contexts.values():
+                if ctx.state is not SymbolState.LIVE or ctx.book.sequence < 0:
+                    continue
+                try:
+                    await self._emit_book_snapshot(ctx)
+                except Exception as e:
+                    # Best-effort, like the heartbeat: delivery failures already
+                    # trip _produce_failed; a sync send error must not kill the
+                    # loop for the process lifetime.
+                    log.warning("periodic snapshot emit failed for %s: %s", ctx.symbol, e)
+
+    async def _emit_book_snapshot(self, ctx: SymbolContext) -> None:
+        """Serialize the full local book as a BookSnapshot at its current
+        sequence — identical shape to a bootstrap snapshot, so consumers can't
+        tell (and needn't care) which kind they warmed from."""
+        now_ns = time.time_ns()
+        book = ctx.book
+        snap = BookSnapshot(
+            exchange=self.exchange,
+            symbol=ctx.symbol,
+            sequence=book.sequence,
+            bids=[
+                BookLevel(price=str(px), size=str(sz))
+                for px, sz in book.top_n(Side.BID, book.depth(Side.BID))
+            ],
+            asks=[
+                BookLevel(price=str(px), size=str(sz))
+                for px, sz in book.top_n(Side.ASK, book.depth(Side.ASK))
+            ],
+            exchange_ts_ns=0,  # locally generated, no exchange event behind it
+            local_ts_ns=now_ns,
+        )
+        event = ParsedEvent(
+            symbol=ctx.symbol, kind="snapshot",
+            exchange_ts_ns=0, local_recv_ts_ns=now_ns,
+        )
+        await self._emit(
+            book_snapshot_topic(self.exchange, ctx.symbol), snap, ctx.symbol, event
+        )
 
     def _mark_all_stale(self, reason: str) -> None:
         counter = book_resyncs.labels(exchange=self.exchange, reason=reason)
