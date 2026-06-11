@@ -143,7 +143,9 @@ line, in capture order:
 
 Replay (`analytics/replay.py`) sends every record to **partition 0** of its
 original topic; the broker assigns fresh offsets `0..N-1`. Per-topic order is
-preserved exactly; **cross-topic order is not** — a consumer that needs the
-live snapshot-before-delta ordering must impose it (see the two-phase barrier
-in `analytics/tests/test_gateway_integration.py`; making the gateway
-order-insensitive is the D2 fix, Phase 3).
+preserved exactly; **cross-topic order is not** — but the gateway no longer
+needs it imposed: a delta arriving before its stream's snapshot is buffered
+and drained in order (D2 in `ARCHITECTURE.md`). Replay determinism is asserted
+end-to-end in `analytics/tests/test_gateway_integration.py`: an adversarial
+all-deltas-first replay converges to the same end state, and the same replay
+run twice produces byte-identical `md.bbo.*` / `md.nbbo.*` streams.

@@ -5,12 +5,16 @@ streaming spine (ingest → Redpanda → gateway → NBBO) feeds. Companion to
 `ARCHITECTURE.md` (→ "The analytics seam", D1–D7), `DESIGN_nbbo.md` (NBBO
 semantics, strict per-quote bucketing, `instruments.yml`), and `scale-out.md`.
 
-Status: **Phases 0–1 built.** Phase 0 (golden corpus + capture/replay +
-testcontainers harness) and Phase 1 (`python/materializer` → bronze Parquet on
-MinIO, exactly-once via start-offset object keys) are implemented and
-integration-tested; the lake/topic contract lives in `data-contracts.md`.
-Phases 2+ remain design. This doc records the decisions + open concerns so the
-"why" survives.
+Status: **Phases 0–1 built; Phase 3's determinism core landed (2026-06).**
+Phase 0 (golden corpus + capture/replay + testcontainers harness) and Phase 1
+(`python/materializer` → bronze Parquet on MinIO, exactly-once via start-offset
+object keys) are implemented and integration-tested; the lake/topic contract
+lives in `data-contracts.md`. The D1/D2 fixes shipped in the gateway-replay
+refactor, and Phase 3's headline acceptance test — replay twice → byte-identical
+`md.bbo.*`/`md.nbbo.*` — passes (`analytics/tests/test_gateway_integration.py`).
+The seekable research replay engine (replay-to-time-T over the reused
+`OrderBook`) remains. Phases 2, 4, 5 remain design. This doc records the
+decisions + open concerns so the "why" survives.
 
 ## Goal
 
@@ -251,13 +255,18 @@ frequency, per-hop latency, snapshot/delta ratios, venue uptime. These *are* tes
 (CI against the corpus's planted gap) *and* live monitors (Grafana). Tech: pandera
 + dbt tests.
 
-**Phase 3 — Replay engine + D1/D2 fixes** *(keystone)*
+**Phase 3 — Replay engine + D1/D2 fixes** *(keystone — determinism core done)*
 Deterministic, seekable replay: seek to last snapshot offset before T (**D2 fix**),
 replay deltas via the reused `OrderBook`, drive all timing off log-time `ts_ns`
 not wall-clock (**D1 fix**); optionally re-emit on the gateway WS protocol for
 dashboard scrubbing. Headline test: replay corpus twice → **byte-identical**
 output (the only proof D1/D2 are fixed). Provides the canonical fixture for
-everything else. *Hard dependency on the D1/D2 refactor — see Open concerns.*
+everything else. *Done (2026-06): D1/D2 shipped in the gateway-replay refactor
+(stream clock, order-insensitive aggregator, periodic snapshots, warm-start
+seek — see `ARCHITECTURE.md`), and the byte-identical test plus an adversarial
+all-deltas-first convergence test pass in
+`analytics/tests/test_gateway_integration.py`. Remaining: the seekable
+research-side replay engine (replay-to-T, dashboard scrubbing).*
 
 **Phase 4 — Silver: reconstructed book state + enriched events**
 Cadence book snapshots + as-of-joined enriched trades. Tests: **3-way
@@ -315,10 +324,9 @@ Genuinely unresolved — flagged for verification / decision, not yet locked.
 7. **Resolved:** `data-contracts.md` now exists and is the home for the
    topic/payload/bronze-lake/corpus contract (`ARCHITECTURE.md` D7).
 
-8. **Replay determinism depends on the D1/D2 refactor.** The Phase-3
-   byte-identical acceptance test cannot pass until wall-clock eviction (D1) and
-   snapshot-offset seek (D2) are fixed. Sequencing: those refactor items gate the
-   keystone.
+8. **Resolved (2026-06):** replay determinism depended on the D1/D2 refactor;
+   both shipped (gateway-replay), and the Phase-3 byte-identical acceptance
+   test now passes against the real gateway.
 
 9. **Ingestion fan-out (adjacent).** 50+ × many venues exceeds one-connection-
    per-exchange (`scale-out.md`): WS bandwidth (the ~1.1 MiB re-encoded / ~5 MiB
