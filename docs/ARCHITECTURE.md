@@ -126,7 +126,7 @@ only at the last mile.
   subtraction/division to fix a money-math bug is backwards, and the bug doesn't
   need it.
 - **All exact decimal *arithmetic* is computed downstream in the warehouse** over
-  `DECIMAL(18,8)` columns, where SQL gives exact decimal math for free: exact
+  `DECIMAL(38,18)` columns, where SQL gives exact decimal math for free: exact
   spread-as-a-fact, VWAP, notional, USD/USDT basis, spread distributions. This is
   the right Kappa seam — thin real-time serving, aggregation in the batch layer.
 - **`decimal.ts` stays as-is.** `cmpDecimal` is the `book.ts` BTree comparator on
@@ -135,8 +135,10 @@ only at the last mile.
 - **`big.js` is the boring-standard fallback**, pulled in *only* when a live-path
   feature first needs exact in-process arithmetic (e.g. a gateway-side VWAP or
   notional walk). That is the named-consumer trigger; nothing meets it today.
-- **Warehouse:** all price/size/spread columns `DECIMAL(18,8)` (never `DOUBLE`).
-  *Exact scale decided in the data-model session.*
+- **Warehouse:** all price/size/spread columns `DECIMAL(38,18)` (never `DOUBLE`).
+  Scale decided in the data-model session (`DESIGN_analytics.md`): 38 is
+  Iceberg's max precision and a ceiling DuckDB and ClickHouse share, so it's
+  portable; `(18,8)` breaks long-tail asset prices.
 
 **When to revisit.** The first live-serving feature that needs an exact computed
 decimal value in the gateway — at which point add `big.js` for that path.

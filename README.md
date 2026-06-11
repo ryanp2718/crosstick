@@ -28,11 +28,11 @@ durable log and source of truth.
               └───────────────┬──────────────┘
           ┌───────────────────┴────────────────────┐
           ▼                                          ▼
-  Node / TS gateway (kafkajs · ws)        Stream materializer  (roadmap)
-  live BBO + spread                         → Parquet on MinIO
-  cross-exchange NBBO                        → DuckDB + dbt (star schema)
-  per-client backpressure                   → PySpark daily roll-ups
-  venue-health leg eviction                 → Grafana board #2 (business)
+  Node / TS gateway (kafkajs · ws)        Stream materializer
+  live BBO + spread                         → bronze Parquet on MinIO
+  cross-exchange NBBO                        → DuckDB + dbt medallion (roadmap)
+  per-client backpressure                   → PySpark daily roll-ups (roadmap)
+  venue-health leg eviction                 → Grafana board #2 (roadmap)
   WS fan-out + snapshot-on-connect
           │
           ▼
@@ -84,15 +84,18 @@ durable log and source of truth.
 - [x] Browser dashboard — staleness-aware greying + crossed-book warnings
 - [x] Prometheus + Grafana ops dashboard
 - [x] CI gate (GitHub Actions) — vitest, pytest, ruff, tsc on push/PR
+- [x] Stream materializer — bronze Parquet lake on MinIO, exactly-once at the
+      file grain
+- [x] Cross-process integration harness — corpus replay through the real
+      gateway over ephemeral Redpanda, incl. byte-identical NBBO determinism
 
 **Roadmap (the analytics half of the diagram)**
 
-- [ ] Stream materializer → Parquet on MinIO
-- [ ] DuckDB + dbt star schema (business analytics)
+- [ ] DuckDB + dbt silver/gold marts (medallion over the event log — see
+      `docs/DESIGN_analytics.md`; the schema is an event/tick store, not a star)
 - [ ] PySpark daily long-horizon roll-ups
 - [ ] Grafana board #2 (business metrics)
 - [ ] Airflow orchestration
-- [ ] Cross-process integration harness (the biggest remaining test gap)
 
 ## Tech stack
 
