@@ -25,6 +25,7 @@ mechanically.
 | `md.bbo.{exchange}.{symbol}` | gateway | `BBO` (`bbo`) | `{exchange}:{symbol}` | delete |
 | `md.liquidations.{exchange}.{symbol}` | ingester (derivatives) | `Liquidation` (`liq`) | `{exchange}:{symbol}` | delete |
 | `md.markprice.{exchange}.{symbol}` | ingester (derivatives) | `MarkPrice` (`mark`) | `{exchange}:{symbol}` | delete |
+| `md.openinterest.{exchange}.{symbol}` | ingester (derivatives, REST poll) | `OpenInterest` (`oi`) | `{exchange}:{symbol}` | delete |
 | `md.nbbo.{canonical_id}` | gateway | `NBBOMsg` (`nbbo`, messages.ts only) | `{canonical_id}` | compact |
 
 - `{symbol}` in a **topic name** is the normalized form (`normalize_symbol`:
@@ -64,7 +65,7 @@ latest record per key indefinitely.
 ## Payload encoding
 
 - msgspec-tagged JSON; the tag field is `t` (`snap` / `delta` / `trade` /
-  `bbo` / `spread` / `status` / `nbbo` / `liq` / `mark`).
+  `bbo` / `spread` / `status` / `nbbo` / `liq` / `mark` / `oi`).
 - Prices and sizes are decimal **strings** end-to-end (no float drift);
   convert at the boundary where math is needed (D3 in `ARCHITECTURE.md`).
 - Book levels are `[price, size]` string arrays (`BookLevel` is `array_like`).
@@ -79,7 +80,7 @@ latest record per key indefinitely.
 
 ## Record headers
 
-Firehose records (book, trades, liquidations, markprice) carry
+Firehose records (book, trades, liquidations, markprice, openinterest) carry
 latency-tracking headers (`latency_headers()` in `kafka_io.py`):
 
 | Header | Value |
@@ -103,6 +104,7 @@ via `ops/instruments.yml`:
 | `bbo` | `md.bbo.*` | same |
 | `liquidations` | `md.liquidations.*` | same |
 | `mark_price` | `md.markprice.*` | same |
+| `open_interest` | `md.openinterest.*` | same |
 | `status` | `md.status.*` | `status/exchange={ex}/date=…/` |
 | `nbbo` | `md.nbbo.*` | `nbbo/symbol={canonical}/date=…/` |
 

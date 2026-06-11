@@ -1,7 +1,9 @@
 # Perp capture design (v1) — Binance USDⓈ-M
 
-Status: **Slice 1 in progress** (liquidations + mark/funding). Slices 2–3
-specified but not built.
+Status: **Slices 1–3 built** — liquidations + mark/funding (slice 1), open
+interest REST poll (slice 2, topic `md.openinterest.*`, payload `OpenInterest`
+tag `oi`), perp L2 book + aggTrade tape (slice 3) — all in
+`python/ingest/binance_futures.py`.
 
 ## Goal
 

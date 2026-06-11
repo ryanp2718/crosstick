@@ -52,7 +52,7 @@ from ingest.book import BookInvariantError, OrderBook
 log = logging.getLogger(__name__)
 
 EventKind = Literal[
-    "trade", "snapshot", "delta", "liquidation", "mark_price",
+    "trade", "snapshot", "delta", "liquidation", "mark_price", "open_interest",
     "heartbeat", "subscribed", "error", "other",
 ]
 
