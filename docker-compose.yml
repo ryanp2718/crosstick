@@ -139,6 +139,24 @@ services:
         condition: service_healthy
     restart: unless-stopped
 
+  # Perp capture slice 1: liquidations + mark/funding (DESIGN_perp_capture.md).
+  ingest-binance-futures:
+    build:
+      context: ./python
+      dockerfile: Dockerfile
+    command: ["python", "-m", "ingest.main"]
+    environment:
+      EXCHANGE: binance-futures
+      SYMBOLS: BTCUSDT,ETHUSDT
+      KAFKA_BROKERS: redpanda:9092
+      METRICS_PORT: "9104"
+    ports:
+      - "9104:9104"
+    depends_on:
+      redpanda:
+        condition: service_healthy
+    restart: unless-stopped
+
   ingest-kraken:
     build:
       context: ./python

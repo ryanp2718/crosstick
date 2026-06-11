@@ -17,6 +17,7 @@ from common.kafka_io import make_producer
 from common.metrics import install_uvloop_if_available, serve_metrics_in_background
 from ingest.base_ingester import BaseIngester
 from ingest.binance import BinanceIngester
+from ingest.binance_futures import BinanceFuturesIngester
 from ingest.coinbase import CoinbaseIngester
 from ingest.kraken import KrakenIngester
 
@@ -25,6 +26,7 @@ log = logging.getLogger(__name__)
 INGESTERS: dict[str, type[BaseIngester]] = {
     "coinbase": CoinbaseIngester,
     "binance": BinanceIngester,
+    "binance-futures": BinanceFuturesIngester,
     "kraken": KrakenIngester,
 }
 
@@ -55,7 +57,9 @@ def build_ingester(
 async def amain() -> None:
     exchange = os.environ.get("EXCHANGE", "").strip().lower()
     if not exchange:
-        raise SystemExit("EXCHANGE env var is required (coinbase|binance|kraken)")
+        raise SystemExit(
+            "EXCHANGE env var is required (coinbase|binance|binance-futures|kraken)"
+        )
     symbols = parse_symbols(os.environ.get("SYMBOLS"))
 
     serve_metrics_in_background()  # port from $METRICS_PORT

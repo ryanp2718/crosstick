@@ -112,7 +112,7 @@ export function bboTopic(exchange: string, symbol: string): string {
   return `md.bbo.${exchange}.${normalizeSymbol(symbol)}`;
 }
 
-// canonical_id is constrained to <BASE>-<QUOTE> (see ops/instruments.yml),
+// canonical_id is constrained to <BASE>-<QUOTE>[-PERP] (see ops/instruments.yml),
 // all topic-safe characters — no normalization required.
 export function nbboTopic(canonical_id: string): string {
   return `md.nbbo.${canonical_id}`;

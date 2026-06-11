@@ -5,6 +5,8 @@ Topic naming conventions (documented in `docs/data-contracts.md`):
 - md.book.{exchange}.{symbol}.snapshots
 - md.book.{exchange}.{symbol}.deltas
 - md.bbo.{exchange}.{symbol}           (published by gateway)
+- md.liquidations.{exchange}.{symbol}  (derivatives venues)
+- md.markprice.{exchange}.{symbol}     (derivatives venues)
 
 Symbols are normalized: '/' is replaced with '-' (Kafka disallows '/' in topic
 names). The native exchange symbol form is preserved in the message body (the
@@ -56,6 +58,14 @@ def book_delta_topic(exchange: str, symbol: str) -> str:
 
 def bbo_topic(exchange: str, symbol: str) -> str:
     return f"md.bbo.{exchange}.{normalize_symbol(symbol)}"
+
+
+def liquidation_topic(exchange: str, symbol: str) -> str:
+    return f"md.liquidations.{exchange}.{normalize_symbol(symbol)}"
+
+
+def markprice_topic(exchange: str, symbol: str) -> str:
+    return f"md.markprice.{exchange}.{normalize_symbol(symbol)}"
 
 
 def status_topic(exchange: str) -> str:

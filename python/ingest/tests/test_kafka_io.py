@@ -10,6 +10,8 @@ from common.kafka_io import (
     brokers_from_env,
     header_value,
     latency_headers,
+    liquidation_topic,
+    markprice_topic,
     normalize_symbol,
     status_topic,
     trade_topic,
@@ -30,6 +32,12 @@ def test_topic_names() -> None:
     assert book_snapshot_topic("kraken", "BTC/USD") == "md.book.kraken.BTC-USD.snapshots"
     assert book_delta_topic("kraken", "BTC/USD") == "md.book.kraken.BTC-USD.deltas"
     assert bbo_topic("binance", "BTCUSDT") == "md.bbo.binance.BTCUSDT"
+    assert liquidation_topic("binance-futures", "BTCUSDT") == (
+        "md.liquidations.binance-futures.BTCUSDT"
+    )
+    assert markprice_topic("binance-futures", "ETHUSDT") == (
+        "md.markprice.binance-futures.ETHUSDT"
+    )
 
 
 def test_status_topic() -> None:

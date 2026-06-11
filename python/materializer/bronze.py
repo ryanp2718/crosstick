@@ -63,6 +63,12 @@ def parse_topic(topic: str) -> TopicMeta:
     if topic.startswith("md.bbo."):
         ex, sym = _split_exchange_symbol(topic[len("md.bbo.") :], topic)
         return TopicMeta("bbo", ex, sym)
+    if topic.startswith("md.liquidations."):
+        ex, sym = _split_exchange_symbol(topic[len("md.liquidations.") :], topic)
+        return TopicMeta("liquidations", ex, sym)
+    if topic.startswith("md.markprice."):
+        ex, sym = _split_exchange_symbol(topic[len("md.markprice.") :], topic)
+        return TopicMeta("mark_price", ex, sym)
     if topic.startswith("md.status."):
         return TopicMeta("status", topic[len("md.status.") :], None)
     if topic.startswith("md.nbbo."):

@@ -30,6 +30,14 @@ INSTRUMENTS_FILE = REPO_ROOT / "ops" / "instruments.yml"
         ("md.bbo.binance.BTCUSDT", TopicMeta("bbo", "binance", "BTCUSDT")),
         ("md.status.kraken", TopicMeta("status", "kraken", None)),
         ("md.nbbo.BTC-USDT", TopicMeta("nbbo", None, "BTC-USDT")),
+        (
+            "md.liquidations.binance-futures.BTCUSDT",
+            TopicMeta("liquidations", "binance-futures", "BTCUSDT"),
+        ),
+        (
+            "md.markprice.binance-futures.ETHUSDT",
+            TopicMeta("mark_price", "binance-futures", "ETHUSDT"),
+        ),
     ],
 )
 def test_parse_topic(topic: str, expected: TopicMeta) -> None:
@@ -59,6 +67,10 @@ def test_canonical_map_resolves_and_falls_back() -> None:
     assert cmap.resolve("kraken", "BTC-USD") == "BTC-USD"
     # Unmapped → normalized native symbol, never a drop.
     assert cmap.resolve("coinbase", "DOGE-USD") == "DOGE-USD"
+    # Perps live in their own canonical namespace despite the shared native
+    # symbol (DESIGN_perp_capture.md).
+    assert cmap.resolve("binance-futures", "BTCUSDT") == "BTC-USDT-PERP"
+    assert cmap.resolve("binance", "BTCUSDT") == "BTC-USDT"
 
 
 def test_object_key_layouts() -> None:
@@ -75,6 +87,11 @@ def test_object_key_layouts() -> None:
     nbbo = parse_topic("md.nbbo.BTC-USDT")
     assert object_key(nbbo, cmap, 0, 7, "2023-11-14") == (
         "nbbo/symbol=BTC-USDT/date=2023-11-14/000-000000000007.parquet"
+    )
+    liq = parse_topic("md.liquidations.binance-futures.BTCUSDT")
+    assert object_key(liq, cmap, 0, 3, "2023-11-14") == (
+        "liquidations/exchange=binance-futures/symbol=BTC-USDT-PERP/date=2023-11-14/"
+        "000-000000000003.parquet"
     )
 
 
