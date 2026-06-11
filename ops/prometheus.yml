@@ -22,6 +22,8 @@ scrape_configs:
         labels: { exchange: coinbase }
       - targets: ["host.docker.internal:9103"]  # kraken
         labels: { exchange: kraken }
+      - targets: ["host.docker.internal:9104"]  # binance-futures
+        labels: { exchange: binance-futures }
   - job_name: materializer
     # Dev mode: host process on 9110. Container mode: materializer:9110.
     static_configs:

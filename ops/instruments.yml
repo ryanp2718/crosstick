@@ -39,3 +39,18 @@ instruments:
     quote: USDT
     venues:
       - { exchange: binance, symbol: ETHUSDT }
+
+  # Perpetual futures: own canonical namespace (-PERP suffix). Binance's perp
+  # symbol is also BTCUSDT, so without the distinct id a perp leg could
+  # aggregate into the spot NBBO. See docs/DESIGN_perp_capture.md.
+  BTC-USDT-PERP:
+    base: BTC
+    quote: USDT
+    venues:
+      - { exchange: binance-futures, symbol: BTCUSDT }
+
+  ETH-USDT-PERP:
+    base: ETH
+    quote: USDT
+    venues:
+      - { exchange: binance-futures, symbol: ETHUSDT }

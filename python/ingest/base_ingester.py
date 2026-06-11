@@ -51,7 +51,10 @@ from ingest.book import BookInvariantError, OrderBook
 
 log = logging.getLogger(__name__)
 
-EventKind = Literal["trade", "snapshot", "delta", "heartbeat", "subscribed", "error", "other"]
+EventKind = Literal[
+    "trade", "snapshot", "delta", "liquidation", "mark_price",
+    "heartbeat", "subscribed", "error", "other",
+]
 
 # Maximum number of WS deltas to buffer while a REST snapshot is in-flight
 # (Binance pattern).  If this limit is exceeded before the snapshot arrives,

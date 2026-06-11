@@ -80,6 +80,39 @@ class Spread(msgspec.Struct, tag="spread", tag_field="t", frozen=True):
     local_ts_ns: int
 
 
+class Liquidation(msgspec.Struct, tag="liq", tag_field="t", frozen=True):
+    """A forced (liquidation) order from a derivatives venue.
+
+    SAMPLED, not a tape: Binance pushes only the largest liquidation per
+    symbol per 1000ms (see DESIGN_perp_capture.md). `side` is the side of the
+    forced order itself — ASK means a long position was liquidated."""
+
+    exchange: str
+    symbol: str
+    side: Side
+    price: str
+    avg_price: str
+    orig_size: str
+    filled_size: str
+    status: str  # exchange order status, e.g. "FILLED"
+    exchange_ts_ns: int
+    local_ts_ns: int
+
+
+class MarkPrice(msgspec.Struct, tag="mark", tag_field="t", frozen=True):
+    """Derivatives mark/index/funding tick (Binance markPriceUpdate)."""
+
+    exchange: str
+    symbol: str
+    mark_price: str
+    index_price: str
+    est_settle_price: str
+    funding_rate: str
+    next_funding_ts_ns: int
+    exchange_ts_ns: int
+    local_ts_ns: int
+
+
 class Status(msgspec.Struct, tag="status", tag_field="t", frozen=True):
     """Per-exchange venue health: connection-state liveness, not quote freshness.
     'up' is a periodic heartbeat while streaming; 'down' is sent on graceful
@@ -114,7 +147,9 @@ def encode(msg: msgspec.Struct) -> bytes:
 
 # Streaming decoder: covers only the types that ingesters and the gateway
 # actually produce.  VWAP is excluded — it is never on a live topic.
-_STREAMING_TYPES = BookSnapshot | BookDelta | Trade | BBO | Spread | Status
+_STREAMING_TYPES = (
+    BookSnapshot | BookDelta | Trade | BBO | Spread | Status | Liquidation | MarkPrice
+)
 _DECODER = msgspec.json.Decoder(_STREAMING_TYPES)
 
 
