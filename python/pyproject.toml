@@ -12,6 +12,7 @@ dependencies = [
     "pyarrow==24.0.0",
     "numpy==2.4.6",
     "prometheus-client==0.25.0",
+    "pyyaml==6.0.3",
     "uvloop==0.22.1; sys_platform != 'win32'",
 ]
 
@@ -25,7 +26,7 @@ dev = [
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
-testpaths = ["ingest/tests", "analytics/tests"]
+testpaths = ["ingest/tests", "analytics/tests", "materializer/tests"]
 pythonpath = ["."]
 # Integration tests need Docker (testcontainers); excluded by default so the
 # unit suite stays fast. CI runs them in a separate job via `-m integration`.

@@ -14,5 +14,6 @@ RUN uv pip install --system --no-cache .
 COPY common ./common
 COPY ingest ./ingest
 COPY analytics ./analytics
+COPY materializer ./materializer
 
 CMD ["python", "-m", "ingest.main"]
