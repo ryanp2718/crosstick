@@ -1,9 +1,23 @@
 """Binance USDⓈ-M perpetual-futures ingester — liquidations, mark/funding,
 open interest, and the perp L2 book + trade tape.
 
-Feed: wss://fstream.binance.com/market/stream (combined streams, no auth)
-plus REST on fapi.binance.com for depth snapshots and open interest.
+Feed: wss://fstream.binance.com routed combined streams (no auth) plus REST
+on fapi.binance.com for depth snapshots and open interest.
 Design + verified wire contract: docs/DESIGN_perp_capture.md.
+
+Binance ROUTES futures WS streams by type (mandatory since the 2026-04-23
+legacy-URL sunset): depth lives on /public, aggTrade/markPrice/forceOrder on
+/market, and a connection to one path silently never delivers the other
+path's streams. So this driver runs as TWO instances of the same class
+(main.py builds both into one process), selected by ``mode``:
+
+  - mode="market": /market/stream — forceOrder + markPrice + aggTrade, plus
+    the slice-2 open-interest REST poll rider. Book-less and stateless.
+  - mode="depth":  /public/stream — depth@100ms + the REST-snapshot/BUFFERING
+    book machinery. This instance owns md.status.binance-futures: venue
+    status exists to evict stale book legs from NBBO, and the book lives
+    here. The market connection's liveness is observable independently via
+    the markPrice@1s cadence (md_messages_received_total).
 
 Slice 1 (forceOrder + markPrice) is stateless: both streams are venue-computed
 snapshots, so a reconnect (Binance force-closes at 24h) costs only the gap
@@ -25,8 +39,8 @@ background loop polls /fapi/v1/openInterest per symbol and emits
 md.openinterest.* — independent of the WS connection state.
 
 Wire notes:
-  - Routed paths are now required; all streams are known at construction, so we
-    connect to /market/stream?streams=... and never send live SUBSCRIBE
+  - All streams are known at construction, so each instance connects to its
+    routed /<path>/stream?streams=... URL and never sends live SUBSCRIBE
     messages (build_subscribe_messages returns []).
   - Combined-stream frames are enveloped {"stream": ..., "data": {...}}.
   - forceOrder is SAMPLED: largest liquidation per symbol per 1000ms only.
@@ -41,6 +55,7 @@ import contextlib
 import logging
 import time
 from decimal import Decimal
+from typing import Literal
 
 import httpx
 import msgspec
@@ -74,22 +89,29 @@ from ingest.base_ingester import (
 
 log = logging.getLogger(__name__)
 
-DEFAULT_WS_BASE = "wss://fstream.binance.com/market/stream"
+DEFAULT_WS_HOST = "wss://fstream.binance.com"
 DEFAULT_REST_BASE = "https://fapi.binance.com"
 DEFAULT_SYMBOLS = ["BTCUSDT", "ETHUSDT"]
 DEFAULT_DEPTH_LIMIT = 1000
-DEFAULT_STALE_TIMEOUT = 10.0  # markPrice@1s guarantees ~1 frame/s/symbol when healthy
+# market: markPrice@1s guarantees ~1 frame/s/symbol when healthy;
+# depth: depth@100ms is ~10 frames/s/symbol — both well inside 10s.
+DEFAULT_STALE_TIMEOUT = 10.0
 DEFAULT_OI_POLL_INTERVAL = 10.0  # finer than the 5m REST-backfill grain, weight-trivial
+
+Mode = Literal["market", "depth"]
+_MODE_PATH: dict[str, str] = {"market": "market", "depth": "public"}
 
 # Sentinel stored in self._snapshots when the REST fetch failed: the applier
 # resyncs on the next delta instead of waiting for the buffer to overflow.
 _FETCH_FAILED = object()
 
 
-def stream_names(symbols: list[str]) -> list[str]:
+def stream_names(symbols: list[str], mode: Mode) -> list[str]:
+    if mode == "depth":
+        return [f"{sym.lower()}@depth@100ms" for sym in symbols]
     return [name for sym in symbols for name in
             (f"{sym.lower()}@forceOrder", f"{sym.lower()}@markPrice@1s",
-             f"{sym.lower()}@depth@100ms", f"{sym.lower()}@aggTrade")]
+             f"{sym.lower()}@aggTrade")]
 
 
 # ─── wire structs (msgspec) ──────────────────────────────────────────────────
@@ -185,8 +207,9 @@ class BinanceFuturesIngester(BaseIngester):
         self,
         *,
         producer,
+        mode: Mode,
         symbols: list[str] | None = None,
-        ws_base: str = DEFAULT_WS_BASE,
+        ws_host: str = DEFAULT_WS_HOST,
         rest_base: str = DEFAULT_REST_BASE,
         depth_limit: int = DEFAULT_DEPTH_LIMIT,
         stale_timeout: float | None = DEFAULT_STALE_TIMEOUT,
@@ -194,10 +217,17 @@ class BinanceFuturesIngester(BaseIngester):
         **kw: object,
     ) -> None:
         symbols = symbols if symbols is not None else list(DEFAULT_SYMBOLS)
+        self._mode: Mode = mode
+        if mode == "market":
+            # Book-less: no periodic re-snapshot, and no md.status heartbeats —
+            # the depth instance owns venue status (see module docstring).
+            kw.setdefault("snapshot_interval_s", None)
+            kw.setdefault("heartbeat_s", None)
         super().__init__(
             exchange="binance-futures",
             symbols=symbols,
-            ws_url=f"{ws_base}?streams={'/'.join(stream_names(symbols))}",
+            ws_url=(f"{ws_host}/{_MODE_PATH[mode]}/stream"
+                    f"?streams={'/'.join(stream_names(symbols, mode))}"),
             producer=producer,
             stale_timeout=stale_timeout,
             **kw,
@@ -220,6 +250,9 @@ class BinanceFuturesIngester(BaseIngester):
     # ─── lifecycle ───────────────────────────────────────────────────────────
 
     async def run(self) -> None:
+        if self._mode != "market":
+            await super().run()
+            return
         poller = asyncio.create_task(self._oi_poll_loop(), name="binance-futures-oi")
         try:
             await super().run()
@@ -231,12 +264,14 @@ class BinanceFuturesIngester(BaseIngester):
     # ─── hooks ───────────────────────────────────────────────────────────────
 
     async def bootstrap(self, symbol: str) -> None:
-        """Flip BUFFERING and fetch the REST depth snapshot in the background.
+        """Depth mode: flip BUFFERING and fetch the REST snapshot in the
+        background. Market mode: no-op — its streams are stateless.
 
         Returns immediately: bootstrap runs inside the connect sequence before
         the reader/applier start, so it must not block on the REST round-trip.
-        The snapshot is applied later, on the applier. forceOrder/markPrice
-        events are stateless and emit regardless of book state."""
+        The snapshot is applied later, on the applier."""
+        if self._mode == "market":
+            return
         self.contexts[symbol].set_state(SymbolState.BUFFERING, reason="awaiting REST snapshot")
         self._snapshot_tasks[symbol] = asyncio.create_task(
             self._fetch_snapshot(symbol), name=f"binance-futures-snap-{symbol}"
@@ -479,6 +514,14 @@ class BinanceFuturesIngester(BaseIngester):
         if self._client is None:
             self._client = httpx.AsyncClient(timeout=httpx.Timeout(10.0))
         return self._client
+
+    def _mark_all_stale(self, reason: str) -> None:
+        if self._mode == "market":
+            # No book state to invalidate — and both instances share the
+            # (exchange, symbol) metric labels, so a market-connection blip
+            # must not overwrite the depth instance's md_book_state.
+            return
+        super()._mark_all_stale(reason)
 
     def _reset_contexts(self) -> None:
         super()._reset_contexts()

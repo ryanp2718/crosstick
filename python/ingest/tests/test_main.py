@@ -8,13 +8,14 @@ from __future__ import annotations
 import pytest
 
 from ingest.binance import BinanceIngester
+from ingest.binance_futures import BinanceFuturesIngester
 from ingest.coinbase import CoinbaseIngester
 from ingest.kraken import KrakenIngester
-from ingest.main import build_ingester, parse_symbols
+from ingest.main import build_ingesters, parse_symbols
 
 
 class _DummyProducer:
-    """build_ingester only stores the producer; it is never called here."""
+    """build_ingesters only stores the producer; it is never called here."""
 
 
 @pytest.mark.parametrize(
@@ -25,24 +26,41 @@ class _DummyProducer:
         ("kraken", KrakenIngester),
     ],
 )
-def test_build_ingester_selects_driver(exchange: str, cls: type) -> None:
-    ing = build_ingester(exchange, None, _DummyProducer())
+def test_build_ingesters_selects_driver(exchange: str, cls: type) -> None:
+    [ing] = build_ingesters(exchange, None, _DummyProducer())
     assert isinstance(ing, cls)
     assert ing.exchange == exchange
 
 
-def test_build_ingester_unknown_exchange_raises() -> None:
+def test_build_ingesters_binance_futures_is_two_routed_connections() -> None:
+    """Binance routes depth (/public) and market streams (/market) to separate
+    WS endpoints; the venue therefore needs two instances in one process, with
+    exactly one of them owning md.status.binance-futures."""
+    ingesters = build_ingesters("binance-futures", None, _DummyProducer())
+    assert all(isinstance(i, BinanceFuturesIngester) for i in ingesters)
+    assert all(i.exchange == "binance-futures" for i in ingesters)
+    paths = sorted(i.ws_url.split("?")[0] for i in ingesters)
+    assert paths == [
+        "wss://fstream.binance.com/market/stream",
+        "wss://fstream.binance.com/public/stream",
+    ]
+    status_owners = [i for i in ingesters if i.heartbeat_s is not None]
+    assert len(status_owners) == 1
+    assert "/public/stream" in status_owners[0].ws_url  # the depth instance
+
+
+def test_build_ingesters_unknown_exchange_raises() -> None:
     with pytest.raises(ValueError, match="unknown EXCHANGE"):
-        build_ingester("ftx", None, _DummyProducer())
+        build_ingesters("ftx", None, _DummyProducer())
 
 
-def test_build_ingester_passes_symbols_through() -> None:
-    ing = build_ingester("kraken", ["BTC/USD"], _DummyProducer())
+def test_build_ingesters_passes_symbols_through() -> None:
+    [ing] = build_ingesters("kraken", ["BTC/USD"], _DummyProducer())
     assert ing.symbols == ["BTC/USD"]
 
 
-def test_build_ingester_none_symbols_uses_driver_default() -> None:
-    ing = build_ingester("coinbase", None, _DummyProducer())
+def test_build_ingesters_none_symbols_uses_driver_default() -> None:
+    [ing] = build_ingesters("coinbase", None, _DummyProducer())
     assert ing.symbols  # non-empty driver default
 
 
