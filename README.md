@@ -88,6 +88,9 @@ durable log and source of truth.
       file grain
 - [x] Cross-process integration harness — corpus replay through the real
       gateway over ephemeral Redpanda, incl. byte-identical NBBO determinism
+- [x] Perp capture (Binance USDⓈ-M) — L2 book + aggTrade tape, liquidations,
+      mark/funding, open-interest poll, on two routed WS connections; validated
+      live end-to-end (book → NBBO `BTC-USDT-PERP` → bronze)
 
 **Roadmap (the analytics half of the diagram)**
 
