@@ -166,7 +166,7 @@ class BaseIngester(ABC):
         ping_timeout: float | None = 10.0,
         ws_max_size: int = 2**22,
         stale_timeout: float | None = None,
-        heartbeat_s: float = 2.0,
+        heartbeat_s: float | None = 2.0,
         snapshot_interval_s: float | None = 300.0,
     ) -> None:
         self.exchange = exchange
@@ -188,14 +188,18 @@ class BaseIngester(ABC):
         self._last_msg_monotonic: float = 0.0
         # Venue-health heartbeat: emit 'up' on md.status.<exchange> every
         # heartbeat_s while streaming so the gateway can tell "alive" from a
-        # crashed ingester (which sends no graceful 'down'). See common.models.Status.
+        # crashed ingester (which sends no graceful 'down'). None disables all
+        # status emission — for venues split across several connections
+        # (binance-futures), exactly one instance owns md.status.<exchange>.
+        # See common.models.Status.
         self.heartbeat_s = heartbeat_s
         # Periodic re-snapshot: without it a snapshot exists only at
         # bootstrap/resync, so any consumer warming up from the log would have
         # to replay an unbounded delta tail. Re-emitting the local book every
         # snapshot_interval_s bounds that tail to one interval — the keystone
         # of the gateway's warm restart (D2) and of bounded replay seeks.
-        # None disables (book-less ingesters like binance-futures skip anyway).
+        # None disables (book-less connections, e.g. the binance-futures
+        # market-streams instance, have nothing to re-emit).
         self.snapshot_interval_s = snapshot_interval_s
         self._connected = False
 
@@ -286,7 +290,8 @@ class BaseIngester(ABC):
                 await snapshotter
             # Best-effort graceful 'down' so the gateway evicts us immediately
             # instead of waiting out its liveness timeout.
-            await self._send_status("down")
+            if self.heartbeat_s is not None:
+                await self._send_status("down")
 
     async def shutdown(self) -> None:
         log.info("ingester shutdown requested")
@@ -311,6 +316,8 @@ class BaseIngester(ABC):
     async def _heartbeat_loop(self) -> None:
         """Emit an 'up' heartbeat every heartbeat_s while connected. Pauses
         (no send) during reconnect/backoff so a missed beat means truly down."""
+        if self.heartbeat_s is None:
+            return
         while not self._shutdown.is_set():
             await asyncio.sleep(self.heartbeat_s)
             if self._connected:
@@ -466,7 +473,8 @@ class BaseIngester(ABC):
             # Streaming now: announce liveness immediately; the heartbeat loop
             # keeps it fresh. Cleared in the finally below on any teardown.
             self._connected = True
-            await self._send_status("up")
+            if self.heartbeat_s is not None:
+                await self._send_status("up")
 
             reader_task = asyncio.create_task(self._reader(ws), name="ingest-reader")
             applier_task = asyncio.create_task(self._applier(), name="ingest-applier")

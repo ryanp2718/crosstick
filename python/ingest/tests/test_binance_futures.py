@@ -2,9 +2,11 @@
 
 Wire contract verified against current Binance derivatives docs (see
 docs/DESIGN_perp_capture.md): combined-stream envelope {"stream","data"},
-forceOrder with nested `o`, markPriceUpdate flat fields, routed /market/stream
-URL with all streams in the query (no live SUBSCRIBE), futures diff-depth
-(U/u/pu, snapshot overlap sync), aggTrade-only tape, REST openInterest.
+forceOrder with nested `o`, markPriceUpdate flat fields, streams routed by
+type across TWO connections (depth on /public/stream, the rest on
+/market/stream — one connection never delivers both), all streams in the
+query (no live SUBSCRIBE), futures diff-depth (U/u/pu, snapshot overlap
+sync), aggTrade-only tape, REST openInterest.
 """
 from __future__ import annotations
 
@@ -38,9 +40,9 @@ from ingest.tests.test_binance import RecordingProducer
 # ─── helpers ─────────────────────────────────────────────────────────────────
 
 
-def _ing(symbols=("BTCUSDT",)):
+def _ing(symbols=("BTCUSDT",), mode="depth"):
     return BinanceFuturesIngester(
-        producer=RecordingProducer(), symbols=list(symbols),
+        producer=RecordingProducer(), symbols=list(symbols), mode=mode,
         stale_timeout=None, oi_poll_interval_s=None,
     )
 
@@ -98,24 +100,61 @@ def _delta(ing, s, U, u, pu, **kw):
     return ing.parse_message(_depth_frame(s, U, u, pu, **kw), 1)[0]
 
 
-# ─── unit: URL + subscribe ───────────────────────────────────────────────────
+# ─── unit: routed URLs + subscribe ───────────────────────────────────────────
 
 
-def test_streams_in_connection_url_no_live_subscribe():
-    ing = _ing(symbols=("BTCUSDT", "ETHUSDT"))
+def test_market_mode_url_no_live_subscribe():
+    ing = _ing(symbols=("BTCUSDT", "ETHUSDT"), mode="market")
     assert ing.ws_url == (
         "wss://fstream.binance.com/market/stream?streams="
-        "btcusdt@forceOrder/btcusdt@markPrice@1s/btcusdt@depth@100ms/btcusdt@aggTrade/"
-        "ethusdt@forceOrder/ethusdt@markPrice@1s/ethusdt@depth@100ms/ethusdt@aggTrade"
+        "btcusdt@forceOrder/btcusdt@markPrice@1s/btcusdt@aggTrade/"
+        "ethusdt@forceOrder/ethusdt@markPrice@1s/ethusdt@aggTrade"
     )
     assert ing.build_subscribe_messages() == []
 
 
-def test_stream_names_quad_per_symbol():
-    assert stream_names(["BTCUSDT"]) == [
-        "btcusdt@forceOrder", "btcusdt@markPrice@1s",
-        "btcusdt@depth@100ms", "btcusdt@aggTrade",
+def test_depth_mode_url_routes_to_public():
+    """Depth belongs to Binance's /public endpoint; a /market connection
+    silently never delivers it (root cause of the 2026-06 silent book outage)."""
+    ing = _ing(symbols=("BTCUSDT", "ETHUSDT"), mode="depth")
+    assert ing.ws_url == (
+        "wss://fstream.binance.com/public/stream?streams="
+        "btcusdt@depth@100ms/ethusdt@depth@100ms"
+    )
+    assert ing.build_subscribe_messages() == []
+
+
+def test_stream_names_split_by_mode():
+    assert stream_names(["BTCUSDT"], "market") == [
+        "btcusdt@forceOrder", "btcusdt@markPrice@1s", "btcusdt@aggTrade",
     ]
+    assert stream_names(["BTCUSDT"], "depth") == ["btcusdt@depth@100ms"]
+
+
+def test_market_mode_is_bookless_and_does_not_own_status():
+    ing = _ing(mode="market")
+    assert ing.heartbeat_s is None  # depth instance owns md.status
+    assert ing.snapshot_interval_s is None  # nothing to re-emit
+
+    depth = _ing(mode="depth")
+    assert depth.heartbeat_s is not None
+    assert depth.snapshot_interval_s is not None
+
+
+@pytest.mark.asyncio
+async def test_market_mode_bootstrap_is_stateless_noop():
+    ing = _ing(mode="market")
+    await ing.bootstrap("BTCUSDT")
+    assert ing.contexts["BTCUSDT"].state is SymbolState.BOOTSTRAP
+    assert ing._snapshot_tasks == {}
+
+
+def test_market_mode_disconnect_does_not_clobber_book_state():
+    """Both instances share (exchange, symbol) metric labels; a market-side
+    reconnect must not mark the depth instance's healthy book STALE."""
+    ing = _ing(mode="market")
+    ing._mark_all_stale("connection_lost")
+    assert ing.contexts["BTCUSDT"].state is SymbolState.BOOTSTRAP
 
 
 @pytest.mark.asyncio
@@ -124,7 +163,7 @@ async def test_bootstrap_flips_buffering_and_fetches():
         async def _rest_snapshot(self, symbol):
             return 100, _wire([("100", "5")]), _wire([("110", "5")])
 
-    ing = _Fake(producer=RecordingProducer(), symbols=["BTCUSDT"],
+    ing = _Fake(producer=RecordingProducer(), symbols=["BTCUSDT"], mode="depth",
                 stale_timeout=None, oi_poll_interval_s=None)
     await ing.bootstrap("BTCUSDT")
     assert ing.contexts["BTCUSDT"].state is SymbolState.BUFFERING
@@ -136,7 +175,7 @@ async def test_bootstrap_flips_buffering_and_fetches():
 
 
 def test_parse_force_order():
-    evs = _ing().parse_message(_force_order_frame("BTCUSDT", T=1568014460893), 999)
+    evs = _ing(mode="market").parse_message(_force_order_frame("BTCUSDT", T=1568014460893), 999)
     assert len(evs) == 1
     ev = evs[0]
     assert ev.kind == "liquidation"
@@ -146,7 +185,7 @@ def test_parse_force_order():
 
 
 def test_parse_mark_price():
-    evs = _ing().parse_message(_mark_price_frame("BTCUSDT", E=1562305380000), 999)
+    evs = _ing(mode="market").parse_message(_mark_price_frame("BTCUSDT", E=1562305380000), 999)
     assert len(evs) == 1
     ev = evs[0]
     assert ev.kind == "mark_price"
@@ -168,7 +207,7 @@ def test_parse_depth():
 
 
 def test_parse_agg_trade():
-    evs = _ing().parse_message(_agg_trade_frame("BTCUSDT", a=7, T=5), 999)
+    evs = _ing(mode="market").parse_message(_agg_trade_frame("BTCUSDT", a=7, T=5), 999)
     assert len(evs) == 1
     ev = evs[0]
     assert ev.kind == "trade"
@@ -190,7 +229,7 @@ def test_parse_ignores_non_envelope_and_unknown_events():
 
 @pytest.mark.asyncio
 async def test_liquidation_emitted_with_conventions():
-    ing = _ing()
+    ing = _ing(mode="market")
     [ev] = ing.parse_message(_force_order_frame("BTCUSDT", S="SELL"), 999)
     await ing.process_event(ing.contexts["BTCUSDT"], ev)
 
@@ -215,7 +254,7 @@ async def test_liquidation_emitted_with_conventions():
 
 @pytest.mark.asyncio
 async def test_liquidation_buy_side_maps_to_bid():
-    ing = _ing()
+    ing = _ing(mode="market")
     [ev] = ing.parse_message(_force_order_frame("BTCUSDT", S="BUY"), 999)
     await ing.process_event(ing.contexts["BTCUSDT"], ev)
     msg = decode(ing.producer.calls[0][1])
@@ -224,7 +263,7 @@ async def test_liquidation_buy_side_maps_to_bid():
 
 @pytest.mark.asyncio
 async def test_mark_price_emitted_with_conventions():
-    ing = _ing()
+    ing = _ing(mode="market")
     [ev] = ing.parse_message(_mark_price_frame("BTCUSDT"), 999)
     await ing.process_event(ing.contexts["BTCUSDT"], ev)
 
@@ -249,7 +288,7 @@ async def test_mark_price_emitted_with_conventions():
 @pytest.mark.asyncio
 @pytest.mark.parametrize("m,expected", [(False, Side.BID), (True, Side.ASK)])
 async def test_agg_trade_emits_with_side(m, expected):
-    ing = _ing()
+    ing = _ing(mode="market")
     [ev] = ing.parse_message(_agg_trade_frame("BTCUSDT", a=42, m=m), 3)
     await ing.process_event(ing.contexts["BTCUSDT"], ev)
     topic, value, kw = ing.producer.calls[-1]
@@ -421,7 +460,7 @@ def _oi_ing(responses):
                 raise value
             return value
 
-    return _Fake(producer=RecordingProducer(), symbols=list(responses),
+    return _Fake(producer=RecordingProducer(), symbols=list(responses), mode="market",
                  stale_timeout=None, oi_poll_interval_s=None)
 
 

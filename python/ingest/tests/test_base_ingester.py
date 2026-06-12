@@ -419,6 +419,26 @@ async def test_heartbeat_emits_up_while_connected(fake_server: FakeExchangeServe
 
 
 @pytest.mark.asyncio
+async def test_heartbeat_none_emits_no_status_at_all(
+    fake_server: FakeExchangeServer,
+) -> None:
+    """heartbeat_s=None disables every status emission (up, heartbeat, down):
+    for venues split across several connections (binance-futures), exactly one
+    instance owns md.status.<exchange> and the others must stay silent."""
+    fake_server.scripted = [json.dumps({"sym": "X", "seq": 1, "kind": "trade"})]
+    ing = make_ingester(fake_server, heartbeat_s=None)
+    run_task = asyncio.create_task(ing.run())
+    for _ in range(100):
+        if len(ing.processed) >= 1:
+            break
+        await asyncio.sleep(0.02)
+    await ing.shutdown()
+    await asyncio.wait_for(run_task, timeout=3.0)
+
+    assert _status_msgs(ing.producer) == []
+
+
+@pytest.mark.asyncio
 async def test_graceful_shutdown_emits_down(fake_server: FakeExchangeServer) -> None:
     """A graceful shutdown emits a final 'down' so the gateway evicts the venue
     immediately (without waiting for the liveness timeout)."""

@@ -70,19 +70,31 @@ with no service changes.
 - Caveat (pre-existing): kafkajs matches regex subscriptions against topics
   existing at subscribe time — restart the gateway after first perp produce.
 
-## Wire contract (verified against Binance docs, 2026-06-10)
+## Wire contract (docs verified 2026-06-10; routing verified live 2026-06-11)
 
-Base: the futures WS now requires **routed paths**; bare
-`wss://fstream.binance.com/ws` is documented as Public-endpoint-only fallback.
-All streams are known at construction, so the ingester connects straight to
-the combined-stream URL and never sends live SUBSCRIBE messages:
+Base: the futures WS requires **routed paths** (legacy unrouted URLs sunset
+2026-04-23), and the routing is **per stream type** — depth belongs to the
+Public endpoint, aggTrade/markPrice/forceOrder to the Market endpoint. A
+connection to one path *silently never delivers* the other path's streams
+(verified live: an all-streams `/market/stream` connection delivers trades
+and marks but zero depth frames; bare `/stream` delivers only depth). One
+venue therefore needs two connections:
 
-    wss://fstream.binance.com/market/stream?streams=btcusdt@forceOrder/btcusdt@markPrice@1s/…
+    wss://fstream.binance.com/market/stream?streams=btcusdt@forceOrder/btcusdt@markPrice@1s/btcusdt@aggTrade/…
+    wss://fstream.binance.com/public/stream?streams=btcusdt@depth@100ms/…
+
+`ingest.main` builds both as two instances of `BinanceFuturesIngester`
+(`mode="market"` / `mode="depth"`) in one process. The depth instance owns
+`md.status.binance-futures` (status exists to evict stale book legs from
+NBBO); the market connection's liveness is observable via the markPrice@1s
+cadence in `md_messages_received_total`. All streams are known at
+construction, so each instance connects straight to its combined-stream URL
+and never sends live SUBSCRIBE messages.
 
 Combined-stream frames are enveloped `{"stream": "...", "data": {...}}`.
 Connections are force-closed at 24h; the BaseIngester reconnect loop handles
-it (these streams are stateless — no book to resync — so the cost is the gap
-window, visible via the status heartbeat).
+it (market streams are stateless, so their cost is the gap window; the depth
+connection re-bootstraps from a fresh REST snapshot like any resync).
 
 - `<symbol>@forceOrder` — `e=forceOrder`, nested `o`: `s`, `S` (side of the
   forced order: SELL = long liquidated), `q` orig qty, `p` price, `ap` avg

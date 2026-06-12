@@ -39,19 +39,28 @@ def parse_symbols(raw: str | None) -> list[str] | None:
     return syms or None
 
 
-def build_ingester(
+def build_ingesters(
     exchange: str,
     symbols: list[str] | None,
     producer: object,
-) -> BaseIngester:
-    """Construct the driver for ``exchange``; ValueError on an unknown name."""
+) -> list[BaseIngester]:
+    """Construct the driver(s) for ``exchange``; ValueError on an unknown name.
+
+    binance-futures returns two instances sharing one producer: Binance routes
+    depth and market streams to different WS endpoints, and one connection
+    never delivers both (see ingest/binance_futures.py)."""
+    if exchange == "binance-futures":
+        return [
+            BinanceFuturesIngester(producer=producer, symbols=symbols, mode="market"),
+            BinanceFuturesIngester(producer=producer, symbols=symbols, mode="depth"),
+        ]
     try:
         cls = INGESTERS[exchange]
     except KeyError:
         raise ValueError(
             f"unknown EXCHANGE {exchange!r}; expected one of {sorted(INGESTERS)}"
         ) from None
-    return cls(producer=producer, symbols=symbols)
+    return [cls(producer=producer, symbols=symbols)]
 
 
 async def amain() -> None:
@@ -69,19 +78,28 @@ async def amain() -> None:
     # __init__ error) leaks the producer's network connections and background
     # sender task.
     try:
-        ingester = build_ingester(exchange, symbols, producer)
+        ingesters = build_ingesters(exchange, symbols, producer)
+
+        shutdown_futs: list[asyncio.Future[None]] = []  # keep refs (RUF006)
+
+        def _request_shutdown() -> None:
+            shutdown_futs.extend(
+                asyncio.ensure_future(ing.shutdown()) for ing in ingesters
+            )
 
         loop = asyncio.get_running_loop()
         for sig in (signal.SIGINT, signal.SIGTERM):
             try:
-                loop.add_signal_handler(sig, lambda: asyncio.ensure_future(ingester.shutdown()))
+                loop.add_signal_handler(sig, _request_shutdown)
             except NotImplementedError:
                 # Windows ProactorEventLoop lacks add_signal_handler;
                 # KeyboardInterrupt (handled in main) still stops a local dev run.
                 log.warning("signal handlers unavailable on this platform; use Ctrl+C")
                 break
 
-        await ingester.run()
+        # One failed run() fails the process (compose restarts it) — letting
+        # half a venue keep running would mask the loss of the other half.
+        await asyncio.gather(*(ing.run() for ing in ingesters))
     finally:
         await producer.stop()
 
