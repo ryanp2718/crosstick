@@ -29,8 +29,8 @@ scrape_configs:
     static_configs:
       - targets: ["host.docker.internal:9110"]
   - job_name: gateway
-    # Dev mode runs the gateway on the host (port 8080, /metrics shared with WS).
-    # Container mode would target gateway:9120 once the image exposes it there.
+    # /metrics is served on the WS port (8080) in both dev and container mode;
+    # the container publishes 8080 to the host, so one target covers both.
     static_configs:
       - targets: ["host.docker.internal:8080"]
   - job_name: redpanda
