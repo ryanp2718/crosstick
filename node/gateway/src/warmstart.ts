@@ -18,9 +18,14 @@
 //   md.status.* — earliest; compacted, so this replays the latest liveness
 //                 per venue into the stream clock and eviction state.
 //
-// Replayed inputs re-publish md.bbo/md.nbbo messages already in the log —
-// harmless: same keys into compacted topics, and WS clients dedup nothing
-// worse than a startup burst.
+// Replayed inputs would re-publish md.bbo/md.nbbo already in the log. That is
+// NOT harmless when the per-topic backlogs drain unevenly: the stream clock is
+// the max event-time across ALL topics, so a leg from a slow-draining book is
+// aged (and cross-checked) against a clock a fast-draining topic already pushed
+// ahead — a stale top-of-book then wins the NBBO and prints a phantom cross
+// until its own replay catches up. md.status drains far faster than md.book, so
+// liveness eviction doesn't suppress it. DrainGate (below) holds derived output
+// until every backlogged book partition reaches its startup HWM.
 
 export type TopicClass = "snapshots" | "deltas" | "trades" | "status" | "other";
 
@@ -52,6 +57,11 @@ export interface Seek {
   topic: string;
   partition: number;
   offset: string;
+  // Set only for book partitions sought strictly below the live edge: the last
+  // offset of the startup backlog (HWM-1) the server must replay before its
+  // book is rebuilt. Absent when the seek lands at the live edge (empty topic,
+  // or no snapshot/delta inside the lookback) — those carry no backlog to gate.
+  drainTo?: string;
 }
 
 export async function planWarmStart(
@@ -99,8 +109,63 @@ export async function planWarmStart(
           break;
         }
       }
-      seeks.push({ topic, partition, offset });
+      const seek: Seek = { topic, partition, offset };
+      // A book seek below the live edge has a backlog [offset, hwm-1] to replay;
+      // record its end so the server can gate output until it's drained.
+      if ((cls === "snapshots" || cls === "deltas") && BigInt(offset) < hwm) {
+        seek.drainTo = (hwm - 1n).toString();
+      }
+      seeks.push(seek);
     }
   }
   return seeks;
+}
+
+// Holds the gateway's derived output (md.bbo/md.nbbo) through the warm-start
+// replay and opens it once every backlogged book partition has drained — see
+// the module header for why an ungated uneven drain emits phantom crosses. A
+// clean start (and the byte-identical replay test) plans no drainTo, so the
+// gate is never armed and emission is unchanged.
+interface DrainState {
+  drainTo: bigint;
+  // True once we've seen an offset within the backlog (<= drainTo). Guards
+  // against a pre-seek straggler from the committed edge — an offset already
+  // past the backlog — spuriously opening the gate before the replay runs.
+  engaged: boolean;
+}
+
+function drainKey(topic: string, partition: number): string {
+  return `${topic} ${partition}`;
+}
+
+export class DrainGate {
+  private readonly pending = new Map<string, DrainState>();
+
+  constructor(seeks: Seek[]) {
+    for (const s of seeks) {
+      if (s.drainTo !== undefined) {
+        this.pending.set(drainKey(s.topic, s.partition), {
+          drainTo: BigInt(s.drainTo),
+          engaged: false,
+        });
+      }
+    }
+  }
+
+  // True while any backlogged book partition is still draining — output held.
+  get warming(): boolean {
+    return this.pending.size > 0;
+  }
+
+  // Record a consumed offset; returns true exactly once — on the message that
+  // drains the final pending partition (the instant the gate opens).
+  observe(topic: string, partition: number, offset: string): boolean {
+    const st = this.pending.get(drainKey(topic, partition));
+    if (st === undefined) return false;
+    const off = BigInt(offset);
+    if (off <= st.drainTo) st.engaged = true;
+    if (!st.engaged || off < st.drainTo) return false;
+    this.pending.delete(drainKey(topic, partition));
+    return this.pending.size === 0;
+  }
 }

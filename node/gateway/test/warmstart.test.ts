@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { classifyTopic, planWarmStart, type AdminLike } from "../src/warmstart.js";
+import { classifyTopic, DrainGate, planWarmStart, type AdminLike } from "../src/warmstart.js";
 
 // Stub admin: per-topic partition offsets plus the offset-for-timestamp answer
 // the broker would give for the warm-start cutoff.
@@ -44,7 +44,7 @@ describe("planWarmStart", () => {
     });
     const seeks = await planWarmStart(admin, ["md.book.kraken.BTC-USD.snapshots"], NOW, LOOKBACK);
     expect(seeks).toEqual([
-      { topic: "md.book.kraken.BTC-USD.snapshots", partition: 0, offset: "11" },
+      { topic: "md.book.kraken.BTC-USD.snapshots", partition: 0, offset: "11", drainTo: "11" },
     ]);
   });
 
@@ -144,8 +144,92 @@ describe("planWarmStart", () => {
     });
     const seeks = await planWarmStart(admin, ["md.book.kraken.BTC-USD.deltas"], NOW, LOOKBACK);
     expect(seeks).toEqual([
-      { topic: "md.book.kraken.BTC-USD.deltas", partition: 0, offset: "90" },
+      { topic: "md.book.kraken.BTC-USD.deltas", partition: 0, offset: "90", drainTo: "99" },
       { topic: "md.book.kraken.BTC-USD.deltas", partition: 1, offset: "200" },
     ]);
+  });
+
+  it("records drainTo on deltas sought below the live edge, but not at it", async () => {
+    const admin = stubAdmin({
+      "md.book.kraken.BTC-USD.deltas": {
+        partitions: [{ partition: 0, high: "5000", low: "0" }],
+        atCutoff: [{ partition: 0, offset: "4200" }],
+      },
+    });
+    const [backlogged] = await planWarmStart(
+      admin, ["md.book.kraken.BTC-USD.deltas"], NOW, LOOKBACK,
+    );
+    expect(backlogged.drainTo).toBe("4999"); // hwm - 1
+
+    const liveEdge = stubAdmin({
+      "md.book.kraken.BTC-USD.deltas": {
+        partitions: [{ partition: 0, high: "5000", low: "0" }],
+        atCutoff: [{ partition: 0, offset: "-1" }], // nothing recent → seek to edge
+      },
+    });
+    const [atEdge] = await planWarmStart(liveEdge, ["md.book.kraken.BTC-USD.deltas"], NOW, LOOKBACK);
+    expect(atEdge.drainTo).toBeUndefined();
+  });
+
+  it("leaves trades and status without a drainTo (no backlog to gate)", async () => {
+    const admin = stubAdmin({
+      "md.trades.kraken.BTC-USD": { partitions: [{ partition: 0, high: "900", low: "100" }] },
+      "md.status.kraken": { partitions: [{ partition: 0, high: "40", low: "3" }] },
+    });
+    const seeks = await planWarmStart(
+      admin, ["md.trades.kraken.BTC-USD", "md.status.kraken"], NOW, LOOKBACK,
+    );
+    expect(seeks.every((s) => s.drainTo === undefined)).toBe(true);
+  });
+});
+
+describe("DrainGate", () => {
+  const SNAP = "md.book.kraken.BTC-USD.snapshots";
+  const DELTA = "md.book.coinbase.BTC-USD.deltas";
+
+  it("is never warming when the plan has no backlog (clean start / replay test)", () => {
+    const gate = new DrainGate([
+      { topic: "md.trades.kraken.BTC-USD", partition: 0, offset: "900" },
+      { topic: SNAP, partition: 0, offset: "12" }, // live-edge seek, no drainTo
+    ]);
+    expect(gate.warming).toBe(false);
+    expect(gate.observe(SNAP, 0, "12")).toBe(false);
+  });
+
+  it("holds until a single backlogged partition reaches its drain target", () => {
+    const gate = new DrainGate([{ topic: DELTA, partition: 0, offset: "90", drainTo: "99" }]);
+    expect(gate.warming).toBe(true);
+    expect(gate.observe(DELTA, 0, "95")).toBe(false); // mid-backlog
+    expect(gate.warming).toBe(true);
+    expect(gate.observe(DELTA, 0, "99")).toBe(true); // reaches drainTo → opens
+    expect(gate.warming).toBe(false);
+  });
+
+  it("opens only once every backlogged partition has drained", () => {
+    const gate = new DrainGate([
+      { topic: SNAP, partition: 0, offset: "11", drainTo: "11" },
+      { topic: DELTA, partition: 0, offset: "4200", drainTo: "4999" },
+    ]);
+    expect(gate.observe(SNAP, 0, "11")).toBe(false); // one of two drained
+    expect(gate.warming).toBe(true);
+    expect(gate.observe(DELTA, 0, "4999")).toBe(true); // second → opens
+    expect(gate.warming).toBe(false);
+  });
+
+  it("ignores a pre-seek straggler already past the backlog", () => {
+    const gate = new DrainGate([{ topic: DELTA, partition: 0, offset: "4200", drainTo: "4999" }]);
+    // A committed-edge message (offset 5200 > drainTo) arrives before the
+    // re-sought backlog: it must not open the gate.
+    expect(gate.observe(DELTA, 0, "5200")).toBe(false);
+    expect(gate.warming).toBe(true);
+    // The replay then drains the backlog for real.
+    expect(gate.observe(DELTA, 0, "4999")).toBe(true);
+  });
+
+  it("ignores offsets for partitions it isn't gating", () => {
+    const gate = new DrainGate([{ topic: DELTA, partition: 0, offset: "90", drainTo: "99" }]);
+    expect(gate.observe("md.book.binance.BTCUSDT.deltas", 0, "99")).toBe(false);
+    expect(gate.observe(DELTA, 1, "99")).toBe(false); // different partition
+    expect(gate.warming).toBe(true);
   });
 });
