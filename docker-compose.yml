@@ -7,8 +7,10 @@ name: crosstick
 
 services:
   # ─── source of truth ──────────────────────────────────────────────────────
+  # Pinned, not :latest: kafkajs is sensitive to broker behavior changes (the
+  # v26 fetch-path default switch broke it); upgrade the broker deliberately.
   redpanda:
-    image: redpandadata/redpanda:latest
+    image: redpandadata/redpanda:v26.1.9
     container_name: redpanda
     command:
       - redpanda
@@ -42,8 +44,14 @@ services:
   # - log_retention_ms: default is 7 days; until the materializer (Phase 1)
   #   projects topics to the lake, retention IS the data-loss horizon. 30 days,
   #   bounded so a forgotten dev stack can't fill the disk.
+  # - fetch_read_strategy: v26 defaults to non_polling, which starves kafkajs
+  #   fetches into Request/ListOffsets timeouts and crash loops; polling is the
+  #   pre-v26 behavior the client is stable on.
+  # - default_topic_partitions: already Redpanda's default, pinned because
+  #   single-partition topics are what makes per-topic total order — and
+  #   byte-identical NBBO replay — hold for auto-created topics.
   redpanda-init:
-    image: redpandadata/redpanda:latest
+    image: redpandadata/redpanda:v26.1.9
     container_name: redpanda-init
     depends_on:
       redpanda:
@@ -53,6 +61,8 @@ services:
       - |
         rpk -X admin.hosts=redpanda:9644 cluster config set kafka_batch_max_bytes 8388608
         rpk -X admin.hosts=redpanda:9644 cluster config set log_retention_ms 2592000000
+        rpk -X admin.hosts=redpanda:9644 cluster config set fetch_read_strategy polling
+        rpk -X admin.hosts=redpanda:9644 cluster config set default_topic_partitions 1
     restart: "no"
 
   redpanda-console:
@@ -105,6 +115,8 @@ services:
     restart: "no"
 
   # ─── ingest (Python, one process per exchange) ────────────────────────────
+  # All `build:` services bake their source into the image: deploying new code
+  # needs `docker compose up -d --build <svc>`, not just `up -d`.
   ingest-binance:
     build:
       context: ./python
@@ -212,10 +224,11 @@ services:
     environment:
       KAFKA_BROKERS: redpanda:9092
       WS_PORT: "8080"
-      METRICS_PORT: "9120"
+    volumes:
+      # Mounted over the baked copy so instrument edits don't need a rebuild.
+      - ./ops/instruments.yml:/app/ops/instruments.yml:ro
     ports:
-      - "8080:8080"
-      - "9120:9120"
+      - "8080:8080"   # WS + dashboard + /metrics (no separate metrics port)
     depends_on:
       redpanda:
         condition: service_healthy
