@@ -26,7 +26,7 @@ import {
 } from "./metrics.js";
 import { NBBOAggregator } from "./nbbo.js";
 import { routeMessage, type RouteResult } from "./router.js";
-import { planWarmStart } from "./warmstart.js";
+import { DrainGate, planWarmStart } from "./warmstart.js";
 
 // ── config (env, with dev-friendly defaults) ────────────────────────────────
 const BROKERS = (process.env.KAFKA_BROKERS ?? "localhost:19092")
@@ -115,6 +115,12 @@ async function main(): Promise<void> {
   // then nothing is emitted either; per-leg ages are the consumer's staleness
   // signal, and ingester liveness is alerted on independently via Prometheus.
   let streamNowMs = 0;
+
+  // Warm-start output gate (warmstart.ts → DrainGate). Null until the warm-start
+  // plan is applied; while `gate.warming`, derived md.bbo/md.nbbo are held so an
+  // uneven backlog drain can't emit a stale-leg phantom cross. A clean start
+  // plans no backlog and never arms it.
+  let gate: DrainGate | null = null;
 
   // ── WS server (+ tiny HTTP for health, dashboard, metrics, upgrade) ──────
   const httpServer = http.createServer((req, res) => {
@@ -218,6 +224,7 @@ async function main(): Promise<void> {
   // Publish an NBBO to its compacted topic (fire-and-forget) + broadcast to WS.
   // Reused by the live book path and by status-driven recompute.
   const emitNbbo = (nbbo: NBBOMsg): void => {
+    if (gate?.warming) return; // held through the warm-start drain
     nbboConstituents.set({ canonical_id: nbbo.canonical_id }, nbbo.constituents.length);
     if (nbbo.crossed) nbboCrossed.inc({ canonical_id: nbbo.canonical_id });
     bboInflight.inc();
@@ -291,34 +298,46 @@ async function main(): Promise<void> {
         return;
       }
       messagesConsumed.inc({ topic, result: "ok" });
-      if (result.publish) {
-        const bbo = result.publish;
-        bboInflight.inc();
-        // Fire-and-forget: awaiting producer.send here would cap publish rate
-        // at 1/broker-RTT per partition (same antipattern the python ingester
-        // removed in a6d1fae). The gateway is stateless — a dropped md.bbo
-        // publish is recovered by the next L1 move; no resync needed.
-        const p: Promise<unknown> = producer
-          .send({
-            topic: bboTopic(bbo.exchange, bbo.symbol),
-            messages: [{ key: `${bbo.exchange}:${bbo.symbol}`, value: JSON.stringify(bbo) }],
-          })
-          .then(() => bboProduced.inc({ result: "ok" }))
-          .catch((err) => {
-            bboProduced.inc({ result: "error" });
-            console.error("[gateway] kafka produce failed:", err);
-          })
-          .finally(() => {
-            inFlight.delete(p);
-            bboInflight.dec();
-          });
-        inFlight.add(p);
-      }
-      if (result.broadcast) broadcaster.broadcast(result.broadcast);
+      // Hold derived output while the warm-start backlog drains; the book is
+      // still rebuilt above (routeMessage), just not (re)published yet.
+      if (!gate?.warming) {
+        if (result.publish) {
+          const bbo = result.publish;
+          bboInflight.inc();
+          // Fire-and-forget: awaiting producer.send here would cap publish rate
+          // at 1/broker-RTT per partition (same antipattern the python ingester
+          // removed in a6d1fae). The gateway is stateless — a dropped md.bbo
+          // publish is recovered by the next L1 move; no resync needed.
+          const p: Promise<unknown> = producer
+            .send({
+              topic: bboTopic(bbo.exchange, bbo.symbol),
+              messages: [{ key: `${bbo.exchange}:${bbo.symbol}`, value: JSON.stringify(bbo) }],
+            })
+            .then(() => bboProduced.inc({ result: "ok" }))
+            .catch((err) => {
+              bboProduced.inc({ result: "error" });
+              console.error("[gateway] kafka produce failed:", err);
+            })
+            .finally(() => {
+              inFlight.delete(p);
+              bboInflight.dec();
+            });
+          inFlight.add(p);
+        }
+        if (result.broadcast) broadcaster.broadcast(result.broadcast);
 
-      // nbboPublish and nbboBroadcast are the same object (see router.ts);
-      // emitNbbo does both the compacted-topic publish and the WS broadcast.
-      if (result.nbboPublish) emitNbbo(result.nbboPublish);
+        // nbboPublish and nbboBroadcast are the same object (see router.ts);
+        // emitNbbo does both the compacted-topic publish and the WS broadcast.
+        if (result.nbboPublish) emitNbbo(result.nbboPublish);
+      }
+
+      // The message that drains the last backlogged book partition opens the
+      // gate; flush a snapshot so the compacted md.nbbo carries the true
+      // current state, not whatever the pre-restart edge left there.
+      if (gate?.observe(topic, partition, message.offset)) {
+        console.log("[gateway] warm-start drain complete — resuming derived output");
+        for (const nbbo of nbboAgg.snapshot(streamNowMs)) emitNbbo(nbbo);
+      }
     },
   });
 
@@ -332,9 +351,15 @@ async function main(): Promise<void> {
   );
   const seeks = await planWarmStart(admin, warmTopics, Date.now(), WARMSTART_LOOKBACK_MS);
   for (const s of seeks) consumer.seek(s);
+  // Arm the gate only after the seeks land (no await between): the pre-seek
+  // prefix consumed from the committed edge is the existing harmless replay
+  // (D2a), but its offsets sit at/after the backlog targets and would open the
+  // gate spuriously — so observe() must run only against the post-seek backlog.
+  gate = new DrainGate(seeks);
   console.log(
     `[gateway] warm-start: planned ${seeks.length} seeks across ${warmTopics.length} topics ` +
-      `(lookback ${WARMSTART_LOOKBACK_MS}ms)`,
+      `(lookback ${WARMSTART_LOOKBACK_MS}ms)` +
+      (gate.warming ? "; holding derived output until the book backlog drains" : ""),
   );
 
   // Periodic lag + aggregator-size refresh. fetchTopicOffsets returns the HWM
