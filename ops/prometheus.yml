@@ -10,29 +10,31 @@ storage:
   tsdb:
     out_of_order_time_window: 5m
 
+rule_files:
+  - alerts.yml
+
 scrape_configs:
+  # Targets are compose service DNS (Prometheus runs on the same network).
+  # The TargetDown alert in alerts.yml makes any unreachable target loud, so a
+  # mismatch can't go silent. To scrape an ingester run on the host for dev,
+  # point its target at host.docker.internal:<METRICS_PORT> instead.
   - job_name: ingest
-    # Dev mode runs the ingesters on the host; start each with a distinct
-    # METRICS_PORT (binance 9101, coinbase 9102, kraken 9103). Container mode
-    # would target ingest-<exchange>:910x once those services land in compose.
     static_configs:
-      - targets: ["host.docker.internal:9101"]  # binance
+      - targets: ["ingest-binance:9101"]
         labels: { exchange: binance }
-      - targets: ["host.docker.internal:9102"]  # coinbase
+      - targets: ["ingest-coinbase:9102"]
         labels: { exchange: coinbase }
-      - targets: ["host.docker.internal:9103"]  # kraken
+      - targets: ["ingest-kraken:9103"]
         labels: { exchange: kraken }
-      - targets: ["host.docker.internal:9104"]  # binance-futures
+      - targets: ["ingest-binance-futures:9104"]
         labels: { exchange: binance-futures }
   - job_name: materializer
-    # Dev mode: host process on 9110. Container mode: materializer:9110.
     static_configs:
-      - targets: ["host.docker.internal:9110"]
+      - targets: ["materializer:9110"]
   - job_name: gateway
-    # /metrics is served on the WS port (8080) in both dev and container mode;
-    # the container publishes 8080 to the host, so one target covers both.
+    # /metrics is served on the WS port (8080).
     static_configs:
-      - targets: ["host.docker.internal:8080"]
+      - targets: ["gateway:8080"]
   - job_name: redpanda
     static_configs:
       - targets: ["redpanda:9644"]

@@ -30,8 +30,13 @@ Level = tuple[Decimal, Decimal]
 class BookInvariantError(Exception):
     """Raised when book state would violate an invariant.
 
-    The caller MUST treat this as a signal to resync from snapshot.
+    The caller MUST treat this as a signal to resync from snapshot. `kind`
+    classifies the violation for the md_book_invariant_violations_total metric.
     """
+
+    def __init__(self, message: str, *, kind: str) -> None:
+        super().__init__(message)
+        self.kind = kind
 
 
 class OrderBook:
@@ -94,7 +99,8 @@ class OrderBook:
             ask_top = new_asks.peekitem(0)[0]
             if bid_top >= ask_top:
                 raise BookInvariantError(
-                    f"snapshot crossed: best_bid={bid_top} >= best_ask={ask_top}"
+                    f"snapshot crossed: best_bid={bid_top} >= best_ask={ask_top}",
+                    kind="snapshot_crossed",
                 )
         self._bids = new_bids
         self._asks = new_asks
@@ -108,7 +114,8 @@ class OrderBook:
     ) -> None:
         if sequence <= self.sequence:
             raise BookInvariantError(
-                f"non-monotonic sequence: prev={self.sequence} new={sequence}"
+                f"non-monotonic sequence: prev={self.sequence} new={sequence}",
+                kind="non_monotonic_seq",
             )
         # Apply, then validate. If validate fails, restoring would be costly;
         # we leave the book in the post-apply state and the caller marks STALE.
@@ -127,7 +134,8 @@ class OrderBook:
             ask_top = self._asks.peekitem(0)[0]
             if bid_top >= ask_top:
                 raise BookInvariantError(
-                    f"crossed after delta: best_bid={bid_top} >= best_ask={ask_top}"
+                    f"crossed after delta: best_bid={bid_top} >= best_ask={ask_top}",
+                    kind="crossed_after_delta",
                 )
         self.sequence = sequence
 

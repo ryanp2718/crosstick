@@ -99,22 +99,25 @@ def test_top_n_returns_ascending_asks() -> None:
 
 def test_crossed_book_raises_invariant_error() -> None:
     b = OrderBook(exchange="x", symbol="BTC-USD")
-    with pytest.raises(BookInvariantError):
+    with pytest.raises(BookInvariantError) as excinfo:
         b.apply_snapshot(sequence=1, bids=[(D("101"), D("1"))], asks=[(D("100"), D("1"))])
+    assert excinfo.value.kind == "snapshot_crossed"
 
 
 def test_delta_that_would_cross_book_raises() -> None:
     b = OrderBook(exchange="x", symbol="BTC-USD")
     b.apply_snapshot(sequence=1, bids=[(D("100"), D("1"))], asks=[(D("101"), D("1"))])
-    with pytest.raises(BookInvariantError):
+    with pytest.raises(BookInvariantError) as excinfo:
         b.apply_delta(sequence=2, bids=[(D("102"), D("1"))], asks=[])
+    assert excinfo.value.kind == "crossed_after_delta"
 
 
 def test_delta_with_non_monotonic_sequence_raises() -> None:
     b = OrderBook(exchange="x", symbol="BTC-USD")
     b.apply_snapshot(sequence=5, bids=[(D("100"), D("1"))], asks=[(D("101"), D("1"))])
-    with pytest.raises(BookInvariantError):
+    with pytest.raises(BookInvariantError) as excinfo:
         b.apply_delta(sequence=4, bids=[(D("99"), D("1"))], asks=[])
+    assert excinfo.value.kind == "non_monotonic_seq"
 
 
 def test_checksum_top_10_kraken_format() -> None:

@@ -80,3 +80,24 @@ jobs:
       # CLI -m overrides the default `-m 'not integration'` in addopts.
       - run: uv run pytest -q -m integration
         working-directory: python
+
+  # Lint the ops config this repo ships but no app test parses: a broken alert
+  # expr or malformed dashboard JSON would otherwise fail silently at runtime.
+  # promtool comes from the same prom/prometheus image compose deploys.
+  config:
+    name: config (promtool + dashboards)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: promtool check config + rules
+        run: |
+          docker run --rm -w /ops -v "$PWD/ops:/ops" --entrypoint /bin/promtool \
+            prom/prometheus:latest check config prometheus.yml
+          docker run --rm -w /ops -v "$PWD/ops:/ops" --entrypoint /bin/promtool \
+            prom/prometheus:latest check rules alerts.yml
+      - name: validate dashboard JSON
+        run: |
+          for f in ops/grafana/dashboards/*.json; do
+            echo "checking $f"
+            jq empty "$f"
+          done

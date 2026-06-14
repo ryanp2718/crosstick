@@ -240,6 +240,7 @@ services:
     container_name: prometheus
     volumes:
       - ./ops/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./ops/alerts.yml:/etc/prometheus/alerts.yml:ro
     ports:
       - "9090:9090"
     restart: unless-stopped

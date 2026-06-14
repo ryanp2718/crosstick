@@ -37,6 +37,7 @@ from aiokafka import AIOKafkaProducer
 from common.backoff import FullJitterBackoff
 from common.kafka_io import book_snapshot_topic, latency_headers, status_topic
 from common.metrics import (
+    book_invariant_violations,
     book_resyncs,
     book_state,
     bytes_received,
@@ -662,6 +663,9 @@ class BaseIngester(ABC):
                         "invariant violation %s/%s: %s",
                         self.exchange, ev.symbol, e,
                     )
+                    book_invariant_violations.labels(
+                        exchange=self.exchange, symbol=ev.symbol, kind=e.kind
+                    ).inc()
                     ctx.book.clear()  # book is partially-applied; clear before marking STALE
                     ctx.set_state(SymbolState.STALE, reason="invariant_violation")
                     book_resyncs.labels(
