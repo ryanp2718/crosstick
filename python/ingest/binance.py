@@ -223,6 +223,7 @@ class BinanceIngester(BaseIngester):
                 exchange=self.exchange, symbol=ctx.symbol, sequence=last_id,
                 bids=wbids, asks=wasks,
                 exchange_ts_ns=0, local_ts_ns=event.local_recv_ts_ns,
+                epoch=self._epoch,
             ),
             ctx.symbol, event,
         )
@@ -255,6 +256,7 @@ class BinanceIngester(BaseIngester):
                 exchange=self.exchange, symbol=ctx.symbol, sequence=ev.u,
                 bids=ev.b, asks=ev.a,
                 exchange_ts_ns=event.exchange_ts_ns, local_ts_ns=event.local_recv_ts_ns,
+                epoch=self._epoch,
             ),
             ctx.symbol, event,
         )

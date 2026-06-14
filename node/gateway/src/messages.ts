@@ -13,6 +13,9 @@ export interface BookSnapshotMsg {
   asks: WireLevel[];
   exchange_ts_ns: number;
   local_ts_ns: number;
+  // Per-WS-connection generation (models.py BookSnapshot.epoch). Optional on the
+  // wire — pre-epoch captures omit it; the aggregator treats absent as 0.
+  epoch?: number;
 }
 
 export interface BookDeltaMsg {
@@ -24,6 +27,7 @@ export interface BookDeltaMsg {
   asks: WireLevel[];
   exchange_ts_ns: number;
   local_ts_ns: number;
+  epoch?: number; // see BookSnapshotMsg.epoch
 }
 
 export interface TradeMsg {

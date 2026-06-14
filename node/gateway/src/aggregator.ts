@@ -1,4 +1,6 @@
 import { Book } from "./book.js";
+import { cmpDecimal } from "./decimal.js";
+import { bboCrossed } from "./metrics.js";
 import type { BBOMsg, BookDeltaMsg, BookSnapshotMsg } from "./messages.js";
 
 // Deltas retained per stream while waiting for its snapshot (drop-oldest on
@@ -15,6 +17,15 @@ export const MAX_PENDING_DELTAS = 10_000;
 // ones the snapshot already covers). Cross-topic consumption order — replay,
 // warm restart, live race — therefore converges to the same book; only the
 // emitted BBO *sequence* coalesces when deltas drain in a batch.
+//
+// Epoch-keyed (see messages.ts BookSnapshotMsg.epoch): coinbase/kraken reset
+// their per-connection sequence counter on each reconnect, so a prior
+// connection's high-seq delta can out-rank a fresh snapshot's low seq. A delta
+// is only applied to a book of its OWN connection epoch; deltas of any other
+// epoch are buffered (never applied to the live book) until a matching-epoch
+// snapshot drains them. This is what stops the warm-start crossed-book
+// corruption — by equality only, so it is immune to the clock skew that can
+// reorder epoch values.
 export class Aggregator {
   private readonly books = new Map<string, Book>();
   private readonly lastBbo = new Map<string, BBOMsg>();
@@ -22,11 +33,13 @@ export class Aggregator {
 
   applyBook(msg: BookSnapshotMsg | BookDeltaMsg): BBOMsg | null {
     const key = `${msg.exchange} ${msg.symbol}`;
+    const epoch = msg.epoch ?? 0;
 
     if (msg.t === "delta") {
       const book = this.books.get(key);
-      // No snapshot yet for this stream → hold the delta for the drain.
-      if (!book || book.seq < 0) {
+      // No book yet, or a different connection epoch than the current book →
+      // buffer for a matching-epoch snapshot drain (see class header).
+      if (!book || book.seq < 0 || epoch !== book.epoch) {
         const queue = this.pending.get(key) ?? [];
         if (queue.length >= MAX_PENDING_DELTAS) queue.shift();
         queue.push(msg);
@@ -42,15 +55,20 @@ export class Aggregator {
       book = new Book();
       this.books.set(key, book);
     }
-    book.applySnapshot(msg.sequence, msg.bids, msg.asks);
-    // Drain buffered deltas in arrival (= sequence) order; the seq guard drops
-    // the ones the snapshot supersedes. One BBO from the final state — ts
-    // fields come from the last message that actually mutated the book.
+    book.applySnapshot(msg.sequence, epoch, msg.bids, msg.asks);
+    // Drain only this snapshot's own epoch (seq guard drops what it supersedes);
+    // retain other epochs for their own snapshot. ts from the last applied msg.
     let last: BookSnapshotMsg | BookDeltaMsg = msg;
+    const retained: BookDeltaMsg[] = [];
     for (const delta of this.pending.get(key) ?? []) {
+      if ((delta.epoch ?? 0) !== epoch) {
+        retained.push(delta);
+        continue;
+      }
       if (book.applyDelta(delta.sequence, delta.bids, delta.asks)) last = delta;
     }
-    this.pending.delete(key);
+    if (retained.length > 0) this.pending.set(key, retained);
+    else this.pending.delete(key);
     return this.deriveBbo(key, book, last);
   }
 
@@ -68,6 +86,10 @@ export class Aggregator {
     const bid = book.bestBid();
     const ask = book.bestAsk();
     if (!bid || !ask) return null; // one-sided book has no BBO
+
+    // Crossed within-venue book (ask < bid) = upstream corruption: count it but
+    // still emit — the gateway is a faithful projection, not a silent fixer.
+    if (cmpDecimal(ask[0], bid[0]) < 0) bboCrossed.inc({ exchange: msg.exchange });
 
     const prev = this.lastBbo.get(key);
     if (

@@ -302,6 +302,27 @@ async def test_process_crossed_delta_raises_invariant():
         await ing.process_event(ctx, crossed)
 
 
+async def test_emitted_book_messages_carry_connection_epoch():
+    """Snapshot + delta from one connection share that connection's epoch — what
+    lets the gateway tell this connection's deltas from a prior (reset-counter)
+    one's."""
+    ing = _ing()
+    ing._reset_contexts()  # assigns a fresh connection epoch
+    epoch = ing._epoch
+    assert epoch != 0
+    ctx = ing.contexts["BTC-USD"]
+    snap = ing.parse_message(
+        _l2_frame(0, etype="snapshot", bids=[("100", "1")], offers=[("101", "2")]), 1
+    )[0]
+    await ing.process_event(ctx, snap)
+    delta = ing.parse_message(_l2_frame(1, etype="update", bids=[("99", "3")]), 1)[0]
+    await ing.process_event(ctx, delta)
+
+    book_msgs = [decode(v) for t, v, _ in ing.producer.calls if t.startswith("md.book.")]
+    assert len(book_msgs) == 2
+    assert all(m.epoch == epoch for m in book_msgs)
+
+
 async def test_process_trade_emits_regardless_of_state():
     ing = _ing()
     ctx = ing.contexts["BTC-USD"]
