@@ -36,6 +36,12 @@ class BookSnapshot(msgspec.Struct, tag="snap", tag_field="t", frozen=True):
     asks: list[BookLevel]
     exchange_ts_ns: int
     local_ts_ns: int
+    # Per-WS-connection generation. coinbase/kraken reset `sequence` on each
+    # reconnect, so sequence alone can't tell a prior connection's deltas from
+    # the current one's — the gateway keys book reconstruction on (epoch,
+    # sequence) to avoid replaying a stale epoch onto a fresh snapshot. Defaults
+    # to 0 so pre-epoch captures decode (compared by equality only — never time).
+    epoch: int = 0
 
 
 class BookDelta(msgspec.Struct, tag="delta", tag_field="t", frozen=True):
@@ -46,6 +52,7 @@ class BookDelta(msgspec.Struct, tag="delta", tag_field="t", frozen=True):
     asks: list[BookLevel]
     exchange_ts_ns: int
     local_ts_ns: int
+    epoch: int = 0  # see BookSnapshot.epoch
 
 
 class Trade(msgspec.Struct, tag="trade", tag_field="t", frozen=True):

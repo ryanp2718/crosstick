@@ -1,20 +1,31 @@
 import { describe, expect, it } from "vitest";
 
 import { Aggregator, MAX_PENDING_DELTAS } from "../src/aggregator.js";
+import { bboCrossed } from "../src/metrics.js";
 import type { BookDeltaMsg, BookSnapshotMsg, WireLevel } from "../src/messages.js";
 
-function snap(seq: number, bids: WireLevel[], asks: WireLevel[]): BookSnapshotMsg {
+function snap(
+  seq: number, bids: WireLevel[], asks: WireLevel[], epoch?: number,
+): BookSnapshotMsg {
   return {
     t: "snap", exchange: "kraken", symbol: "BTC/USD", sequence: seq,
-    bids, asks, exchange_ts_ns: 1, local_ts_ns: 2,
+    bids, asks, exchange_ts_ns: 1, local_ts_ns: 2, epoch,
   };
 }
 
-function delta(seq: number, bids: WireLevel[], asks: WireLevel[]): BookDeltaMsg {
+function delta(
+  seq: number, bids: WireLevel[], asks: WireLevel[], epoch?: number,
+): BookDeltaMsg {
   return {
     t: "delta", exchange: "kraken", symbol: "BTC/USD", sequence: seq,
-    bids, asks, exchange_ts_ns: 1, local_ts_ns: 2,
+    bids, asks, exchange_ts_ns: 1, local_ts_ns: 2, epoch,
   };
+}
+
+// Read the gateway_bbo_crossed_total value for one exchange (0 if unseen).
+async function crossedFor(exchange: string): Promise<number> {
+  const m = await bboCrossed.get();
+  return m.values.find((v) => v.labels.exchange === exchange)?.value ?? 0;
 }
 
 describe("Aggregator", () => {
@@ -130,5 +141,55 @@ describe("Aggregator", () => {
     const snap1 = a.snapshot();
     expect(snap1).toHaveLength(1);
     expect(snap1[0]).toMatchObject({ exchange: "kraken", bid_px: "100.5" });
+  });
+
+  describe("epoch-keyed reconstruction (warm-start cross fix)", () => {
+    it("drops a prior-epoch high-seq delta buffered before the snapshot", () => {
+      const a = new Aggregator();
+      // Prior connection (epoch 1) left a high-seq delta whose bid sits ABOVE
+      // the fresh snapshot's ask — applying it would cross the book.
+      a.applyBook(delta(5000, [["200", "1"]], [], 1));
+      // Current connection (epoch 2) snapshot resets the counter to 0.
+      const bbo = a.applyBook(snap(0, [["100", "1"]], [["101", "1"]], 2));
+      // The stale-epoch delta is dropped, not drained → clean book, no cross.
+      expect(bbo).toMatchObject({ bid_px: "100", ask_px: "101" });
+    });
+
+    it("buffers (never applies) a prior-epoch delta arriving after the snapshot", () => {
+      const a = new Aggregator();
+      a.applyBook(snap(0, [["100", "1"]], [["101", "1"]], 2));
+      // A straggler from epoch 1 with a crossing bid and a higher seq.
+      expect(a.applyBook(delta(5000, [["200", "1"]], [], 1))).toBeNull();
+      // Live book is untouched — still the epoch-2 snapshot's top-of-book.
+      expect(a.snapshot()[0]).toMatchObject({ bid_px: "100", ask_px: "101" });
+    });
+
+    it("buffers a newer-epoch delta until its snapshot drains it", () => {
+      const a = new Aggregator();
+      a.applyBook(snap(0, [["100", "1"]], [["101", "1"]], 2));
+      // A delta from the next connection (epoch 3) races ahead of its snapshot.
+      expect(a.applyBook(delta(1, [["100.5", "3"]], [], 3))).toBeNull();
+      // Its snapshot lands and drains the buffered epoch-3 delta.
+      const bbo = a.applyBook(snap(0, [["100", "1"]], [["101", "1"]], 3));
+      expect(bbo).toMatchObject({ bid_px: "100.5", ask_px: "101" });
+    });
+
+    it("applies same-epoch deltas under the seq guard", () => {
+      const a = new Aggregator();
+      a.applyBook(snap(5, [["100", "1"]], [["101", "1"]], 9));
+      // Same epoch, newer seq → applies.
+      expect(a.applyBook(delta(6, [["100.5", "3"]], [], 9))?.bid_px).toBe("100.5");
+      // Same epoch, stale seq → dropped.
+      expect(a.applyBook(delta(6, [["100.7", "3"]], [], 9))).toBeNull();
+    });
+  });
+
+  it("counts a crossed book but still emits the BBO", async () => {
+    const a = new Aggregator();
+    const before = await crossedFor("kraken");
+    // A snapshot whose bid sits above its ask (planted upstream corruption).
+    const bbo = a.applyBook(snap(0, [["200", "1"]], [["101", "1"]], 1));
+    expect(bbo).toMatchObject({ bid_px: "200", ask_px: "101" }); // still emitted
+    expect(await crossedFor("kraken")).toBe(before + 1); // and counted
   });
 });

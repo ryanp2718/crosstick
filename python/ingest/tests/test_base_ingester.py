@@ -914,6 +914,28 @@ async def test_periodic_snapshot_skips_unwarmed_book(
     assert _book_snaps(ing.producer) == []
 
 
+async def test_reset_contexts_sets_fresh_epoch_stamped_on_snapshot() -> None:
+    """_reset_contexts() assigns a fresh per-connection epoch (overwriting any
+    prior value) and the periodic re-snapshot stamps the live book with it."""
+    from decimal import Decimal as D
+
+    ing = BookedIngester(
+        exchange="fake", symbols=["X"], ws_url="ws://unused",
+        producer=FakeProducer(), ping_interval=None, ping_timeout=None,
+    )
+    ing._epoch = 12345  # sentinel a fresh connection must replace
+    ing._reset_contexts()
+    assert ing._epoch != 12345 and ing._epoch != 0
+
+    ctx = ing.contexts["X"]
+    ctx.book.apply_snapshot(7, [(D("100"), D("1"))], [(D("101"), D("2"))])
+    ctx.set_state(SymbolState.LIVE, reason="test")
+    await ing._emit_book_snapshot(ctx)
+
+    snaps = _book_snaps(ing.producer)
+    assert snaps and snaps[-1]["epoch"] == ing._epoch
+
+
 @pytest.mark.asyncio
 async def test_periodic_snapshot_none_disables(
     fake_server: FakeExchangeServer,

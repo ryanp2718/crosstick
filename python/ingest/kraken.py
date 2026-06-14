@@ -239,6 +239,7 @@ class KrakenIngester(BaseIngester):
                     exchange=self.exchange, symbol=ctx.symbol, sequence=0,
                     bids=_wire_levels(d.bids), asks=_wire_levels(d.asks),
                     exchange_ts_ns=event.exchange_ts_ns, local_ts_ns=event.local_recv_ts_ns,
+                    epoch=self._epoch,
                 ),
                 ctx.symbol, event,
             )
@@ -264,6 +265,7 @@ class KrakenIngester(BaseIngester):
                 bids=_wire_levels(d.bids) + _deletes(evicted_bids),
                 asks=_wire_levels(d.asks) + _deletes(evicted_asks),
                 exchange_ts_ns=event.exchange_ts_ns, local_ts_ns=event.local_recv_ts_ns,
+                epoch=self._epoch,
             ),
             ctx.symbol, event,
         )

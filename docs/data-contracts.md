@@ -49,6 +49,11 @@ mechanically.
   book's current sequence and `exchange_ts_ns = 0` (locally generated, no
   exchange event behind them); they bound the delta tail a warm-starting
   consumer must replay to one interval.
+- `BookSnapshot` / `BookDelta` carry an `epoch` (per-WS-connection generation,
+  default `0`). coinbase/kraken reset `sequence` on each reconnect, so the
+  gateway only applies a delta to a book of the same `epoch` — a prior
+  connection's deltas can't corrupt a fresh snapshot. Compared by equality only
+  (never as a clock); pre-epoch records decode as `0`.
 - `NBBOMsg.local_ts_ns` and per-leg `leg_age_ms` are **stream time** — the max
   event-time across the gateway's consumed messages at compute, not wall
   clock — so `md.nbbo.*` replays byte-for-byte (D1 in `ARCHITECTURE.md`). In

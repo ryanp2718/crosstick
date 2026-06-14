@@ -20,13 +20,19 @@ export class Book {
   private readonly bids = new BTree<string, string>(undefined, cmpDecimal);
   private readonly asks = new BTree<string, string>(undefined, cmpDecimal);
   seq = -1;
+  // Connection generation of the snapshot this book was built from. The
+  // aggregator only applies deltas of the same epoch, so a prior connection's
+  // deltas (whose reset sequence counter could out-rank this snapshot) can't
+  // corrupt it. See aggregator.ts.
+  epoch = 0;
 
-  applySnapshot(seq: number, bids: WireLevel[], asks: WireLevel[]): void {
+  applySnapshot(seq: number, epoch: number, bids: WireLevel[], asks: WireLevel[]): void {
     this.bids.clear();
     this.asks.clear();
     for (const [px, sz] of bids) if (!isZeroSize(sz)) this.bids.set(px, sz);
     for (const [px, sz] of asks) if (!isZeroSize(sz)) this.asks.set(px, sz);
     this.seq = seq;
+    this.epoch = epoch;
   }
 
   // Returns false (and mutates nothing) for a stale/duplicate delta.

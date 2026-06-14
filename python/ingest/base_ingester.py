@@ -202,6 +202,11 @@ class BaseIngester(ABC):
         # market-streams instance, have nothing to re-emit).
         self.snapshot_interval_s = snapshot_interval_s
         self._connected = False
+        # Per-connection generation stamped on every BookSnapshot/BookDelta this
+        # connection emits, so the gateway can tell a prior connection's deltas
+        # (whose per-connection sequence counter may have reset) from the current
+        # one's. Reset to a fresh value on each connect in _reset_contexts.
+        self._epoch = 0
 
         # Per-symbol context.
         self.contexts: dict[str, SymbolContext] = {
@@ -365,6 +370,7 @@ class BaseIngester(ABC):
             ],
             exchange_ts_ns=0,  # locally generated, no exchange event behind it
             local_ts_ns=now_ns,
+            epoch=self._epoch,
         )
         event = ParsedEvent(
             symbol=ctx.symbol, kind="snapshot",
@@ -388,6 +394,10 @@ class BaseIngester(ABC):
         Prevents stale buffered deltas, old last_seq values, and dirty book
         state from a prior connection cycle from poisoning the next bootstrap.
         """
+        # New connection generation. time.time_ns() is distinct per connect and
+        # per process restart; downstream compares epochs by equality only, so
+        # clock skew is irrelevant.
+        self._epoch = time.time_ns()
         for ctx in self.contexts.values():
             ctx.buffered.clear()
             ctx.last_seq = -1

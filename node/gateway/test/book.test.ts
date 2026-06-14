@@ -27,44 +27,52 @@ describe("cmpDecimal", () => {
 describe("Book", () => {
   it("tracks best bid/ask from a snapshot", () => {
     const b = new Book();
-    b.applySnapshot(1, [["100", "1"], ["99", "2"]], [["101", "0.5"], ["102", "3"]]);
+    b.applySnapshot(1, 0, [["100", "1"], ["99", "2"]], [["101", "0.5"], ["102", "3"]]);
     expect(b.bestBid()).toEqual(["100", "1"]);
     expect(b.bestAsk()).toEqual(["101", "0.5"]);
   });
 
   it("exposes next-best after a zero-size delete of the top", () => {
     const b = new Book();
-    b.applySnapshot(1, [["100", "1"], ["99", "2"]], [["101", "1"]]);
+    b.applySnapshot(1, 0, [["100", "1"], ["99", "2"]], [["101", "1"]]);
     expect(b.applyDelta(2, [["100", "0"]], [])).toBe(true);
     expect(b.bestBid()).toEqual(["99", "2"]);
   });
 
   it("updates a level in place", () => {
     const b = new Book();
-    b.applySnapshot(1, [["100", "1"]], [["101", "1"]]);
+    b.applySnapshot(1, 0, [["100", "1"]], [["101", "1"]]);
     b.applyDelta(2, [["100", "5"]], []);
     expect(b.bestBid()).toEqual(["100", "5"]);
   });
 
   it("drops a stale delta (seq <= current) without mutating", () => {
     const b = new Book();
-    b.applySnapshot(5, [["100", "1"]], [["101", "1"]]);
+    b.applySnapshot(5, 0, [["100", "1"]], [["101", "1"]]);
     expect(b.applyDelta(5, [["100", "9"]], [])).toBe(false);
     expect(b.bestBid()).toEqual(["100", "1"]);
   });
 
   it("treats padded-zero sizes as removals", () => {
     const b = new Book();
-    b.applySnapshot(1, [["100", "1"]], [["101", "1"]]);
+    b.applySnapshot(1, 0, [["100", "1"]], [["101", "1"]]);
     b.applyDelta(2, [], [["101", "0.00000000"]]);
     expect(b.bestAsk()).toBeNull();
   });
 
   it("resets unconditionally on a snapshot (reconnect with lower seq)", () => {
     const b = new Book();
-    b.applySnapshot(50, [["100", "1"]], [["101", "1"]]);
-    b.applySnapshot(0, [["200", "1"]], [["201", "1"]]);
+    b.applySnapshot(50, 0, [["100", "1"]], [["101", "1"]]);
+    b.applySnapshot(0, 0, [["200", "1"]], [["201", "1"]]);
     expect(b.bestBid()).toEqual(["200", "1"]);
     expect(b.seq).toBe(0);
+  });
+
+  it("adopts the snapshot's epoch", () => {
+    const b = new Book();
+    b.applySnapshot(0, 7, [["100", "1"]], [["101", "1"]]);
+    expect(b.epoch).toBe(7);
+    b.applySnapshot(0, 8, [["100", "1"]], [["101", "1"]]);
+    expect(b.epoch).toBe(8);
   });
 });
