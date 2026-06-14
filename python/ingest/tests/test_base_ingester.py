@@ -953,3 +953,51 @@ async def test_periodic_snapshot_none_disables(
     await ing.shutdown()
     await asyncio.wait_for(run_task, timeout=3.0)
     assert _book_snaps(ing.producer) == []
+
+
+# ─── book invariant metric wiring ─────────────────────────────────────────
+
+
+def _invariant_count(exchange: str, symbol: str, kind: str) -> float:
+    from common.metrics import book_invariant_violations
+    return book_invariant_violations.labels(
+        exchange=exchange, symbol=symbol, kind=kind
+    )._value.get()
+
+
+@pytest.mark.asyncio
+async def test_book_invariant_increments_metric_with_kind(
+    fake_server: FakeExchangeServer,
+) -> None:
+    """A BookInvariantError from process_event is caught by the applier, which
+    increments md_book_invariant_violations_total labeled by the error's kind
+    (and still resyncs)."""
+    from ingest.book import BookInvariantError
+
+    fake_server.scripted = [
+        json.dumps({"sym": "X", "seq": 1, "kind": "trade"}),
+        json.dumps({"sym": "X", "seq": 2, "kind": "trade"}),  # trips the invariant
+    ]
+    ing = make_ingester(fake_server)
+    before = _invariant_count("fake", "X", "crossed_after_delta")
+
+    async def hook(ctx: SymbolContext, event: ParsedEvent) -> None:
+        if event.sequence and event.sequence >= 2:
+            raise BookInvariantError("forced cross", kind="crossed_after_delta")
+
+    ing.process_hook = hook
+    run_task = asyncio.create_task(ing.run())
+    for _ in range(150):
+        if _invariant_count("fake", "X", "crossed_after_delta") > before:
+            break
+        await asyncio.sleep(0.02)
+    await ing.shutdown()
+    run_task.cancel()
+    try:
+        await run_task
+    except asyncio.CancelledError:
+        pass
+
+    assert _invariant_count("fake", "X", "crossed_after_delta") > before, (
+        "expected md_book_invariant_violations_total to increment with kind"
+    )

@@ -1,0 +1,84 @@
+# Prometheus alert rules. Rules evaluate in-process and surface in the
+# Prometheus ALERTS view + the Grafana data-quality dashboard; notification
+# routing (Alertmanager) is a deliberate follow-on, not configured here.
+groups:
+  - name: crosstick-data-quality
+    rules:
+      # Per-venue internal crossed book (ask < bid within one exchange) — the
+      # 06-12/13 warm-start failure that was entirely unobserved. Should read 0
+      # post epoch-fix; any non-zero rate is a reconstruction regression.
+      - alert: GatewayBBOCrossed
+        expr: sum by (exchange) (rate(gateway_bbo_crossed_total[5m])) > 0
+        for: 2m
+        labels: { severity: critical }
+        annotations:
+          summary: "Crossed BBO reconstructed for {{ $labels.exchange }}"
+          description: "gateway_bbo_crossed_total is rising — the gateway is emitting a crossed within-venue book for {{ $labels.exchange }}."
+
+      # Cross-venue NBBO inversion (best_bid >= best_ask across exchanges).
+      - alert: GatewayNBBOCrossed
+        expr: sum by (canonical_id) (rate(gateway_nbbo_crossed_total[5m])) > 0
+        for: 2m
+        labels: { severity: warning }
+        annotations:
+          summary: "Crossed NBBO for {{ $labels.canonical_id }}"
+          description: "Negative cross-venue spread on {{ $labels.canonical_id }} — a stale or bad leg, or a venue with a corrupt book."
+
+      # Ingester book-invariant violations (snapshot_crossed / non_monotonic_seq
+      # / crossed_after_delta). Source-side corruption caught before publish.
+      - alert: BookInvariantViolations
+        expr: sum by (exchange, kind) (rate(md_book_invariant_violations_total[5m])) > 0
+        for: 2m
+        labels: { severity: warning }
+        annotations:
+          summary: "Book invariant violations on {{ $labels.exchange }} ({{ $labels.kind }})"
+          description: "An ingester book failed an invariant and resynced. Repeated firing means a persistent feed or reconstruction problem."
+
+      # Elevated full-resync rate. On 06-12 kraken did 814 resyncs vs 62 on the
+      # clean day; a sustained rate is the reconnect-storm signature.
+      - alert: BookResyncStorm
+        expr: sum by (exchange) (rate(md_book_resyncs_total[5m])) > 0.2
+        for: 10m
+        labels: { severity: warning }
+        annotations:
+          summary: "Book resync storm on {{ $labels.exchange }}"
+          description: "{{ $labels.exchange }} is resyncing its order book repeatedly (>0.2/s for 10m) — likely a reconnect storm or a flapping feed."
+
+  - name: crosstick-liveness
+    rules:
+      # Venue health from md.status.* / liveness timeout, as seen by the gateway.
+      - alert: VenueDown
+        expr: gateway_venue_up == 0
+        for: 1m
+        labels: { severity: critical }
+        annotations:
+          summary: "Venue {{ $labels.exchange }} is down"
+          description: "The gateway has not seen a fresh md.status heartbeat for {{ $labels.exchange }} — the ingester is likely down or disconnected."
+
+      # Gateway falling behind the durable log.
+      - alert: GatewayConsumerLagHigh
+        expr: gateway_consumer_lag_messages > 50000
+        for: 5m
+        labels: { severity: warning }
+        annotations:
+          summary: "Gateway consumer lag high ({{ $labels.topic }} p{{ $labels.partition }})"
+          description: "gateway_consumer_lag_messages > 50000 for 5m on {{ $labels.topic }} p{{ $labels.partition }} — the gateway is not keeping up with ingest."
+
+      # Any scrape target unreachable (crashed service, bad target). The safety
+      # net that keeps a misconfigured scrape from being silent.
+      - alert: TargetDown
+        expr: up == 0
+        for: 1m
+        labels: { severity: critical }
+        annotations:
+          summary: "Scrape target down: {{ $labels.job }} ({{ $labels.instance }})"
+          description: "Prometheus cannot scrape {{ $labels.instance }} in job {{ $labels.job }}."
+
+      # Process restart marker. Info-severity; also the empirical close-out
+      # signal for the epoch fix (watch bbo_crossed across a restart).
+      - alert: GatewayRestarted
+        expr: changes(gateway_process_start_time_seconds[15m]) > 0
+        labels: { severity: info }
+        annotations:
+          summary: "Gateway restarted"
+          description: "The gateway process restarted in the last 15m — expect a warm-start; gateway_bbo_crossed_total should stay ~0 across it."
