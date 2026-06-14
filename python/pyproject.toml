@@ -26,7 +26,10 @@ dev = [
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
-testpaths = ["ingest/tests", "analytics/tests", "materializer/tests"]
+testpaths = [
+    "ingest/tests", "analytics/tests", "materializer/tests",
+    "common/tests", "silver/tests", "gold/tests",
+]
 pythonpath = ["."]
 # Integration tests need Docker (testcontainers); excluded by default so the
 # unit suite stays fast. CI runs them in a separate job via `-m integration`.
