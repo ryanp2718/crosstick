@@ -250,6 +250,9 @@ services:
       # Whole dir, not individual files: new rule files appear without editing
       # compose, and a bind of a not-yet-existing file can't silently no-op.
       - ./ops/prometheus:/etc/prometheus:ro
+      # Named volume for the TSDB (/prometheus): metrics history otherwise lives
+      # in the container layer and evaporates on every recreate/rebuild.
+      - prometheus-data:/prometheus
     ports:
       - "9090:9090"
     restart: unless-stopped
@@ -275,3 +278,4 @@ services:
 volumes:
   redpanda-data:
   minio-data:
+  prometheus-data:
