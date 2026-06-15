@@ -5,16 +5,18 @@ streaming spine (ingest → Redpanda → gateway → NBBO) feeds. Companion to
 `ARCHITECTURE.md` (→ "The analytics seam", D1–D7), `DESIGN_nbbo.md` (NBBO
 semantics, strict per-quote bucketing, `instruments.yml`), and `scale-out.md`.
 
-Status: **Phases 0–1 built; Phase 3's determinism core landed (2026-06).**
+Status: **Phases 0–2 built; Phase 3's determinism core landed (2026-06).**
 Phase 0 (golden corpus + capture/replay + testcontainers harness) and Phase 1
 (`python/materializer` → bronze Parquet on MinIO, exactly-once via start-offset
 object keys) are implemented and integration-tested; the lake/topic contract
 lives in `data-contracts.md`. The D1/D2 fixes shipped in the gateway-replay
 refactor, and Phase 3's headline acceptance test — replay twice → byte-identical
 `md.bbo.*`/`md.nbbo.*` — passes (`analytics/tests/test_gateway_integration.py`).
-The seekable research replay engine (replay-to-time-T over the reused
-`OrderBook`) remains. Phases 2, 4, 5 remain design. This doc records the
-decisions + open concerns so the "why" survives.
+Phase 2 (the data-quality floor) is built as `python/silver` (DQ facts) +
+`python/gold` (scorecard mart) — see the phase entry below. The seekable research
+replay engine (replay-to-time-T over the reused `OrderBook`) remains. Phases 4, 5
+remain design. This doc records the decisions + open concerns so the "why"
+survives.
 
 ## Goal
 
@@ -249,11 +251,34 @@ input (no loss/dupe); **crash-recovery property** (kill mid-batch, restart, asse
 exactly-once via key overwrite). Proves the idempotency claim instead of asserting
 it. *Needs: DECIMAL + partition + format locked.*
 
-**Phase 2 — Data-quality scorecard** *(floor, part 2 — ground truth)*
-Validation over bronze: sequence gaps, Kraken checksum verification, crossed/locked
-frequency, per-hop latency, snapshot/delta ratios, venue uptime. These *are* tests
-(CI against the corpus's planted gap) *and* live monitors (Grafana). Tech: pandera
-+ dbt tests.
+**Phase 2 — Data-quality scorecard** *(floor, part 2 — ground truth) — BUILT*
+The DQ floor as a strict medallion slice: **`bronze → silver (DQ facts) → gold
+(scorecard)`**. The facts are *silver* (validated/reconstructed) and the scorecard
+is the *gold* rollup over them — a gold mart reads silver, never bronze.
+- **`python/silver`** (`dq.py` pure transforms): per-event `book_quality`
+  (crossed/invariant via the real `ingest.book.OrderBook`; sequence-gap via a
+  per-exchange policy — kraken contiguous, others monotonic), `latency` (per-hop
+  ns), `status_events` (venue up/down + downtime). Top-of-1 reconstruction; the
+  full-depth cadence book-state, as-of-joined enriched trades, the 3-way oracle,
+  and Kraken **checksum verification** stay in Phase 4 and extend this same layer.
+- **`python/gold`** (`scorecard.py`): aggregates silver into the keyed scorecard
+  fact table (gap/crossed/invariant counts, snapshot:delta ratio, latency
+  percentiles, uptime/downtime).
+- **One reconstruction engine, one wire schema.** Silver folds bronze through the
+  same `OrderBook` and decodes via `common.models.decode`, so the batch facts, the
+  live gateway metrics, and future silver agree by construction (the D5 oracle
+  property, structurally). No schema is re-encoded in SQL.
+- **Engine:** Python now (reuse decode + OrderBook + `kraken_checksum`; zero new
+  deps). dbt/DuckDB enter at Phase 4/5 as the gold-marts engine **over typed
+  silver**, where SQL fits and nothing is duplicated — one mart doesn't justify
+  the warehouse. The gold scorecard is plain Parquet (DuckDB-queryable ad-hoc, the
+  dbt-source attach point).
+- **These *are* tests:** the headline `gold/tests/test_golden_pipeline.py` runs the
+  golden corpus through silver→gold and asserts the three planted incidents (kraken
+  gap, binance cross, binance down) fire and the perp update-id trap stays silent.
+  Live monitors are PR #21's Prometheus/Grafana; a Grafana-over-gold panel (needs a
+  Parquet datasource plugin) is deferred. (`pandera` was the original pencil; the
+  checks reuse existing typed logic, so it wasn't needed.)
 
 **Phase 3 — Replay engine + D1/D2 fixes** *(keystone — determinism core done)*
 Deterministic, seekable replay: seek to last snapshot offset before T (**D2 fix**),

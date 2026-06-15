@@ -136,6 +136,59 @@ via `ops/instruments.yml`:
 - Unmapped `(exchange, symbol)` pairs partition by the normalized native
   symbol (warn-once) — bronze never drops data over missing reference data.
 
+## Silver DQ datasets (scorecard pipeline)
+
+`python -m silver.main <date>` reads bronze and writes the validated/reconstructed
+**data-quality slice of silver** (`DESIGN_analytics.md` Phase 2) to the `silver`
+bucket. Values are decoded once (`common.models.decode`) and books reconstructed
+through the real `ingest.book.OrderBook` — the same engine as live ingest, so the
+facts agree with the gateway's live metrics by construction. Hive-partitioned,
+canonical-resolved; **one overwrite-keyed `part.parquet` per partition** (a layer
+aggregates a whole date, so a recompute rewrites the object — idempotent, the same
+discipline as bronze's start-offset keys, but at date grain).
+
+| Dataset | Path | Row = | Key columns |
+|---|---|---|---|
+| `book_quality` | `book_quality/exchange={ex}/symbol={canon}/date={d}/` | one book event | `kind` (snap/delta), `offset`, `sequence`, `epoch`, `exchange_ts_ns`, `local_ts_ns`, `local_recv_ts_ns`, `best_bid`/`best_ask` (`DECIMAL(38,18)`), `seq_gap`, `crossed`, `invariant_kind` |
+| `latency` | `latency/exchange={ex}/symbol={canon}/date={d}/` | one firehose record | `dataset`, `offset`, `exchange_ts_ns`, `exchange_to_recv_ns`, `exchange_to_emit_ns` |
+| `status_events` | `status_events/exchange={ex}/date={d}/` | one venue status | `ts_ns`, `state`, `prev_state`, `is_transition`, `downtime_ns` |
+
+- **`crossed`/`invariant_kind`** come from the OrderBook fold per
+  `(exchange, symbol, epoch)`; a violation resyncs (clear) like the ingester. The
+  book is reconstructed to **top-of-1**; full-depth cadence book-state + checksum
+  verification are Phase 4 and extend this layer.
+- **`seq_gap`** counts monotonic-but-missing deltas under a per-exchange policy:
+  kraken's synthesized per-book counter is **contiguous** (a hole = ingest→bronze
+  loss); coinbase (connection-wide counter shared across channels) and
+  binance/binance-futures (update-ids) are **monotonic-only** (forward jumps are
+  normal). Non-monotonic regressions are caught for all venues by the OrderBook
+  fold (`non_monotonic_seq`).
+- **`latency`** skips locally-generated records (`exchange_ts_ns == 0`:
+  re-emitted snapshots, binance(-futures) snapshots — no exchange clock behind
+  them). Cross-venue `exchange_ts_ns` comparisons inherit the clock-domain caveat
+  (`ARCHITECTURE.md` D4). `bbo`/`nbbo` carry no headers and are validated live by
+  the gateway, so they are not re-checked here.
+
+## Gold scorecard (data-quality mart)
+
+`python -m gold.main <date>` aggregates the silver facts into the scorecard mart
+on the `gold` bucket — a gold mart reads silver, never bronze. One overwrite-keyed
+object per date: `scorecard/date={d}/part.parquet`. Plain Parquet (DuckDB-queryable
+ad-hoc; dbt formalizes gold marts at Phase 4/5, over typed silver).
+
+Fact table keyed `(exchange, canonical_symbol, date, check)`:
+
+| Column | Meaning |
+|---|---|
+| `n_records`, `n_violations` | denominator + the headline pass/fail count for the check |
+| `p50_ms` / `p95_ms` / `p99_ms` | latency percentiles (latency checks only; null otherwise) |
+| `detail` | compact JSON breakdown (by-kind invariant counts, `total_missing`, `downtime_sec`, …) |
+
+Checks: `sequence_gap`, `book_invariant`, `coverage` (per book symbol);
+`latency.{dataset}` (per firehose dataset); `venue_uptime` (per exchange,
+`canonical_symbol` null). `--fail-on-violation` makes `gold.main` exit non-zero
+for ops/CI gating.
+
 ## Corpus format (replay harness)
 
 A corpus is a gzipped JSON-lines file (`.jsonl.gz`), one `CorpusRecord` per
