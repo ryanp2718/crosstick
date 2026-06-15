@@ -198,6 +198,24 @@ Checks: `sequence_gap`, `book_invariant`, `coverage` (per book symbol);
 `canonical_symbol` null). `--fail-on-violation` makes `gold.main` exit non-zero
 for ops/CI gating.
 
+## Gold basis mart (stablecoin USDT/USD basis)
+
+`python -m gold.main <date>` also builds the stablecoin-basis mart from the silver
+`nbbo` dataset (a gold mart reads silver, never bronze). For each base quoted in
+both USD and USDT (e.g. `BTC-USD` vs `BTC-USDT`; perp `-PERP` canonicals
+excluded), it as-of joins the two NBBO series — backward-only, so each observation
+is point-in-time correct — and emits the basis where **both** legs have a valid
+two-sided NBBO. Two overwrite-keyed objects per date:
+
+| Dataset | Path | Row = | Key columns |
+|---|---|---|---|
+| `basis` | `basis/date={d}/` | one tick (either leg moved) | `base`, `ts_ns`, `usd_mid`, `usdt_mid`, `basis_abs`, `basis_bps`, `usd_bid`/`usd_ask`/`usdt_bid`/`usdt_ask` (`DECIMAL(38,18)`; `basis_bps` float) |
+| `basis_summary` | `basis_summary/date={d}/` | one base/day | `n_obs`, `basis_bps_mean`/`std`/`min`/`max`, `coverage_ns` |
+
+`basis_abs = usd_mid − usdt_mid`; `basis_bps = basis_abs / usd_mid × 1e4`. This is
+the first signal driven through the full research spine (`RESEARCH_thesis.md` §5);
+the later ladder rungs (price-discovery, carry, OFI) reuse the same as-of join.
+
 ## Corpus format (replay harness)
 
 A corpus is a gzipped JSON-lines file (`.jsonl.gz`), one `CorpusRecord` per
