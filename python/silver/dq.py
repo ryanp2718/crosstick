@@ -3,15 +3,20 @@
 Pure (no I/O): everything here operates on an iterable of `CorpusRecord`s and a
 `CanonicalMap`, so the *same* code runs in CI against the golden corpus and in
 the batch job over the lake (silver/main.py). This is the validated/reconstructed
-slice of silver (`DESIGN_analytics.md`): the heavier silver products (full-depth
-cadence book-state, as-of-joined enriched trades, the 3-way oracle, checksum
-verification) are Phase 4 and extend the same layer.
+slice of silver (`DESIGN_analytics.md`): the remaining Phase-4 silver products
+(full-depth cadence book-state, as-of-joined enriched trades, the full 3-way
+oracle, checksum verification) extend the same layer.
 
-Three fact streams, each canonical-resolved and partitioned exchange/symbol/date:
+Five fact streams, each canonical-resolved:
   - book_quality : one row per book event with crossed/invariant flags (from the
                    real ingest.book.OrderBook) and a sequence-gap count.
   - latency      : per-hop latency (ns) for every firehose record with headers.
   - status_events: typed venue up/down transitions with downtime.
+  - quotes       : per-venue reconstructed top-of-book (best bid/ask + sizes) at
+                   each book event with a valid two-sided book — the same
+                   OrderBook fold as book_quality, one pass.
+  - nbbo         : per-canonical reconstructed NBBO (max-bid/min-ask across a
+                   canonical's venues, evicting a venue while its status is down).
 
 Sequence-gap policy is per-exchange and *grounded in each driver* (cry-wolf is
 worse than a miss for a quality floor):
@@ -29,13 +34,15 @@ monotonic-but-missing gaps that the OrderBook cannot see (e.g. kraken 6 -> 8).
 """
 from __future__ import annotations
 
-from collections.abc import Iterable
+from collections import defaultdict
+from collections.abc import Iterable, Iterator
 from dataclasses import dataclass, field
 from decimal import Decimal
 
 import pyarrow as pa
 
 from analytics.corpus import CorpusRecord
+from common.asof import merge_latest
 from common.kafka_io import header_value
 from common.models import BookDelta, BookSnapshot, Status, decode
 from ingest.book import BookInvariantError, Level, OrderBook
@@ -55,11 +62,13 @@ CROSSED_KINDS = frozenset({"snapshot_crossed", "crossed_after_delta"})
 
 @dataclass
 class SilverFacts:
-    """The three DQ-fact streams produced from a slice of bronze."""
+    """The silver fact streams produced from a slice of bronze."""
 
     book_quality: list[dict] = field(default_factory=list)
     latency: list[dict] = field(default_factory=list)
     status_events: list[dict] = field(default_factory=list)
+    quotes: list[dict] = field(default_factory=list)
+    nbbo: list[dict] = field(default_factory=list)
 
 
 @dataclass
@@ -147,21 +156,39 @@ def build_silver(records: Iterable[CorpusRecord], canonical: CanonicalMap) -> Si
                 )
             )
 
+    # One OrderBook fold per (exchange, symbol) feeds BOTH book_quality and
+    # quotes — same reconstruction, so the two never disagree on best bid/ask.
     for (exchange, _symbol), recs in books.items():
-        facts.book_quality.extend(_fold_book(exchange, recs))
+        for ev in _reconstruct(exchange, recs):
+            facts.book_quality.append(_book_quality_row(ev))
+            quote = _quote_row(ev)
+            if quote is not None:
+                facts.quotes.append(quote)
     for exchange, recs in status_by_exchange.items():
         facts.status_events.extend(_status_transitions(exchange, recs))
+    facts.nbbo.extend(_build_nbbo(facts.quotes, facts.status_events))
     return facts
 
 
-def _fold_book(exchange: str, recs: list[_BookRec]) -> list[dict]:
+@dataclass
+class _BookEvent:
+    """One reconstructed book event — the shared output of the fold that both
+    book_quality (quality flags) and quotes (top-of-book series) derive from."""
+
+    rec: _BookRec
+    seq_gap: int
+    invariant_kind: str | None
+    best_bid: Level | None
+    best_ask: Level | None
+
+
+def _reconstruct(exchange: str, recs: list[_BookRec]) -> Iterator[_BookEvent]:
     """Reconstruct one (exchange, symbol) book through the real OrderBook,
-    emitting a fact row per event. Snapshots and deltas are merged by
+    yielding an event per record. Snapshots and deltas are merged by
     (epoch, sequence); a violation resyncs (clear) like production."""
     contiguous = exchange in CONTIGUOUS_SEQ_EXCHANGES
     # snap before delta at equal sequence (a re-snapshot replaces the book).
     recs = sorted(recs, key=lambda r: (r.epoch, r.sequence, 0 if r.kind == "snap" else 1))
-    rows: list[dict] = []
     book: OrderBook | None = None
     epoch: int | None = None
     for r in recs:
@@ -187,29 +214,94 @@ def _fold_book(exchange: str, recs: list[_BookRec]) -> list[dict]:
         except BookInvariantError as e:
             invariant_kind = e.kind
 
-        best_bid = book.best_bid()
-        best_ask = book.best_ask()
-        rows.append(
-            {
-                "exchange": r.exchange,
-                "canonical_symbol": r.canonical,
-                "date": r.date,
-                "kind": r.kind,
-                "offset": r.offset,
-                "sequence": r.sequence,
-                "epoch": r.epoch,
-                "exchange_ts_ns": r.exchange_ts_ns,
-                "local_ts_ns": r.local_ts_ns,
-                "local_recv_ts_ns": r.local_recv_ts_ns,
-                "best_bid": best_bid[0] if best_bid else None,
-                "best_ask": best_ask[0] if best_ask else None,
-                "seq_gap": seq_gap,
-                "crossed": invariant_kind in CROSSED_KINDS,
-                "invariant_kind": invariant_kind,
-            }
-        )
+        yield _BookEvent(r, seq_gap, invariant_kind, book.best_bid(), book.best_ask())
         if invariant_kind is not None:
             book.clear()  # resync from the next snapshot, as the ingester does
+
+
+def _book_quality_row(ev: _BookEvent) -> dict:
+    r = ev.rec
+    return {
+        "exchange": r.exchange,
+        "canonical_symbol": r.canonical,
+        "date": r.date,
+        "kind": r.kind,
+        "offset": r.offset,
+        "sequence": r.sequence,
+        "epoch": r.epoch,
+        "exchange_ts_ns": r.exchange_ts_ns,
+        "local_ts_ns": r.local_ts_ns,
+        "local_recv_ts_ns": r.local_recv_ts_ns,
+        "best_bid": ev.best_bid[0] if ev.best_bid else None,
+        "best_ask": ev.best_ask[0] if ev.best_ask else None,
+        "seq_gap": ev.seq_gap,
+        "crossed": ev.invariant_kind in CROSSED_KINDS,
+        "invariant_kind": ev.invariant_kind,
+    }
+
+
+def _quote_row(ev: _BookEvent) -> dict | None:
+    """A quote is the top of a *valid* two-sided book — skip events that raised
+    an invariant (the book is resyncing) or are one-sided."""
+    if ev.invariant_kind is not None or ev.best_bid is None or ev.best_ask is None:
+        return None
+    r = ev.rec
+    ts = r.local_recv_ts_ns if r.local_recv_ts_ns is not None else r.local_ts_ns
+    return {
+        "exchange": r.exchange,
+        "canonical_symbol": r.canonical,
+        "date": r.date,
+        "ts_ns": ts,
+        "best_bid": ev.best_bid[0],
+        "best_ask": ev.best_ask[0],
+        "bid_sz": ev.best_bid[1],
+        "ask_sz": ev.best_ask[1],
+    }
+
+
+def _build_nbbo(quotes: list[dict], status_events: list[dict]) -> list[dict]:
+    """Per-canonical NBBO from per-venue quotes: max-bid / min-ask across a
+    canonical's venues on each tick, with a venue's leg evicted while its
+    exchange is down (DESIGN_nbbo.md connection-state eviction). A `None`
+    sentinel injected at each down transition carries the eviction forward
+    until that venue requotes."""
+    downs: dict[str, list[int]] = defaultdict(list)
+    for s in status_events:
+        if s["state"] == "down" and s["is_transition"]:
+            downs[s["exchange"]].append(s["ts_ns"])
+
+    by_canon: dict[str, dict[str, list[tuple[int, tuple | None]]]] = defaultdict(
+        lambda: defaultdict(list)
+    )
+    for q in quotes:
+        by_canon[q["canonical_symbol"]][q["exchange"]].append(
+            (q["ts_ns"], (q["best_bid"], q["best_ask"]))
+        )
+
+    rows: list[dict] = []
+    for canonical, venues in by_canon.items():
+        streams: dict[str, list[tuple[int, tuple | None]]] = {}
+        for exchange, evs in venues.items():
+            evs = [*evs, *((dts, None) for dts in downs.get(exchange, []))]
+            streams[exchange] = sorted(evs, key=lambda e: e[0])
+        for ts, snap in merge_latest(streams):
+            live = {ex: q for ex, q in snap.items() if q is not None}
+            if not live:
+                continue
+            bid_venue, bid_q = max(live.items(), key=lambda kv: kv[1][0])
+            ask_venue, ask_q = min(live.items(), key=lambda kv: kv[1][1])
+            rows.append(
+                {
+                    "canonical_symbol": canonical,
+                    "date": record_date(ts // 1_000_000),
+                    "ts_ns": ts,
+                    "best_bid": bid_q[0],
+                    "best_ask": ask_q[1],
+                    "bid_venue": bid_venue,
+                    "ask_venue": ask_venue,
+                    "n_venues": len(live),
+                }
+            )
     return rows
 
 
@@ -286,5 +378,31 @@ STATUS_SCHEMA = pa.schema(
         ("prev_state", pa.string()),
         ("is_transition", pa.bool_()),
         ("downtime_ns", pa.int64()),
+    ]
+)
+
+QUOTES_SCHEMA = pa.schema(
+    [
+        ("exchange", pa.string()),
+        ("canonical_symbol", pa.string()),
+        ("date", pa.string()),
+        ("ts_ns", pa.int64()),
+        ("best_bid", _PRICE),
+        ("best_ask", _PRICE),
+        ("bid_sz", _PRICE),
+        ("ask_sz", _PRICE),
+    ]
+)
+
+NBBO_SCHEMA = pa.schema(
+    [
+        ("canonical_symbol", pa.string()),
+        ("date", pa.string()),
+        ("ts_ns", pa.int64()),
+        ("best_bid", _PRICE),
+        ("best_ask", _PRICE),
+        ("bid_venue", pa.string()),
+        ("ask_venue", pa.string()),
+        ("n_venues", pa.int64()),
     ]
 )

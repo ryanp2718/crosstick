@@ -136,11 +136,11 @@ via `ops/instruments.yml`:
 - Unmapped `(exchange, symbol)` pairs partition by the normalized native
   symbol (warn-once) — bronze never drops data over missing reference data.
 
-## Silver DQ datasets (scorecard pipeline)
+## Silver datasets
 
 `python -m silver.main <date>` reads bronze and writes the validated/reconstructed
-**data-quality slice of silver** (`DESIGN_analytics.md` Phase 2) to the `silver`
-bucket. Values are decoded once (`common.models.decode`) and books reconstructed
+silver datasets (`DESIGN_analytics.md` Phase 2 data-quality slice + Phase 4 basis
+slice) to the `silver` bucket. Values are decoded once (`common.models.decode`) and books reconstructed
 through the real `ingest.book.OrderBook` — the same engine as live ingest, so the
 facts agree with the gateway's live metrics by construction. Hive-partitioned,
 canonical-resolved; **one overwrite-keyed `part.parquet` per partition** (a layer
@@ -152,6 +152,8 @@ discipline as bronze's start-offset keys, but at date grain).
 | `book_quality` | `book_quality/exchange={ex}/symbol={canon}/date={d}/` | one book event | `kind` (snap/delta), `offset`, `sequence`, `epoch`, `exchange_ts_ns`, `local_ts_ns`, `local_recv_ts_ns`, `best_bid`/`best_ask` (`DECIMAL(38,18)`), `seq_gap`, `crossed`, `invariant_kind` |
 | `latency` | `latency/exchange={ex}/symbol={canon}/date={d}/` | one firehose record | `dataset`, `offset`, `exchange_ts_ns`, `exchange_to_recv_ns`, `exchange_to_emit_ns` |
 | `status_events` | `status_events/exchange={ex}/date={d}/` | one venue status | `ts_ns`, `state`, `prev_state`, `is_transition`, `downtime_ns` |
+| `quotes` | `quotes/exchange={ex}/symbol={canon}/date={d}/` | one valid two-sided book event | `ts_ns`, `best_bid`/`best_ask`, `bid_sz`/`ask_sz` (`DECIMAL(38,18)`) |
+| `nbbo` | `nbbo/symbol={canon}/date={d}/` | one cross-venue NBBO tick | `ts_ns`, `best_bid`/`best_ask` (`DECIMAL(38,18)`), `bid_venue`, `ask_venue`, `n_venues` |
 
 - **`crossed`/`invariant_kind`** come from the OrderBook fold per
   `(exchange, symbol, epoch)`; a violation resyncs (clear) like the ingester. The
@@ -168,6 +170,13 @@ discipline as bronze's start-offset keys, but at date grain).
   them). Cross-venue `exchange_ts_ns` comparisons inherit the clock-domain caveat
   (`ARCHITECTURE.md` D4). `bbo`/`nbbo` carry no headers and are validated live by
   the gateway, so they are not re-checked here.
+- **`quotes`/`nbbo`** are the basis-slice additions (`DESIGN_analytics.md` Phase 4).
+  `quotes` is per-venue top-of-1 from the *same* OrderBook fold as `book_quality`
+  (crossed/one-sided events skipped); `nbbo` is the per-canonical max-bid/min-ask
+  across a canonical's venues (strict per-quote bucketing), evicting a venue's leg
+  while its `status` is down (`DESIGN_nbbo.md` connection-state eviction). The
+  per-venue BBO oracle checks reconstructed `quotes` against the captured bronze
+  `bbo`.
 
 ## Gold scorecard (data-quality mart)
 
