@@ -34,6 +34,7 @@ monotonic-but-missing gaps that the OrderBook cannot see (e.g. kraken 6 -> 8).
 """
 from __future__ import annotations
 
+import heapq
 from collections import defaultdict
 from collections.abc import Iterable, Iterator
 from dataclasses import dataclass, field
@@ -120,21 +121,12 @@ def build_silver(records: Iterable[CorpusRecord], canonical: CanonicalMap) -> Si
         date = record_date(rec.timestamp_ms)
         recv = _recv_ns(rec)
 
-        # Locally-generated records have no exchange clock (exchange_ts_ns == 0:
-        # re-emitted snapshots, binance(-futures) snapshots) — skip their latency.
-        if msg.exchange_ts_ns != 0 and recv is not None:
-            facts.latency.append(
-                {
-                    "exchange": exchange,
-                    "canonical_symbol": canon,
-                    "date": date,
-                    "dataset": meta.dataset,
-                    "offset": rec.offset,
-                    "exchange_ts_ns": msg.exchange_ts_ns,
-                    "exchange_to_recv_ns": recv - msg.exchange_ts_ns,
-                    "exchange_to_emit_ns": msg.local_ts_ns - msg.exchange_ts_ns,
-                }
-            )
+        lat = _latency_dict(
+            exchange, canon, date, meta.dataset, rec.offset,
+            msg.exchange_ts_ns, msg.local_ts_ns, recv,
+        )
+        if lat is not None:
+            facts.latency.append(lat)
 
         if meta.dataset in BOOK_DATASETS:
             bids, asks = _levels(msg)
@@ -158,8 +150,12 @@ def build_silver(records: Iterable[CorpusRecord], canonical: CanonicalMap) -> Si
 
     # One OrderBook fold per (exchange, symbol) feeds BOTH book_quality and
     # quotes — same reconstruction, so the two never disagree on best bid/ask.
+    # Snapshots and deltas are sorted per stream then merged, the same path the
+    # streaming driver feeds from disk-ordered files (silver/main.py).
     for (exchange, _symbol), recs in books.items():
-        for ev in _reconstruct(exchange, recs):
+        snaps = sorted((r for r in recs if r.kind == "snap"), key=_book_sort_key)
+        deltas = sorted((r for r in recs if r.kind == "delta"), key=_book_sort_key)
+        for ev in fold_book_partition(snaps, deltas, exchange):
             facts.book_quality.append(_book_quality_row(ev))
             quote = _quote_row(ev)
             if quote is not None:
@@ -182,16 +178,29 @@ class _BookEvent:
     best_ask: Level | None
 
 
-def _reconstruct(exchange: str, recs: list[_BookRec]) -> Iterator[_BookEvent]:
-    """Reconstruct one (exchange, symbol) book through the real OrderBook,
-    yielding an event per record. Snapshots and deltas are merged by
-    (epoch, sequence); a violation resyncs (clear) like production."""
-    contiguous = exchange in CONTIGUOUS_SEQ_EXCHANGES
-    # snap before delta at equal sequence (a re-snapshot replaces the book).
-    recs = sorted(recs, key=lambda r: (r.epoch, r.sequence, 0 if r.kind == "snap" else 1))
+# snap before delta at equal sequence (a re-snapshot replaces the book).
+def _book_sort_key(r: _BookRec) -> tuple[int, int, int]:
+    return (r.epoch, r.sequence, 0 if r.kind == "snap" else 1)
+
+
+def fold_book_partition(
+    snaps: Iterable[_BookRec], deltas: Iterable[_BookRec], exchange: str
+) -> Iterator[_BookEvent]:
+    """Reconstruct one (exchange, symbol) book, yielding an event per record.
+
+    `snaps` and `deltas` must each already be in `(epoch, sequence)` order — they
+    are merged lazily by `(epoch, sequence, snap-first)` (so neither whole stream
+    need be resident), the regime the bronze topics are written in. In-memory
+    callers sort each stream first; the streaming driver feeds disk-ordered files.
+    """
+    merged = heapq.merge(snaps, deltas, key=_book_sort_key)
+    yield from _fold(merged, exchange in CONTIGUOUS_SEQ_EXCHANGES)
+
+
+def _fold(book_recs: Iterable[_BookRec], contiguous: bool) -> Iterator[_BookEvent]:
     book: OrderBook | None = None
     epoch: int | None = None
-    for r in recs:
+    for r in book_recs:
         if book is None or r.epoch != epoch:
             book = OrderBook(r.exchange, r.symbol)
             epoch = r.epoch
@@ -217,6 +226,85 @@ def _reconstruct(exchange: str, recs: list[_BookRec]) -> Iterator[_BookEvent]:
         yield _BookEvent(r, seq_gap, invariant_kind, book.best_bid(), book.best_ask())
         if invariant_kind is not None:
             book.clear()  # resync from the next snapshot, as the ingester does
+
+
+def book_partition_rows(
+    snaps: Iterable[_BookRec], deltas: Iterable[_BookRec], exchange: str
+) -> Iterator[tuple[dict, dict | None, dict | None]]:
+    """Per book event, the three output rows it produces: (book_quality, quote or
+    None, book latency or None). The streaming driver's clean seam over the fold."""
+    for ev in fold_book_partition(snaps, deltas, exchange):
+        yield _book_quality_row(ev), _quote_row(ev), book_latency_row(ev.rec)
+
+
+def to_book_recs(records: Iterable[CorpusRecord], canonical: CanonicalMap) -> Iterator[_BookRec]:
+    """Decode bronze book records (snapshots or deltas) into `_BookRec`s — the
+    streaming driver's per-partition adapter into `fold_book_partition`."""
+    for rec in records:
+        meta = parse_topic(rec.topic)
+        msg = decode(rec.value)
+        exchange = meta.exchange or ""
+        bids, asks = _levels(msg)
+        yield _BookRec(
+            exchange=exchange,
+            symbol=msg.symbol,
+            canonical=canonical.resolve(exchange, msg.symbol),
+            date=record_date(rec.timestamp_ms),
+            offset=rec.offset,
+            kind="snap" if isinstance(msg, BookSnapshot) else "delta",
+            sequence=msg.sequence,
+            epoch=msg.epoch,
+            bids=bids,
+            asks=asks,
+            exchange_ts_ns=msg.exchange_ts_ns,
+            local_ts_ns=msg.local_ts_ns,
+            local_recv_ts_ns=_recv_ns(rec),
+        )
+
+
+def book_latency_row(r: _BookRec) -> dict | None:
+    """Latency fact for a book record (the streaming driver emits these during
+    the fold, since the fold already holds the decoded record)."""
+    dataset = "book_snapshots" if r.kind == "snap" else "book_deltas"
+    return _latency_dict(
+        r.exchange, r.canonical, r.date, dataset, r.offset,
+        r.exchange_ts_ns, r.local_ts_ns, r.local_recv_ts_ns,
+    )
+
+
+def latency_rows(records: Iterable[CorpusRecord], canonical: CanonicalMap) -> Iterator[dict]:
+    """Latency facts for a non-book latency dataset (trades/liquidations/
+    mark_price/open_interest), streamed per partition by the driver."""
+    for rec in records:
+        meta = parse_topic(rec.topic)
+        msg = decode(rec.value)
+        exchange = meta.exchange or ""
+        lat = _latency_dict(
+            exchange, canonical.resolve(exchange, msg.symbol), record_date(rec.timestamp_ms),
+            meta.dataset, rec.offset, msg.exchange_ts_ns, msg.local_ts_ns, _recv_ns(rec),
+        )
+        if lat is not None:
+            yield lat
+
+
+def _latency_dict(
+    exchange: str, canon: str, date: str, dataset: str, offset: int,
+    exchange_ts_ns: int, local_ts_ns: int, recv: int | None,
+) -> dict | None:
+    # Locally-generated records have no exchange clock (exchange_ts_ns == 0:
+    # re-emitted snapshots, binance(-futures) snapshots) — skip their latency.
+    if exchange_ts_ns == 0 or recv is None:
+        return None
+    return {
+        "exchange": exchange,
+        "canonical_symbol": canon,
+        "date": date,
+        "dataset": dataset,
+        "offset": offset,
+        "exchange_ts_ns": exchange_ts_ns,
+        "exchange_to_recv_ns": recv - exchange_ts_ns,
+        "exchange_to_emit_ns": local_ts_ns - exchange_ts_ns,
+    }
 
 
 def _book_quality_row(ev: _BookEvent) -> dict:
