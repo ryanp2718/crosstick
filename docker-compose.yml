@@ -235,18 +235,30 @@ services:
     restart: unless-stopped
 
   # ─── observability ────────────────────────────────────────────────────────
+  # Config-mounting services: prometheus/grafana read these mounts ONCE at
+  # container creation. Editing a file under ops/ does NOT take effect on `up -d`
+  # or `restart` (which reuse the existing container + its mounts); a file that
+  # didn't exist at create time never materializes at all. After editing config
+  # here, recreate: `docker compose up -d --force-recreate prometheus grafana`,
+  # then verify with `python ops/smoke.py`. Images are pinned, not :latest, so
+  # provisioning behavior can't shift under us (Grafana 13 quietly dropped the
+  # updateIntervalSeconds dashboard auto-reload that earlier versions honored).
   prometheus:
-    image: prom/prometheus:latest
+    image: prom/prometheus:v3.12.0
     container_name: prometheus
     volumes:
-      - ./ops/prometheus.yml:/etc/prometheus/prometheus.yml:ro
-      - ./ops/alerts.yml:/etc/prometheus/alerts.yml:ro
+      # Whole dir, not individual files: new rule files appear without editing
+      # compose, and a bind of a not-yet-existing file can't silently no-op.
+      - ./ops/prometheus:/etc/prometheus:ro
+      # Named volume for the TSDB (/prometheus): metrics history otherwise lives
+      # in the container layer and evaporates on every recreate/rebuild.
+      - prometheus-data:/prometheus
     ports:
       - "9090:9090"
     restart: unless-stopped
 
   grafana:
-    image: grafana/grafana:latest
+    image: grafana/grafana:13.0.1-security-01
     container_name: grafana
     environment:
       GF_AUTH_ANONYMOUS_ENABLED: "true"
@@ -266,3 +278,4 @@ services:
 volumes:
   redpanda-data:
   minio-data:
+  prometheus-data:

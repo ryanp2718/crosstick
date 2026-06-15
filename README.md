@@ -119,7 +119,7 @@ python/            ingesters + analytics (uv-managed)
   analytics/       analytics modules (+ tests)
 node/gateway/      kafkajs → ws gateway: BBO, NBBO, backpressure (src/, test/)
 dashboard/         static WS client, served by the gateway
-ops/               instruments.yml, prometheus.yml, grafana provisioning
+ops/               instruments.yml, prometheus/ (config + alerts), grafana provisioning, smoke.py
 docs/              design docs (ARCHITECTURE.md, DESIGN_nbbo.md, scale-out.md)
 docker-compose.yml redpanda, prometheus, grafana, ingesters, materializer, gateway
 ```
@@ -150,6 +150,15 @@ $env:KAFKA_BROKERS="localhost:19092"; $env:METRICS_PORT="9103"
 Dev mode runs the gateway and ingesters on the host against Redpanda's external
 listener (`localhost:19092`); ports per exchange are binance `9101`, coinbase
 `9102`, kraken `9103`. Full container mode is via `docker compose`.
+
+Prometheus/Grafana read their mounted config (`ops/prometheus/`, `ops/grafana/`)
+only at container creation. After editing it, recreate rather than restart, then
+smoke-check that it actually loaded:
+
+```powershell
+docker compose up -d --force-recreate prometheus grafana
+python ops/smoke.py   # asserts rules loaded + dashboards provisioned
+```
 
 ## Testing
 
