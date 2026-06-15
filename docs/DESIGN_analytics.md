@@ -5,7 +5,7 @@ streaming spine (ingest → Redpanda → gateway → NBBO) feeds. Companion to
 `ARCHITECTURE.md` (→ "The analytics seam", D1–D7), `DESIGN_nbbo.md` (NBBO
 semantics, strict per-quote bucketing, `instruments.yml`), and `scale-out.md`.
 
-Status: **Phases 0–2 built; Phase 3's determinism core landed (2026-06).**
+Status: **Phases 0–2 built; Phase 3's determinism core + Phase 4's basis slice landed (2026-06).**
 Phase 0 (golden corpus + capture/replay + testcontainers harness) and Phase 1
 (`python/materializer` → bronze Parquet on MinIO, exactly-once via start-offset
 object keys) are implemented and integration-tested; the lake/topic contract
@@ -13,9 +13,10 @@ lives in `data-contracts.md`. The D1/D2 fixes shipped in the gateway-replay
 refactor, and Phase 3's headline acceptance test — replay twice → byte-identical
 `md.bbo.*`/`md.nbbo.*` — passes (`analytics/tests/test_gateway_integration.py`).
 Phase 2 (the data-quality floor) is built as `python/silver` (DQ facts) +
-`python/gold` (scorecard mart) — see the phase entry below. The seekable research
-replay engine (replay-to-time-T over the reused `OrderBook`) remains. Phases 4, 5
-remain design. This doc records the decisions + open concerns so the "why"
+`python/gold` (scorecard mart) — see the phase entry below. Phase 4's first slice
+(the stablecoin basis: silver `quotes`/`nbbo` → gold `basis` mart) is built too.
+The seekable research replay engine (replay-to-time-T over the reused `OrderBook`)
+and Phase 5 (feature store) remain. This doc records the decisions + open concerns so the "why"
 survives.
 
 ## Goal
@@ -293,10 +294,22 @@ all-deltas-first convergence test pass in
 `analytics/tests/test_gateway_integration.py`. Remaining: the seekable
 research-side replay engine (replay-to-T, dashboard scrubbing).*
 
-**Phase 4 — Silver: reconstructed book state + enriched events**
+**Phase 4 — Silver: reconstructed book state + enriched events** *(basis slice BUILT)*
 Cadence book snapshots + as-of-joined enriched trades. Tests: **3-way
 reconstruction oracle** (silver == replay engine == live gateway, elevating
 `ARCHITECTURE.md` D5); no-lookahead property tests on the as-of joins.
+- **Built (slice 1 — the stablecoin basis, `RESEARCH_thesis.md` §7.3):**
+  `python/silver` now also emits **`quotes`** (per-venue top-of-1 from the same
+  OrderBook fold as `book_quality`) and reconstructed **`nbbo`** (per-canonical
+  max-bid/min-ask, status-evicted); `python/gold/basis.py` as-of joins USD vs USDT
+  NBBO into the **basis** mart via the shared backward-only `common/asof.py`
+  (no-lookahead is structural). Oracle this slice: **per-venue** (reconstructed
+  `quotes` == captured bronze `bbo`); the full 3-way nbbo oracle needs nbbo planted
+  in the corpus and is deferred. Book state is event-grain top-of-1 (cadence-sampled
+  depth + full-depth checksum remain open).
+- **Remaining:** cadence depth snapshots, as-of-joined enriched trades (TCA), the
+  full 3-way oracle, Kraken checksum verification, and the later ladder rungs
+  (price-discovery → carry → OFI) that reuse this slice's as-of join + NBBO.
 
 **Phase 5 — Research surface + feature store (DIY-first)**
 Offline features (Parquet, point-in-time) + online (Redis), DIY before adopting
