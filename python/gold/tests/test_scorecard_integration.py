@@ -16,6 +16,7 @@ from __future__ import annotations
 import json
 import uuid
 from collections import defaultdict
+from decimal import Decimal
 from pathlib import Path
 
 import pyarrow.parquet as pq
@@ -25,7 +26,7 @@ from pyarrow import fs as pafs
 from analytics.corpus import CorpusRecord
 from analytics.tests.golden import build_golden_records
 from common.lake import read_dataset
-from gold.main import build_for_date
+from gold.main import build_basis_for_date, build_for_date
 from materializer.bronze import (
     CanonicalMap,
     object_key,
@@ -112,3 +113,10 @@ def test_scorecard_pipeline_over_s3(fs: pafs.S3FileSystem) -> None:
     crossed = sc[("book_invariant", "binance", "BTC-USDT")]
     assert crossed["n_violations"] == 1
     assert json.loads(crossed["detail"])["crossed_after_delta"] == 1
+
+    # gold: the basis mart over the same S3 silver (quotes -> nbbo -> basis).
+    assert read_dataset(fs, silver, "nbbo", date) is not None
+    basis, summary = build_basis_for_date(fs, silver, date, canonical)
+    btc = [r for r in basis if r["base"] == "BTC"]
+    assert btc and all(r["basis_abs"] == Decimal("5") for r in btc)
+    assert {s["base"] for s in summary} == {"BTC"}

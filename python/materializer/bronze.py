@@ -13,6 +13,7 @@ corpus.
 from __future__ import annotations
 
 import logging
+from collections import defaultdict
 from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -89,19 +90,45 @@ class CanonicalMap:
     DESIGN_analytics.md open concern #1.
     """
 
-    def __init__(self, mapping: dict[tuple[str, str], str]):
+    def __init__(
+        self,
+        mapping: dict[tuple[str, str], str],
+        specs: dict[str, tuple[str, str]] | None = None,
+    ):
         self._map = mapping
+        # canonical_id -> (base, quote); powers cross-quote pairing (basis mart).
+        self._specs = specs or {}
         self._warned: set[tuple[str, str]] = set()
 
     @classmethod
     def from_yaml(cls, path: str | Path) -> CanonicalMap:
         doc = yaml.safe_load(Path(path).read_text(encoding="utf-8")) or {}
         mapping: dict[tuple[str, str], str] = {}
+        specs: dict[str, tuple[str, str]] = {}
         for canonical_id, spec in (doc.get("instruments") or {}).items():
+            base, quote = spec.get("base"), spec.get("quote")
+            if base and quote:
+                specs[canonical_id] = (base, quote)
             for venue in spec.get("venues", []):
                 key = (venue["exchange"], normalize_symbol(venue["symbol"]))
                 mapping[key] = canonical_id
-        return cls(mapping)
+        return cls(mapping, specs)
+
+    def pairs_by_base(self) -> list[tuple[str, str, str]]:
+        """(base, usd_canonical, usdt_canonical) for each base quoted in both USD
+        and USDT — the cross-quote pairs the stablecoin basis joins. Perp
+        canonicals (``-PERP``) are excluded; the basis is spot-vs-spot."""
+        by_base: dict[str, dict[str, str]] = defaultdict(dict)
+        for canonical, (base, quote) in self._specs.items():
+            if canonical.endswith("-PERP"):
+                continue
+            by_base[base][quote] = canonical
+        pairs = []
+        for base in sorted(by_base):
+            quotes = by_base[base]
+            if "USD" in quotes and "USDT" in quotes:
+                pairs.append((base, quotes["USD"], quotes["USDT"]))
+        return pairs
 
     def resolve(self, exchange: str, symbol: str) -> str:
         key = (exchange, normalize_symbol(symbol))
