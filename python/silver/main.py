@@ -1,8 +1,9 @@
 """Silver DQ entrypoint: ``python -m silver.main <date> [<date> ...]``.
 
 For each UTC date, read the bronze datasets the DQ transforms need, compute the
-three fact streams, and write them to the silver bucket — one overwrite-keyed
-object per partition, so a recompute is idempotent.
+silver fact streams (book_quality, latency, status_events, quotes, nbbo), and
+write them to the silver bucket — one overwrite-keyed object per partition, so a
+recompute is idempotent.
 
 Env mirrors the materializer: ``S3_ENDPOINT`` / ``S3_ACCESS_KEY`` /
 ``S3_SECRET_KEY`` / ``INSTRUMENTS_FILE``; plus ``LAKE_BUCKET`` (bronze source,
@@ -31,6 +32,8 @@ from materializer.bronze import CanonicalMap, table_to_records
 from silver.dq import (
     BOOK_QUALITY_SCHEMA,
     LATENCY_SCHEMA,
+    NBBO_SCHEMA,
+    QUOTES_SCHEMA,
     STATUS_SCHEMA,
     SilverFacts,
     build_silver,
@@ -95,6 +98,15 @@ def write_silver(fs: pafs.FileSystem, bucket: str, facts: SilverFacts) -> None:
         fs, bucket, "status_events", facts.status_events, STATUS_SCHEMA,
         lambda r: {"exchange": r["exchange"], "date": r["date"]},
     )
+    _write_grouped(
+        fs, bucket, "quotes", facts.quotes, QUOTES_SCHEMA,
+        lambda r: {"exchange": r["exchange"], "symbol": r["canonical_symbol"], "date": r["date"]},
+    )
+    # nbbo is cross-venue: partitioned by canonical symbol only (no exchange).
+    _write_grouped(
+        fs, bucket, "nbbo", facts.nbbo, NBBO_SCHEMA,
+        lambda r: {"symbol": r["canonical_symbol"], "date": r["date"]},
+    )
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
@@ -118,8 +130,9 @@ def main() -> None:
         facts = build_silver(records, canonical)
         write_silver(fs, silver_bucket, facts)
         log.info(
-            "silver %s: %d book_quality, %d latency, %d status_events",
+            "silver %s: %d book_quality, %d latency, %d status_events, %d quotes, %d nbbo",
             date, len(facts.book_quality), len(facts.latency), len(facts.status_events),
+            len(facts.quotes), len(facts.nbbo),
         )
 
 
