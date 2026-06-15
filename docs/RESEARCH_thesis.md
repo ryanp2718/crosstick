@@ -6,11 +6,11 @@ store); this doc argues *what* that surface is for — which crypto market frict
 are real, which strategies they bar versus enable, what signals follow, and the
 one data-capture decision the answer forces.
 
-> **Status: strawman for red-pen.** The verdicts below are first-pass positions,
-> written to be argued with — not settled findings. The owner steers the quant
-> conclusions; this exists to give that steering something concrete to push
-> against. Where a call is genuinely open it is flagged in
-> **§7 Open questions**, not buried.
+> **Status: v1 (owner-steered, 2026-06-15).** The §7 forks are decided and
+> recorded inline; the §6 capture fork is closed by shipped code (perps + funding
+> are captured). The verdicts below are first-pass and still open to revision, but
+> the direction is now committed: **stablecoin basis is the first signal built**,
+> then the ladder basis → price-discovery → carry → OFI.
 
 ---
 
@@ -97,7 +97,7 @@ Verdicts are deliberately blunt so they're easy to overturn.
 | **Price discovery / lead-lag** | **Viable (research + feature)** | Which venue leads (Binance typically); Hasbrouck information share over synchronized tape. | synchronized cross-venue tape (have), clock-domain care (`ARCH` D4) |
 | **Stablecoin basis (USDT/USD)** | **Viable (research, maybe low-freq act)** | Directly from captured data; capacity-rich, lower-frequency, genuinely crypto-native. The strict bucketing makes it first-class. | `BTC-USD` vs `BTC-USDT` (have), basis mart (gold) |
 | **Short-horizon return prediction** | **Viable (research + feature)** | OFI, queue dynamics, trade-sign autocorrelation → seconds-to-minutes directional features. Acting is low-freq and honestly framed. | full L2 deltas (have), PIT feature store (Phase 5) |
-| **Carry / funding basis (perp − spot)** | **Conditional** | The marquee crypto trade and strongest predictive signal — **blocked purely by data**: we don't capture perps/funding. | perps + funding capture (§6 decision) |
+| **Carry / funding basis (perp − spot)** | **Viable (research)** | The marquee crypto trade and strongest predictive signal — **unblocked**: perp L2/trades + mark/funding + OI are now captured (binance-futures, §6). A later ladder rung. | captured (§6); a perp−spot basis mart |
 | **Market-quality TCA** | **Viable (backbone)** | Not a strategy — the measurement layer (effective spread, trade-through). Already in the silver/gold plan. | enriched trades (Phase 4) |
 
 The pattern: our differentiators are **the constructed consolidated tape** and
@@ -121,11 +121,12 @@ have it), and where it lands in the build.
 | Order-flow imbalance (OFI) | L2 `book.*.deltas` event stream | ✅ (full fidelity) | silver event-grain → feature store |
 | Realized/queue microstructure | event-grain book reconstruction (replay) | ✅ via replay (Phase 3) | feature store (Phase 5) |
 | Market-quality TCA | trades as-of NBBO/BBO | ✅ | silver enriched trades |
-| **Funding basis / carry** | **perp mark+index, funding rate, OI** | ❌ not captured — but settled funding + mark/index klines are REST-backfillable; only fine-grained OI (~30-day window) decays | **new ingest + bronze (§6)** |
-| **Liquidation sampling** | **perp liquidation stream** — Binance WS pushes ≤1 order/sec, a *sample* of the tape, not the tape | ❌ unbackfillable | **new ingest (§6)** |
+| **Funding basis / carry** | **perp mark+index, funding rate, OI** | ✅ captured (binance-futures): perp L2/trades, `md.markprice` (mark/index/**funding rate** live), `md.openinterest` | silver perp nbbo → gold perp−spot basis (later rung) |
+| **Liquidation sampling** | **perp liquidation stream** — Binance WS pushes ≤1 order/sec, a *sample* of the tape, not the tape | ✅ captured (`md.liquidations`, sampled) | research on the sampled stream |
 
-Everything above the rule is buildable on the data we already record. Everything
-below it is gated on one decision.
+Every row above is now buildable on data we already record — the two perp rows
+that were once gated on the §6 decision are captured (binance-futures). What
+remains is build *order*, not data availability (§7.3 ladder).
 
 ---
 
@@ -142,10 +143,19 @@ genuinely interesting. Strawman: **make the basis mart the Phase 4 "hello world.
 
 ---
 
-## 6. The headline decision — spot-only vs. capture perps + funding
+## 6. The headline decision — RESOLVED: perps + funding are captured
 
-This is the fork the thesis exists to resolve, and the one place to spend your
-red pen hardest.
+**Decided, and shipped.** The "spot-only vs. capture perps" fork is closed by
+action: the binance-futures driver captures perp L2 + aggTrade tape,
+`md.markprice` (mark/index/**funding rate** live — not merely REST-backfillable
+as the original red-pen assumed), `md.openinterest`, and sampled
+`md.liquidations` (`DESIGN_perp_capture.md` slices 1–3, PR #15). The irreversible
+thing — perp *microstructure* history — is no longer decaying daily. Funding/carry
+therefore moves from "barred by data" (§3) to a later rung of the §7.3 ladder;
+perp **venue breadth** (Binance-only today; Bybit/OKX?) is deferred to Phase 4
+(§7.4). The original strawman analysis is retained below as the rationale.
+
+<details><summary>Original strawman (pre-decision rationale)</summary>
 
 **Strawman recommendation: capture perps + funding, sequenced as "Phase 1.5" —
 right after the spot materializer proves the bronze pattern, before silver locks
@@ -204,22 +214,28 @@ why it precedes any perp work regardless of how §6 is resolved.
 
 ---
 
-## 7. Open questions (the red-pen list)
+</details>
 
-Decisions left explicitly to the owner — answering these turns this strawman into
-a thesis:
+## 7. Decisions (owner-steered, 2026-06-15)
 
-1. **The §6 fork:** spot-only / Phase-1.5 full / bronze-now-model-later? *(the big
-   one)*
-2. **Acting vs. observing:** is the end-state "research surface only," or do we
-   eventually wire a low-frequency execution path? It changes how hard PIT and
-   fee-modeling discipline must bite.
-3. **Strategy focus for v1:** rank stablecoin basis / price-discovery /
-   OFI-prediction — which one gets the first full silver→gold→feature treatment?
-4. **Venue breadth for perps (if §6 = yes):** Binance only, or add a perp-native
-   venue (Bybit/OKX)? Drives the ingestion work.
-5. **Horizon honesty:** do we commit to backtests being fee- and latency-aware
-   from the first run (recommended), accepting it kills some apparent edges early?
+The red-pen list, now resolved — these steer the build order.
+
+1. **§6 capture fork — DECIDED: perps + funding captured** (closed by shipped
+   code; see §6).
+2. **Acting vs. observing — OPEN, with a committed posture:** build to the
+   *higher rigor bar* (PIT + fee/slippage modeling as if we might act at low
+   frequency), but *commit to observe-only* as the end-state. Rigor of "we might
+   act," scope of "we only measure."
+3. **Strategy focus for v1 — DECIDED: stablecoin basis first**, then the ladder
+   **basis → price-discovery → carry → OFI** (each rung reuses the prior's
+   as-of-join + NBBO machinery). Basis is the correct *risk-ordering*: a near-
+   trivial transform that forces the spine (cross-venue as-of join, gold mart,
+   PIT) to be built and proven first, on a self-validating signal.
+4. **Perp venue breadth — DEFERRED to Phase 4:** Binance-only perps for now; add
+   a perp-native venue (Bybit/OKX) only when a signal needs cross-venue perp
+   comparison.
+5. **Horizon honesty — DECIDED: yes.** Backtests are fee- and latency-aware from
+   the first run, accepting it kills some apparent edges early.
 
 ---
 
