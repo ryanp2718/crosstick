@@ -21,12 +21,19 @@ from pyarrow import fs as pafs
 from common.lake import (
     filesystem_from_env,
     instruments_path_from_env,
+    iter_partition_tables,
+    list_partitions,
     partition_key,
     read_dataset,
     write_object,
 )
 from gold.basis import basis_summary_table, basis_table, build_basis, build_basis_summary
-from gold.scorecard import build_scorecard, scorecard_table
+from gold.scorecard import (
+    BookCheckAccumulator,
+    LatencyAccumulator,
+    _status_checks,
+    scorecard_table,
+)
 from materializer.bronze import CanonicalMap
 
 log = logging.getLogger(__name__)
@@ -38,11 +45,23 @@ def _read_rows(fs: pafs.FileSystem, bucket: str, dataset: str, date: str) -> lis
 
 
 def build_for_date(fs: pafs.FileSystem, silver_bucket: str, date: str) -> list[dict]:
-    return build_scorecard(
-        _read_rows(fs, silver_bucket, "book_quality", date),
-        _read_rows(fs, silver_bucket, "latency", date),
-        _read_rows(fs, silver_bucket, "status_events", date),
-    )
+    """Scorecard for one date, folding silver one partition at a time. Every group
+    key nests in a partition, so book_quality/latency never load a whole day (the
+    old to_pylist OOM); status_events is tiny and read whole. Output matches the
+    in-memory build_scorecard oracle (gold/tests/test_streaming)."""
+    rows: list[dict] = []
+    for part in list_partitions(fs, silver_bucket, "book_quality", date):
+        acc = BookCheckAccumulator(part["exchange"], part["symbol"], date)
+        for table in iter_partition_tables(fs, silver_bucket, "book_quality", date, part):
+            acc.update(table)
+        rows += acc.rows()
+    for part in list_partitions(fs, silver_bucket, "latency", date):
+        acc = LatencyAccumulator(part["exchange"], part["symbol"], date)
+        for table in iter_partition_tables(fs, silver_bucket, "latency", date, part):
+            acc.update(table)
+        rows += acc.rows()
+    rows += _status_checks(_read_rows(fs, silver_bucket, "status_events", date))
+    return rows
 
 
 def build_basis_for_date(
