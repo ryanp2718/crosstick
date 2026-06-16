@@ -79,3 +79,28 @@ counter only fits Coinbase; Binance and Kraken are per-symbol with entirely
 different gap semantics. Lifting it into the abstract base now would be
 generalizing from one example. Promote it only if a second exchange needs the same
 shape (rule of three).
+
+## Durable storage: single-node MinIO on the box (not separated storage/compute)
+
+**Today.** Bronze/silver/gold live in single-node MinIO on one local volume
+(`docker-compose.yml`), and batch compute (silver/gold) runs on the same box. All
+lake access goes through `filesystem_from_env() -> S3FileSystem` with endpoint and
+credentials from env (`common/lake.py`, `materializer/main.py`), so the code is
+already storage-location-agnostic. A 30-day `lake` lifecycle bounds growth
+(`data-contracts.md`).
+
+**The cost.** The durable tier *is* the box: one disk, no tiering, no cross-node
+durability, and remote-read economics don't apply — so the per-file read
+amplification and whole-day Python materialization that are tolerable over
+localhost MinIO get expensive over a network, and raw history is capped at what
+one disk holds.
+
+**When to separate (the endpoint).** Move durable bronze to remote/cloud
+S3-compatible object storage (AWS S3 / Cloudflare R2 / Backblaze B2 / a larger
+remote MinIO) with lifecycle tiering (hot→warm→cold→expire); the box becomes
+compute + a hot cache. Because lake access is endpoint-agnostic, the cutover is an
+**env change** (`S3_ENDPOINT` / keys / region / scheme), not a rewrite — the real
+work is provider/cost selection, lifecycle config, and keeping reads
+remote-friendly: compaction into larger objects, and relational aggregation pushed
+to DuckDB over Parquet rather than materialized in Python. Trigger: raw-history
+needs exceed the box's disk, or batch compute contends with live capture.
