@@ -26,7 +26,7 @@ from pyarrow import fs as pafs
 from analytics.corpus import CorpusRecord
 from analytics.tests.golden import build_golden_records
 from common.lake import read_dataset
-from gold.main import build_basis_for_date, build_for_date
+from gold.main import build_for_date, write_basis_for_date
 from materializer.bronze import (
     CanonicalMap,
     object_key,
@@ -114,9 +114,12 @@ def test_scorecard_pipeline_over_s3(fs: pafs.S3FileSystem) -> None:
     assert crossed["n_violations"] == 1
     assert json.loads(crossed["detail"])["crossed_after_delta"] == 1
 
-    # gold: the basis mart over the same S3 silver (quotes -> nbbo -> basis).
+    # gold: the basis mart over the same S3 silver (quotes -> nbbo -> basis),
+    # streamed per partition and read back from gold.
     assert read_dataset(fs, silver, "nbbo", date) is not None
-    basis, summary = build_basis_for_date(fs, silver, date, canonical)
+    write_basis_for_date(fs, silver, gold, date, canonical)
+    basis = read_dataset(fs, gold, "basis", date).to_pylist()
+    summary = read_dataset(fs, gold, "basis_summary", date).to_pylist()
     btc = [r for r in basis if r["base"] == "BTC"]
     assert btc and all(r["basis_abs"] == Decimal("5") for r in btc)
     assert {s["base"] for s in summary} == {"BTC"}

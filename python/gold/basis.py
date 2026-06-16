@@ -16,8 +16,9 @@ lands on the reusable spine (as-of join, mart conventions, PIT), not the signal.
 from __future__ import annotations
 
 from collections import defaultdict
-from collections.abc import Iterable
+from collections.abc import Iterable, Iterator, Sequence
 from decimal import Decimal
+from typing import Any
 
 import numpy as np
 import pyarrow as pa
@@ -66,38 +67,67 @@ def _by_canonical(nbbo_rows: Iterable[dict]) -> dict[str, list[tuple[int, tuple]
     return out
 
 
+def iter_basis(
+    base: str,
+    usd_stream: Iterable[tuple[int, Any]],
+    usdt_stream: Iterable[tuple[int, Any]],
+) -> Iterator[dict]:
+    """Basis rows for one base from its two sorted NBBO legs (`(ts, (bid, ask))`).
+
+    The shared core of both the in-memory `build_basis` and the streaming gold
+    driver: the only difference between them is whether the legs are materialized
+    sorted lists or lazy per-partition iterators. Backward-only via merge_latest.
+    """
+    for ts, snap in merge_latest({"usd": usd_stream, "usdt": usdt_stream}):
+        if "usd" not in snap or "usdt" not in snap:
+            continue  # one leg hasn't quoted yet — no basis
+        usd_bid, usd_ask = snap["usd"]
+        usdt_bid, usdt_ask = snap["usdt"]
+        usd_mid = (usd_bid + usd_ask) / Decimal(2)
+        usdt_mid = (usdt_bid + usdt_ask) / Decimal(2)
+        basis_abs = usd_mid - usdt_mid
+        yield {
+            "base": base,
+            "date": record_date(ts // 1_000_000),
+            "ts_ns": ts,
+            "usd_mid": usd_mid,
+            "usdt_mid": usdt_mid,
+            "basis_abs": basis_abs,
+            "basis_bps": float(basis_abs / usd_mid) * 1e4,
+            "usd_bid": usd_bid,
+            "usd_ask": usd_ask,
+            "usdt_bid": usdt_bid,
+            "usdt_ask": usdt_ask,
+        }
+
+
 def build_basis(nbbo_rows: Iterable[dict], pairs: list[tuple[str, str, str]]) -> list[dict]:
-    """Event-grain basis rows for each (base, usd_canonical, usdt_canonical)."""
+    """Event-grain basis rows for each (base, usd_canonical, usdt_canonical) — the
+    in-memory oracle; the batch path streams per partition (gold/main)."""
     by_canon = _by_canonical(nbbo_rows)
     rows: list[dict] = []
     for base, usd_c, usdt_c in pairs:
         usd, usdt = by_canon.get(usd_c, []), by_canon.get(usdt_c, [])
         if not usd or not usdt:
             continue
-        for ts, snap in merge_latest({"usd": usd, "usdt": usdt}):
-            if "usd" not in snap or "usdt" not in snap:
-                continue  # one leg hasn't quoted yet — no basis
-            usd_bid, usd_ask = snap["usd"]
-            usdt_bid, usdt_ask = snap["usdt"]
-            usd_mid = (usd_bid + usd_ask) / Decimal(2)
-            usdt_mid = (usdt_bid + usdt_ask) / Decimal(2)
-            basis_abs = usd_mid - usdt_mid
-            rows.append(
-                {
-                    "base": base,
-                    "date": record_date(ts // 1_000_000),
-                    "ts_ns": ts,
-                    "usd_mid": usd_mid,
-                    "usdt_mid": usdt_mid,
-                    "basis_abs": basis_abs,
-                    "basis_bps": float(basis_abs / usd_mid) * 1e4,
-                    "usd_bid": usd_bid,
-                    "usd_ask": usd_ask,
-                    "usdt_bid": usdt_bid,
-                    "usdt_ask": usdt_ask,
-                }
-            )
+        rows.extend(iter_basis(base, usd, usdt))
     return rows
+
+
+def summary_row(base: str, date: str, bps: Sequence[float], ts: Sequence[int]) -> dict:
+    """One basis_summary row from a (base, date) group's bps + ts values. Shared by
+    build_basis_summary and the streaming driver, so the rollup can't diverge."""
+    arr = np.asarray(bps, dtype=np.float64)
+    return {
+        "base": base,
+        "date": date,
+        "n_obs": len(arr),
+        "basis_bps_mean": float(arr.mean()),
+        "basis_bps_std": float(arr.std()),
+        "basis_bps_min": float(arr.min()),
+        "basis_bps_max": float(arr.max()),
+        "coverage_ns": max(ts) - min(ts),
+    }
 
 
 def build_basis_summary(basis_rows: Iterable[dict]) -> list[dict]:
@@ -105,23 +135,10 @@ def build_basis_summary(basis_rows: Iterable[dict]) -> list[dict]:
     groups: dict[tuple, list[dict]] = defaultdict(list)
     for r in basis_rows:
         groups[(r["base"], r["date"])].append(r)
-    rows: list[dict] = []
-    for (base, date), group in groups.items():
-        bps = np.array([r["basis_bps"] for r in group], dtype=np.float64)
-        ts = [r["ts_ns"] for r in group]
-        rows.append(
-            {
-                "base": base,
-                "date": date,
-                "n_obs": len(group),
-                "basis_bps_mean": float(bps.mean()),
-                "basis_bps_std": float(bps.std()),
-                "basis_bps_min": float(bps.min()),
-                "basis_bps_max": float(bps.max()),
-                "coverage_ns": max(ts) - min(ts),
-            }
-        )
-    return rows
+    return [
+        summary_row(base, date, [r["basis_bps"] for r in g], [r["ts_ns"] for r in g])
+        for (base, date), g in groups.items()
+    ]
 
 
 def basis_table(rows: list[dict]) -> pa.Table:
