@@ -19,6 +19,7 @@ from collections.abc import Iterable
 
 import numpy as np
 import pyarrow as pa
+import pyarrow.compute as pc
 
 SCORECARD_SCHEMA = pa.schema(
     [
@@ -147,12 +148,121 @@ def _status_checks(status_events: Iterable[dict]) -> list[dict]:
     return rows
 
 
+# --- per-partition accumulators (the streaming gold path) -------------------
+# Every scorecard group key nests inside one silver partition (book_quality and
+# latency are written `exchange=/symbol=canonical/date=`), so gold can fold one
+# partition at a time instead of materializing a whole day of rows. The dict
+# functions above stay the simple oracle these are pinned against (test_streaming).
+# `update` is table-granularity-agnostic: today it gets one table per partition
+# object; a future row-group reader would feed it batches with no change here.
+
+
+class BookCheckAccumulator:
+    """Additive, columnar fold of one book_quality partition (constant
+    exchange/canonical_symbol/date) into its three book rows. O(1) state and no
+    per-row dict materialization — the same checks as `_book_checks`, mergeable
+    across `update` calls so this also drops into a map-reduce later."""
+
+    def __init__(self, exchange: str, canonical_symbol: str, date: str):
+        self.exchange = exchange
+        self.canonical_symbol = canonical_symbol
+        self.date = date
+        self._n_total = 0
+        self._n_deltas = 0
+        self._n_gap = 0
+        self._total_missing = 0
+        self._max_gap = 0
+        self._n_invariant = 0
+        self._by_kind: Counter = Counter()
+        self._locked = 0
+
+    def update(self, table: pa.Table) -> None:
+        if table.num_rows == 0:
+            return
+        is_delta = pc.equal(table.column("kind"), "delta")
+        self._n_total += table.num_rows
+        self._n_deltas += pc.sum(pc.cast(is_delta, pa.int64())).as_py() or 0
+
+        seq_gap = table.column("seq_gap")
+        gaps = pc.filter(seq_gap, pc.and_(is_delta, pc.greater(pc.fill_null(seq_gap, 0), 0)))
+        if gaps.length():
+            self._n_gap += gaps.length()
+            self._total_missing += pc.sum(gaps).as_py()
+            self._max_gap = max(self._max_gap, pc.max(gaps).as_py())
+
+        inv_kind = table.column("invariant_kind")
+        inv_mask = pc.is_valid(inv_kind)  # silver never emits "", so non-null == flagged
+        self._n_invariant += pc.sum(pc.cast(inv_mask, pa.int64())).as_py() or 0
+        for entry in pc.value_counts(pc.filter(inv_kind, inv_mask)).to_pylist():
+            self._by_kind[entry["values"]] += entry["counts"]
+        same = pc.fill_null(pc.equal(table.column("best_bid"), table.column("best_ask")), False)
+        locked = pc.and_(pc.and_(inv_mask, pc.fill_null(table.column("crossed"), False)), same)
+        self._locked += pc.sum(pc.cast(locked, pa.int64())).as_py() or 0
+
+    def rows(self) -> list[dict]:
+        return [
+            _row(
+                self.exchange, self.canonical_symbol, self.date, "sequence_gap",
+                n_records=self._n_deltas, n_violations=self._n_gap,
+                detail={"total_missing": self._total_missing, "max_gap": self._max_gap},
+            ),
+            _row(
+                self.exchange, self.canonical_symbol, self.date, "book_invariant",
+                n_records=self._n_total, n_violations=self._n_invariant,
+                detail={**self._by_kind, "locked": self._locked},
+            ),
+            _row(
+                self.exchange, self.canonical_symbol, self.date, "coverage",
+                n_records=self._n_total, n_violations=0,
+                detail={"snapshots": self._n_total - self._n_deltas, "deltas": self._n_deltas},
+            ),
+        ]
+
+
+class LatencyAccumulator:
+    """Collect one latency partition's `exchange_to_emit_ns` per dataset and emit
+    a `latency.<dataset>` row with p50/95/99. Exact percentiles need every value,
+    so this holds one partition's values (columnar, ~tens of MB) — not the day;
+    the out-of-core fix (DuckDB approx_quantile) is P3."""
+
+    def __init__(self, exchange: str, canonical_symbol: str, date: str):
+        self.exchange = exchange
+        self.canonical_symbol = canonical_symbol
+        self.date = date
+        self._vals: dict[str, list[np.ndarray]] = defaultdict(list)
+
+    def update(self, table: pa.Table) -> None:
+        if table.num_rows == 0:
+            return
+        datasets = table.column("dataset")
+        emit = table.column("exchange_to_emit_ns")
+        for ds in pc.unique(datasets).to_pylist():
+            vals = pc.filter(emit, pc.equal(datasets, ds)).to_numpy(zero_copy_only=False)
+            self._vals[ds].append(vals.astype(np.float64))
+
+    def rows(self) -> list[dict]:
+        out: list[dict] = []
+        for ds, chunks in self._vals.items():
+            vals = np.concatenate(chunks)
+            p50, p95, p99 = (float(x) / 1e6 for x in np.percentile(vals, [50, 95, 99]))
+            out.append(
+                _row(
+                    self.exchange, self.canonical_symbol, self.date, f"latency.{ds}",
+                    n_records=len(vals), n_violations=0,
+                    p50_ms=p50, p95_ms=p95, p99_ms=p99,
+                    detail={"max_ms": float(vals.max()) / 1e6},
+                )
+            )
+        return out
+
+
 def build_scorecard(
     book_quality: Iterable[dict],
     latency: Iterable[dict],
     status_events: Iterable[dict],
 ) -> list[dict]:
-    """Roll the three silver fact streams up into scorecard rows."""
+    """Roll the three silver fact streams up into scorecard rows (the in-memory
+    oracle; gold's batch path folds per partition — see the accumulators above)."""
     return [
         *_book_checks(book_quality),
         *_latency_checks(latency),
