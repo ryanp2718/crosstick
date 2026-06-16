@@ -80,7 +80,7 @@ services:
 
   # ─── object store ─────────────────────────────────────────────────────────
   minio:
-    image: minio/minio:latest
+    image: minio/minio:RELEASE.2025-09-07T16-13-09Z
     container_name: minio
     command: ["server", "/data", "--console-address", ":9001"]
     volumes:
@@ -99,7 +99,7 @@ services:
     restart: unless-stopped
 
   minio-init:
-    image: minio/mc:latest
+    image: minio/mc:RELEASE.2025-08-13T08-35-41Z
     container_name: minio-init
     depends_on:
       minio:
@@ -107,8 +107,9 @@ services:
     # Idempotent bucket setup + a bronze lifecycle rule: expire raw `lake` objects
     # after 30 days (matches log_retention_ms) so the lake can't grow unbounded.
     # Only deletes once data ages past 30d (nothing yet — capture started <30d ago).
-    # Tries the new (`ilm rule add`) then legacy (`ilm add`) mc syntax and is
-    # best-effort (|| true) so a retention hiccup never blocks bucket creation —
+    # mc is pinned (above), so the single `ilm rule add` syntax is known-good — no
+    # version fallback. Non-blocking (|| WARN to stderr) so a retention hiccup never
+    # fails minio-init (materializer waits on it) yet stays visible in the logs;
     # retention is non-critical here (~200 GB free). Verify: mc ilm rule ls local/lake.
     # Durable-layer's real fix is off-box object storage (docs/scale-out.md); the
     # same S3 lifecycle API applies there unchanged.
@@ -118,7 +119,7 @@ services:
         mc mb -p local/lake &&
         mc mb -p local/silver &&
         mc mb -p local/gold &&
-        { mc ilm rule add --expire-days 30 local/lake || mc ilm add --expiry-days 30 local/lake; } 2>/dev/null || true &&
+        { mc ilm rule add --expire-days 30 local/lake || echo 'WARN: bronze lifecycle rule not set (mc ilm failed)' >&2; } &&
         echo 'buckets ready'
       "
     restart: "no"
