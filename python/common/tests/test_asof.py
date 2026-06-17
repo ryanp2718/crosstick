@@ -28,6 +28,17 @@ def test_none_value_carried_like_any_other() -> None:
     ]
 
 
+def test_accepts_lazy_iterators() -> None:
+    # streams may be generators (the streaming callers feed per-partition iterators);
+    # the merge pulls them lazily and yields the same snapshots as the list form.
+    streams = {"a": iter([(1, "a1"), (5, "a2")]), "b": iter([(3, "b1")])}
+    assert list(merge_latest(streams)) == [
+        (1, {"a": "a1"}),
+        (3, {"a": "a1", "b": "b1"}),
+        (5, {"a": "a2", "b": "b1"}),
+    ]
+
+
 def test_no_lookahead_property() -> None:
     # truncating every input at T must leave all snapshots for ts <= T unchanged.
     streams = {"a": [(1, "a1"), (4, "a2"), (7, "a3")], "b": [(2, "b1"), (6, "b2")]}

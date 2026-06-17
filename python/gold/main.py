@@ -15,10 +15,12 @@ import argparse
 import logging
 import os
 import sys
+from collections.abc import Iterator
 
 from pyarrow import fs as pafs
 
 from common.lake import (
+    PartitionWriter,
     filesystem_from_env,
     instruments_path_from_env,
     iter_partition_tables,
@@ -27,7 +29,7 @@ from common.lake import (
     read_dataset,
     write_object,
 )
-from gold.basis import basis_summary_table, basis_table, build_basis, build_basis_summary
+from gold.basis import BASIS_SCHEMA, basis_summary_table, iter_basis, summary_row
 from gold.scorecard import (
     BookCheckAccumulator,
     LatencyAccumulator,
@@ -37,6 +39,9 @@ from gold.scorecard import (
 from materializer.bronze import CanonicalMap
 
 log = logging.getLogger(__name__)
+
+# Rows per ParquetWriter row group for the streamed basis series (mirrors silver).
+BATCH_ROWS = 50_000
 
 
 def _read_rows(fs: pafs.FileSystem, bucket: str, dataset: str, date: str) -> list[dict]:
@@ -64,11 +69,63 @@ def build_for_date(fs: pafs.FileSystem, silver_bucket: str, date: str) -> list[d
     return rows
 
 
-def build_basis_for_date(
-    fs: pafs.FileSystem, silver_bucket: str, date: str, canonical: CanonicalMap
-) -> tuple[list[dict], list[dict]]:
-    series = build_basis(_read_rows(fs, silver_bucket, "nbbo", date), canonical.pairs_by_base())
-    return series, build_basis_summary(series)
+def _nbbo_stream(
+    fs: pafs.FileSystem, silver_bucket: str, date: str, canonical_symbol: str
+) -> Iterator[tuple[int, tuple]]:
+    """Stream one canonical's NBBO partition as sorted `(ts_ns, (best_bid, best_ask))`.
+    NBBO is written ts-ascending by silver (it is merge_latest output), so the file
+    is already ordered — the leg feeds straight into the k-way merge."""
+    part = {"symbol": canonical_symbol}
+    for table in iter_partition_tables(fs, silver_bucket, "nbbo", date, part):
+        ts = table.column("ts_ns").to_pylist()
+        bids = table.column("best_bid").to_pylist()
+        asks = table.column("best_ask").to_pylist()
+        for t, bid, ask in zip(ts, bids, asks, strict=True):
+            yield t, (bid, ask)
+
+
+def write_basis_for_date(
+    fs: pafs.FileSystem, silver_bucket: str, gold_bucket: str, date: str, canonical: CanonicalMap
+) -> int:
+    """Stream the basis mart for one date: per base, k-way merge the two legs' sorted
+    NBBO partitions (O(frontier) memory) into the event-grain series, written
+    incrementally, accumulating the daily summary — no whole-day nbbo read. Returns
+    the number of basis observations written."""
+    have = {p["symbol"] for p in list_partitions(fs, silver_bucket, "nbbo", date)}
+    summaries: list[dict] = []
+    n = 0
+    writer = PartitionWriter(fs, gold_bucket, partition_key("basis", date=date), BASIS_SCHEMA)
+    try:
+        for base, usd_c, usdt_c in canonical.pairs_by_base():
+            if usd_c not in have or usdt_c not in have:
+                continue
+            bps: list[float] = []
+            ts: list[int] = []
+            batch: list[dict] = []
+            for row in iter_basis(
+                base,
+                _nbbo_stream(fs, silver_bucket, date, usd_c),
+                _nbbo_stream(fs, silver_bucket, date, usdt_c),
+            ):
+                batch.append(row)
+                bps.append(row["basis_bps"])
+                ts.append(row["ts_ns"])
+                n += 1
+                if len(batch) >= BATCH_ROWS:
+                    writer.write_rows(batch)
+                    batch = []
+            writer.write_rows(batch)
+            if bps:
+                summaries.append(summary_row(base, date, bps, ts))
+    finally:
+        writer.close()
+    if summaries:
+        path = write_object(
+            fs, gold_bucket, partition_key("basis_summary", date=date),
+            basis_summary_table(summaries),
+        )
+        log.info("gold PUT %s (%d basis obs, %d base(s))", path, n, len(summaries))
+    return n
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
@@ -108,16 +165,9 @@ def main() -> None:
                         r["n_violations"], r["detail"] or "",
                     )
 
-        basis, summary = build_basis_for_date(fs, silver_bucket, date, canonical)
-        if basis:
-            write_object(fs, gold_bucket, partition_key("basis", date=date), basis_table(basis))
-            path = write_object(
-                fs, gold_bucket, partition_key("basis_summary", date=date),
-                basis_summary_table(summary),
-            )
-            log.info("gold PUT %s (%d basis obs, %d base(s))", path, len(basis), len(summary))
+        n_basis = write_basis_for_date(fs, silver_bucket, gold_bucket, date, canonical)
 
-        if not scorecard and not basis:
+        if not scorecard and not n_basis:
             log.warning("no silver facts for %s; skipping", date)
     if args.fail_on_violation and total_violations:
         log.error("scorecard found %d violations", total_violations)

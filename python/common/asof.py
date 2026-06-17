@@ -14,31 +14,43 @@ runtime guard. (A no-lookahead property test pins this.)
 """
 from __future__ import annotations
 
-from collections.abc import Hashable, Iterator, Mapping, Sequence
+import heapq
+from collections.abc import Hashable, Iterable, Iterator, Mapping
+from itertools import groupby
 from typing import Any
 
 
+def _tag(
+    key: Hashable, seq: Iterable[tuple[int, Any]]
+) -> Iterator[tuple[int, Hashable, Any]]:
+    """Tag a stream's events with their key (bound at call time, so the per-stream
+    iterators don't all close over the loop's final key)."""
+    for ts, val in seq:
+        yield ts, key, val
+
+
 def merge_latest(
-    streams: Mapping[Hashable, Sequence[tuple[int, Any]]],
+    streams: Mapping[Hashable, Iterable[tuple[int, Any]]],
 ) -> Iterator[tuple[int, dict[Hashable, Any]]]:
     """Merge per-key timestamped streams into running-latest snapshots.
 
-    Each stream is a sequence of `(ts_ns, value)` sorted ascending by ts. Yields
-    `(ts_ns, snapshot)` once per distinct timestamp in the union, where snapshot
-    maps each key to its latest value with event ts <= the current ts. A key is
-    absent from the snapshot until its first event; a `None` value is carried
-    like any other (callers use it as an eviction sentinel and filter it out).
+    Each stream is an iterable of `(ts_ns, value)` sorted ascending by ts (a list
+    or a lazy generator — the merge pulls them lazily, so a streaming caller never
+    holds a whole stream). Yields `(ts_ns, snapshot)` once per distinct timestamp
+    in the union, where snapshot maps each key to its latest value with event
+    ts <= the current ts. A key is absent from the snapshot until its first event;
+    a `None` value is carried like any other (callers use it as an eviction
+    sentinel and filter it out).
+
+    A k-way heap merge of the (already-sorted) inputs, not a sort of their union:
+    memory is the merge frontier (one element per stream), not every event.
     """
-    events = sorted(
-        ((ts, key, val) for key, seq in streams.items() for ts, val in seq),
+    merged = heapq.merge(
+        *(_tag(key, seq) for key, seq in streams.items()),
         key=lambda e: e[0],
     )
     latest: dict[Hashable, Any] = {}
-    i, n = 0, len(events)
-    while i < n:
-        ts = events[i][0]
-        while i < n and events[i][0] == ts:  # apply all events at this tick first
-            _, key, val = events[i]
+    for ts, group in groupby(merged, key=lambda e: e[0]):
+        for _, key, val in group:  # apply all events at this tick first
             latest[key] = val
-            i += 1
         yield ts, dict(latest)
