@@ -7,6 +7,7 @@ streaming driver to produce the silver it reads — no Docker.
 """
 from __future__ import annotations
 
+import json
 from collections import defaultdict
 from pathlib import Path
 
@@ -18,7 +19,7 @@ from analytics.corpus import CorpusRecord
 from analytics.tests.golden import build_golden_records
 from common.lake import iter_partition_tables, list_partitions, read_dataset
 from gold.main import build_for_date
-from gold.scorecard import BookCheckAccumulator, build_scorecard
+from gold.scorecard import BookCheckAccumulator, _clock_monotonic_row, build_scorecard
 from materializer.bronze import (
     CanonicalMap,
     object_key,
@@ -26,6 +27,7 @@ from materializer.bronze import (
     record_date,
     records_to_table,
 )
+from silver.dq import BOOK_QUALITY_SCHEMA
 from silver.main import build_silver_streaming
 
 INSTRUMENTS_FILE = Path(__file__).resolve().parents[3] / "ops" / "instruments.yml"
@@ -92,3 +94,30 @@ def test_book_accumulator_merges_across_tables(tmp_path) -> None:
     split.update(table.slice(0, half))
     split.update(table.slice(half))
     assert whole.rows() == split.rows()
+
+
+def _bq(epoch: int, recv: int) -> dict:
+    return {
+        "exchange": "kraken", "canonical_symbol": "BTC-USD", "date": "2026-06-16",
+        "kind": "delta", "offset": 0, "sequence": 0, "epoch": epoch,
+        "exchange_ts_ns": 0, "local_ts_ns": recv, "local_recv_ts_ns": recv,
+        "best_bid": None, "best_ask": None, "seq_gap": 0, "crossed": False,
+        "invariant_kind": None,
+    }
+
+
+def test_clock_monotonic_counts_intra_epoch_only() -> None:
+    # 200->150 is a same-epoch backward step (host clock); 150->120 crosses an epoch
+    # boundary (benign reconnect overlap) and must NOT count as a violation.
+    rows = [_bq(10, 100), _bq(10, 200), _bq(10, 150), _bq(20, 120), _bq(20, 300)]
+    oracle = _clock_monotonic_row("kraken", "BTC-USD", "2026-06-16", rows)
+    assert oracle["check"] == "clock_monotonic"
+    assert oracle["n_violations"] == 1
+    detail = json.loads(oracle["detail"])
+    assert detail["inter_epoch_steps"] == 1
+    assert detail["worst_lateness_ms"] == 50 / 1e6
+
+    acc = BookCheckAccumulator("kraken", "BTC-USD", "2026-06-16")
+    acc.update(pa.Table.from_pylist(rows, schema=BOOK_QUALITY_SCHEMA))
+    streamed = next(r for r in acc.rows() if r["check"] == "clock_monotonic")
+    assert streamed == oracle  # streaming accumulator equals the oracle

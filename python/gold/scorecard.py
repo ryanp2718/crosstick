@@ -71,6 +71,34 @@ def _group(rows: Iterable[dict], *keys: str) -> dict[tuple, list[dict]]:
     return out
 
 
+def _clock_monotonic_row(exchange: str, symbol: str, date: str, group: list[dict]) -> dict:
+    """Host capture-clock health from book_quality (fold-ordered on disk). Counts
+    backward steps in `local_recv_ts_ns` between consecutive records of the SAME
+    epoch (= host clock stepped back / paused; a stopped w32time shows thousands),
+    separately from epoch-change backward steps (= benign reconnect overlap). This
+    is the canary the Phase-2 reorder can't mask — it reads the raw recv clock the
+    fold persisted, before any sort. Records with no recv clock are skipped."""
+    intra = inter = worst = 0
+    prev_recv = prev_epoch = None
+    for r in group:
+        recv = r["local_recv_ts_ns"]
+        if recv is None:
+            continue
+        epoch = r["epoch"]
+        if prev_recv is not None and recv < prev_recv:
+            if epoch == prev_epoch:
+                intra += 1
+                worst = max(worst, prev_recv - recv)
+            else:
+                inter += 1
+        prev_recv, prev_epoch = recv, epoch
+    return _row(
+        exchange, symbol, date, "clock_monotonic",
+        n_records=len(group), n_violations=intra,
+        detail={"worst_lateness_ms": worst / 1e6, "inter_epoch_steps": inter},
+    )
+
+
 def _book_checks(book_quality: Iterable[dict]) -> list[dict]:
     rows: list[dict] = []
     for (exchange, symbol, date), group in _group(
@@ -105,6 +133,7 @@ def _book_checks(book_quality: Iterable[dict]) -> list[dict]:
                 detail={"snapshots": snaps, "deltas": len(deltas)},
             )
         )
+        rows.append(_clock_monotonic_row(exchange, symbol, date, group))
     return rows
 
 
@@ -175,6 +204,11 @@ class BookCheckAccumulator:
         self._n_invariant = 0
         self._by_kind: Counter = Counter()
         self._locked = 0
+        self._clock_intra = 0
+        self._clock_inter = 0
+        self._clock_worst = 0
+        self._last_recv: int | None = None
+        self._last_epoch: int | None = None
 
     def update(self, table: pa.Table) -> None:
         if table.num_rows == 0:
@@ -199,6 +233,29 @@ class BookCheckAccumulator:
         locked = pc.and_(pc.and_(inv_mask, pc.fill_null(table.column("crossed"), False)), same)
         self._locked += pc.sum(pc.cast(locked, pa.int64())).as_py() or 0
 
+        self._clock_update(table)
+
+    def _clock_update(self, table: pa.Table) -> None:
+        """recv-clock backward steps, classified intra- vs inter-epoch, carried
+        across batches via `_last_*` (the same count as `_clock_monotonic_row`)."""
+        mask = pc.is_valid(table.column("local_recv_ts_ns"))
+        recv = pc.filter(table.column("local_recv_ts_ns"), mask).to_numpy(zero_copy_only=False)
+        if len(recv) == 0:
+            return
+        epoch = pc.filter(table.column("epoch"), mask).to_numpy(zero_copy_only=False)
+        if self._last_recv is not None:
+            recv = np.concatenate(([self._last_recv], recv))
+            epoch = np.concatenate(([self._last_epoch], epoch))
+        back = recv[1:] < recv[:-1]
+        same_epoch = epoch[1:] == epoch[:-1]
+        intra = back & same_epoch
+        self._clock_intra += int(intra.sum())
+        self._clock_inter += int((back & ~same_epoch).sum())
+        if intra.any():
+            self._clock_worst = max(self._clock_worst, int((recv[:-1] - recv[1:])[intra].max()))
+        self._last_recv = int(recv[-1])
+        self._last_epoch = int(epoch[-1])
+
     def rows(self) -> list[dict]:
         return [
             _row(
@@ -215,6 +272,12 @@ class BookCheckAccumulator:
                 self.exchange, self.canonical_symbol, self.date, "coverage",
                 n_records=self._n_total, n_violations=0,
                 detail={"snapshots": self._n_total - self._n_deltas, "deltas": self._n_deltas},
+            ),
+            _row(
+                self.exchange, self.canonical_symbol, self.date, "clock_monotonic",
+                n_records=self._n_total, n_violations=self._clock_intra,
+                detail={"worst_lateness_ms": self._clock_worst / 1e6,
+                        "inter_epoch_steps": self._clock_inter},
             ),
         ]
 

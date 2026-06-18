@@ -142,6 +142,21 @@ def iter_partition_tables(
             yield _read_file(fs, path)
 
 
+def iter_partition_batches(
+    fs: pafs.FileSystem, bucket: str, dataset: str, date: str, part: dict[str, str],
+    batch_rows: int = 50_000,
+) -> Iterator[pa.RecordBatch]:
+    """Yield RecordBatches of a single partition, reading row groups lazily so the
+    whole file is never resident (peak ~one batch). The bounded-memory read seam for
+    the NBBO reorder; same trailing-slash prefix match as `iter_partition_tables`.
+    """
+    prefix = f"{bucket}/" + partition_key(dataset, date=date, filename="", **part)
+    for path in _list_date_files(fs, bucket, dataset, date):
+        if path.replace("\\", "/").startswith(prefix):
+            with fs.open_input_file(path) as handle:
+                yield from pq.ParquetFile(handle).iter_batches(batch_size=batch_rows)
+
+
 def iter_dataset_tables(
     fs: pafs.FileSystem, bucket: str, dataset: str, date: str
 ) -> Iterator[pa.Table]:
