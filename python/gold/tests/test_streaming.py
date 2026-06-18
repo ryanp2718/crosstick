@@ -96,10 +96,10 @@ def test_book_accumulator_merges_across_tables(tmp_path) -> None:
     assert whole.rows() == split.rows()
 
 
-def _bq(epoch: int, recv: int) -> dict:
+def _bq(epoch: int, recv: int, kind: str = "delta") -> dict:
     return {
         "exchange": "kraken", "canonical_symbol": "BTC-USD", "date": "2026-06-16",
-        "kind": "delta", "offset": 0, "sequence": 0, "epoch": epoch,
+        "kind": kind, "offset": 0, "sequence": 0, "epoch": epoch,
         "exchange_ts_ns": 0, "local_ts_ns": recv, "local_recv_ts_ns": recv,
         "best_bid": None, "best_ask": None, "seq_gap": 0, "crossed": False,
         "invariant_kind": None,
@@ -121,3 +121,18 @@ def test_clock_monotonic_counts_intra_epoch_only() -> None:
     acc.update(pa.Table.from_pylist(rows, schema=BOOK_QUALITY_SCHEMA))
     streamed = next(r for r in acc.rows() if r["check"] == "clock_monotonic")
     assert streamed == oracle  # streaming accumulator equals the oracle
+
+
+def test_clock_monotonic_ignores_snapshots() -> None:
+    # a periodic snapshot is folded in by sequence but fetched at a different time,
+    # so its recv reads as a backward step; it must NOT count as a clock fault (this
+    # inflated the count ~2x on clock-clean days). Deltas alone here are monotonic.
+    rows = [_bq(10, 100), _bq(10, 200), _bq(10, 150, kind="snapshot"), _bq(10, 300)]
+    oracle = _clock_monotonic_row("kraken", "BTC-USD", "2026-06-16", rows)
+    assert oracle["n_violations"] == 0
+    assert oracle["n_records"] == 3  # the snapshot is excluded from the denominator too
+
+    acc = BookCheckAccumulator("kraken", "BTC-USD", "2026-06-16")
+    acc.update(pa.Table.from_pylist(rows, schema=BOOK_QUALITY_SCHEMA))
+    streamed = next(r for r in acc.rows() if r["check"] == "clock_monotonic")
+    assert streamed == oracle

@@ -73,14 +73,22 @@ def _group(rows: Iterable[dict], *keys: str) -> dict[tuple, list[dict]]:
 
 def _clock_monotonic_row(exchange: str, symbol: str, date: str, group: list[dict]) -> dict:
     """Host capture-clock health from book_quality (fold-ordered on disk). Counts
-    backward steps in `local_recv_ts_ns` between consecutive records of the SAME
-    epoch (= host clock stepped back / paused; a stopped w32time shows thousands),
-    separately from epoch-change backward steps (= benign reconnect overlap). This
-    is the canary the Phase-2 reorder can't mask — it reads the raw recv clock the
-    fold persisted, before any sort. Records with no recv clock are skipped."""
-    intra = inter = worst = 0
+    backward steps in `local_recv_ts_ns` between consecutive DELTA records of the
+    SAME epoch (= host clock stepped back / paused; a stopped w32time shows
+    thousands), separately from epoch-change backward steps (= benign reconnect
+    overlap). Snapshots are excluded: they are folded in by sequence but fetched at
+    a different time, so they read as recv backward steps that are reordering, not a
+    clock fault — counting them inflated this ~2x on clock-clean days. Deltas arrive
+    in sequence order, so fold order ≈ arrival order and a backward step is a real
+    clock regression. This is the canary the Phase-2 reorder can't mask — it reads
+    the raw recv clock the fold persisted, before any sort. Records with no recv
+    clock are skipped."""
+    intra = inter = worst = n = 0
     prev_recv = prev_epoch = None
     for r in group:
+        if r["kind"] != "delta":
+            continue
+        n += 1
         recv = r["local_recv_ts_ns"]
         if recv is None:
             continue
@@ -94,7 +102,7 @@ def _clock_monotonic_row(exchange: str, symbol: str, date: str, group: list[dict
         prev_recv, prev_epoch = recv, epoch
     return _row(
         exchange, symbol, date, "clock_monotonic",
-        n_records=len(group), n_violations=intra,
+        n_records=n, n_violations=intra,
         detail={"worst_lateness_ms": worst / 1e6, "inter_epoch_steps": inter},
     )
 
@@ -236,9 +244,14 @@ class BookCheckAccumulator:
         self._clock_update(table)
 
     def _clock_update(self, table: pa.Table) -> None:
-        """recv-clock backward steps, classified intra- vs inter-epoch, carried
-        across batches via `_last_*` (the same count as `_clock_monotonic_row`)."""
-        mask = pc.is_valid(table.column("local_recv_ts_ns"))
+        """recv-clock backward steps between consecutive DELTA records, classified
+        intra- vs inter-epoch, carried across batches via `_last_*` (the same count
+        as `_clock_monotonic_row`). Snapshots are excluded: folded in by sequence
+        but fetched at a different time, they read as reordering, not a clock fault."""
+        mask = pc.and_(
+            pc.equal(table.column("kind"), "delta"),
+            pc.is_valid(table.column("local_recv_ts_ns")),
+        )
         recv = pc.filter(table.column("local_recv_ts_ns"), mask).to_numpy(zero_copy_only=False)
         if len(recv) == 0:
             return
@@ -275,7 +288,7 @@ class BookCheckAccumulator:
             ),
             _row(
                 self.exchange, self.canonical_symbol, self.date, "clock_monotonic",
-                n_records=self._n_total, n_violations=self._clock_intra,
+                n_records=self._n_deltas, n_violations=self._clock_intra,
                 detail={"worst_lateness_ms": self._clock_worst / 1e6,
                         "inter_epoch_steps": self._clock_inter},
             ),
