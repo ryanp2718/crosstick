@@ -20,6 +20,13 @@ from itertools import groupby
 from typing import Any
 
 
+class LatenessError(Exception):
+    """An event arrived more than the allowed window behind the last emitted ts, so
+    it cannot be placed without breaking the sorted-input invariant `merge_latest`
+    relies on. Raised by `reorder` — a fail-loud signal of disorder beyond tolerance
+    (e.g. a host-clock regression past the reconnect-overlap window)."""
+
+
 def _tag(
     key: Hashable, seq: Iterable[tuple[int, Any]]
 ) -> Iterator[tuple[int, Hashable, Any]]:
@@ -54,3 +61,40 @@ def merge_latest(
         for _, key, val in group:  # apply all events at this tick first
             latest[key] = val
         yield ts, dict(latest)
+
+
+def reorder(events: Iterable[tuple[int, Any]], window_ns: int) -> Iterator[tuple[int, Any]]:
+    """Re-sort a nearly-sorted `(ts, value)` stream within a bounded lateness window.
+
+    Inputs are ts-ascending except for bounded out-of-order arrivals (silver quote
+    files are fold-ordered: ts-ascending within an epoch, with small reconnect-seam
+    inversions). Buffers events in a min-heap keyed `(ts, read_idx)` and emits one
+    once the watermark (max ts seen) has advanced `window_ns` past it — then no later
+    event can undercut it, so output is strictly ts-ascending. `read_idx` breaks
+    equal-ts ties by arrival (fold) order, reproducing a stable sort with no reliance
+    on a tiebreak column. Memory is the window, not the stream: O(events within the
+    last `window_ns`).
+
+    Fail-loud: an event arriving with `ts < last_emitted` is more than `window_ns`
+    late and cannot be placed — raise `LatenessError` rather than emit it out of order
+    and corrupt a downstream `merge_latest`.
+    """
+    heap: list[tuple[int, int, Any]] = []
+    watermark = 0
+    last_emitted: int | None = None
+    for idx, (ts, val) in enumerate(events):
+        if last_emitted is not None and ts < last_emitted:
+            raise LatenessError(
+                f"event ts {ts} is {last_emitted - ts} ns behind last emitted "
+                f"{last_emitted} (> window {window_ns} ns)"
+            )
+        heapq.heappush(heap, (ts, idx, val))
+        watermark = max(watermark, ts)
+        cutoff = watermark - window_ns
+        while heap and heap[0][0] <= cutoff:
+            ets, _, eval_ = heapq.heappop(heap)
+            last_emitted = ets
+            yield ets, eval_
+    while heap:  # drain the tail in ts order at end-of-stream
+        ets, _, eval_ = heapq.heappop(heap)
+        yield ets, eval_

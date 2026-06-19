@@ -1,7 +1,10 @@
-"""merge_latest: running-latest as-of merge, backward-only (no lookahead)."""
+"""merge_latest: running-latest as-of merge, backward-only (no lookahead).
+reorder: bounded watermark re-sort of a nearly-sorted stream, fail-loud past W."""
 from __future__ import annotations
 
-from common.asof import merge_latest
+import pytest
+
+from common.asof import LatenessError, merge_latest, reorder
 
 
 def test_running_latest_carries_forward() -> None:
@@ -49,3 +52,29 @@ def test_no_lookahead_property() -> None:
         }
         expected = [(ts, snap) for ts, snap in full if ts <= cutoff]
         assert list(merge_latest(truncated)) == expected, f"lookahead leaked at {cutoff}"
+
+
+def test_reorder_passthrough_already_sorted() -> None:
+    # W=0 is strict: an in-order stream passes straight through.
+    events = [(1, "a"), (2, "b"), (3, "c")]
+    assert list(reorder(events, 0)) == events
+
+
+def test_reorder_emits_incrementally_and_keeps_equal_ts_order() -> None:
+    # a straggler within W is placed in ts order; equal-ts entries keep arrival
+    # (fold) order via the read_idx tiebreak — reproducing a stable sort.
+    events = [(1, "x"), (1, "y"), (3, "z"), (10, "w"), (8, "late")]  # 'late' 2 behind, < W
+    assert list(reorder(events, 5)) == [(1, "x"), (1, "y"), (3, "z"), (8, "late"), (10, "w")]
+
+
+def test_reorder_matches_stable_sort_within_window() -> None:
+    # every backward step is < W behind the running max -> output is the stable sort.
+    events = [(0, 0), (50, 1), (30, 2), (90, 3), (60, 4), (120, 5), (110, 6)]
+    assert list(reorder(events, 100)) == sorted(events, key=lambda e: e[0])
+
+
+def test_reorder_raises_beyond_window() -> None:
+    # 10 then a 2 arrives -> 8 behind a value already emitted, > W -> cannot place.
+    events = [(1, "a"), (10, "b"), (20, "c"), (2, "way late")]
+    with pytest.raises(LatenessError):
+        list(reorder(events, 5))

@@ -12,19 +12,22 @@ default ``lake``) and ``SILVER_BUCKET`` (default ``silver``).
 from __future__ import annotations
 
 import argparse
+import heapq
 import logging
 import os
 from collections import defaultdict
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
 
 import pyarrow as pa
 from pyarrow import fs as pafs
 
 from analytics.corpus import CorpusRecord
+from common.asof import reorder
 from common.lake import (
     PartitionWriter,
     filesystem_from_env,
     instruments_path_from_env,
+    iter_partition_batches,
     iter_partition_tables,
     list_partitions,
     partition_key,
@@ -39,9 +42,10 @@ from silver.dq import (
     QUOTES_SCHEMA,
     STATUS_SCHEMA,
     SilverFacts,
-    _build_nbbo,
     _status_transitions,
     book_partition_rows,
+    downs_by_exchange,
+    iter_nbbo,
     latency_rows,
     to_book_recs,
 )
@@ -64,6 +68,11 @@ BOOK_DATASETS = ("book_snapshots", "book_deltas")
 NONBOOK_LATENCY_DATASETS = ("trades", "liquidations", "mark_price", "open_interest")
 # Rows per ParquetWriter row group — bounds the streaming driver's write buffers.
 BATCH_ROWS = 50_000
+# Allowed quote lateness for the NBBO reorder buffer: a quote may arrive this far
+# behind the running-max ts (reconnect-seam stragglers, worst ~29s measured) and
+# still be placed; past it `reorder` fails loud (a clock regression). Also bounds
+# the per-venue buffer to ~one window of quotes.
+WINDOW_NS = 60_000_000_000  # 60s
 
 
 def read_bronze_records(
@@ -152,6 +161,19 @@ def _iter_records(
         yield from table_to_records(table)
 
 
+def _venue_quote_stream(
+    fs: pafs.FileSystem, bucket: str, date: str, part: dict
+) -> Iterable[tuple[int, tuple]]:
+    """Stream one venue's quotes as `(ts_ns, (best_bid, best_ask))` in fold (disk)
+    order, row group by row group — the whole partition is never resident."""
+    for batch in iter_partition_batches(fs, bucket, "quotes", date, part):
+        ts = batch.column("ts_ns").to_pylist()
+        bid = batch.column("best_bid").to_pylist()
+        ask = batch.column("best_ask").to_pylist()
+        for t, b, a in zip(ts, bid, ask, strict=True):
+            yield t, (b, a)
+
+
 def _process_partition(
     fs: pafs.FileSystem, lake_bucket: str, silver_bucket: str, date: str,
     canonical: CanonicalMap, exchange: str, symbol: str, present: set[str],
@@ -212,6 +234,41 @@ def _write_rows(
             w.write_rows(rows[i:i + BATCH_ROWS])
 
 
+def _build_nbbo_streaming(
+    fs: pafs.FileSystem, silver_bucket: str, date: str, status_events: list[dict],
+    counts: dict[str, int],
+) -> None:
+    """Per-canonical NBBO from the persisted quotes, streamed: each venue's quotes go
+    through a bounded reorder buffer (fold order -> ts order, fail-loud past
+    WINDOW_NS) k-way-merged with its down-sentinels, then `iter_nbbo` -> stream-
+    written. Peak memory is ~one row group + the reorder window per venue, not a whole
+    canonical's quotes — the same NBBO as the `_build_nbbo` oracle on benign data."""
+    quotes_by_canon: dict[str, list[dict]] = defaultdict(list)
+    for part in list_partitions(fs, silver_bucket, "quotes", date):
+        quotes_by_canon[part["symbol"]].append(part)
+    downs = downs_by_exchange(status_events)
+    for canon, parts in quotes_by_canon.items():
+        streams: dict[str, Iterable[tuple[int, tuple | None]]] = {}
+        for part in parts:
+            exchange = part["exchange"]
+            quotes = reorder(_venue_quote_stream(fs, silver_bucket, date, part), WINDOW_NS)
+            sentinels = ((dts, None) for dts in sorted(downs.get(exchange, [])))
+            # quotes first so an equal-ts down evicts the leg (matches the oracle's
+            # stable sort, which appends sentinels after quotes)
+            streams[exchange] = heapq.merge(quotes, sentinels, key=lambda e: e[0])
+        key = partition_key("nbbo", symbol=canon, date=date)
+        prev_ts: int | None = None
+        with PartitionWriter(fs, silver_bucket, key, NBBO_SCHEMA) as writer:
+            batch = _Batch(writer)
+            for row in iter_nbbo(canon, streams):
+                if prev_ts is not None and row["ts_ns"] < prev_ts:  # gold relies on this
+                    raise AssertionError(f"nbbo ts regressed {prev_ts} -> {row['ts_ns']} ({canon})")
+                prev_ts = row["ts_ns"]
+                batch.add(row)
+                counts["nbbo"] += 1
+            batch.flush()
+
+
 def build_silver_streaming(
     fs: pafs.FileSystem, lake_bucket: str, silver_bucket: str, date: str, canonical: CanonicalMap
 ) -> dict[str, int]:
@@ -241,21 +298,8 @@ def build_silver_streaming(
         status_events.extend(rows)
         counts["status_events"] += len(rows)
 
-    # Phase 2: NBBO per canonical from the persisted quotes (bounded per canonical,
-    # the only cross-venue step — it reads back the small top-of-book quotes).
-    quotes_by_canon: dict[str, list[dict]] = defaultdict(list)
-    for part in list_partitions(fs, silver_bucket, "quotes", date):
-        quotes_by_canon[part["symbol"]].append(part)
-    for canon, parts in quotes_by_canon.items():
-        quotes: list[dict] = []
-        for part in parts:
-            for table in iter_partition_tables(fs, silver_bucket, "quotes", date, part):
-                quotes.extend(table.to_pylist())
-        rows = _build_nbbo(quotes, status_events)
-        key = partition_key("nbbo", symbol=canon, date=date)
-        _write_rows(fs, silver_bucket, key, NBBO_SCHEMA, rows)
-        counts["nbbo"] += len(rows)
-
+    # Phase 2: NBBO per canonical (the only cross-venue step), streamed.
+    _build_nbbo_streaming(fs, silver_bucket, date, status_events, counts)
     return counts
 
 

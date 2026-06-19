@@ -36,7 +36,7 @@ from __future__ import annotations
 
 import heapq
 from collections import defaultdict
-from collections.abc import Iterable, Iterator
+from collections.abc import Iterable, Iterator, Mapping
 from dataclasses import dataclass, field
 from decimal import Decimal
 
@@ -347,16 +347,53 @@ def _quote_row(ev: _BookEvent) -> dict | None:
     }
 
 
-def _build_nbbo(quotes: list[dict], status_events: list[dict]) -> list[dict]:
-    """Per-canonical NBBO from per-venue quotes: max-bid / min-ask across a
-    canonical's venues on each tick, with a venue's leg evicted while its
-    exchange is down (DESIGN_nbbo.md connection-state eviction). A `None`
-    sentinel injected at each down transition carries the eviction forward
-    until that venue requotes."""
+def iter_nbbo(
+    canonical: str, venue_streams: Mapping[str, Iterable[tuple[int, tuple | None]]]
+) -> Iterator[dict]:
+    """Per-canonical NBBO from already ts-sorted per-venue `(ts, (bid,ask)|None)`
+    streams: max-bid / min-ask across the live venues on each tick, a `None` value
+    evicting that venue's leg (DESIGN_nbbo.md connection-state eviction). The shared
+    core of the in-memory `_build_nbbo` oracle and the streaming driver
+    (silver/main.py) — the only difference is whether the venue streams are
+    materialized sorted lists or lazy reorder+merge iterators. Backward-only via
+    `merge_latest`. Ties on best bid/ask are broken deterministically by venue name
+    so `bid_venue`/`ask_venue` don't depend on stream order (the price is identical
+    either way)."""
+    for ts, snap in merge_latest(venue_streams):
+        live = {ex: q for ex, q in snap.items() if q is not None}
+        if not live:
+            continue
+        bid_venue, bid_q = max(live.items(), key=lambda kv: (kv[1][0], kv[0]))
+        ask_venue, ask_q = min(live.items(), key=lambda kv: (kv[1][1], kv[0]))
+        yield {
+            "canonical_symbol": canonical,
+            "date": record_date(ts // 1_000_000),
+            "ts_ns": ts,
+            "best_bid": bid_q[0],
+            "best_ask": ask_q[1],
+            "bid_venue": bid_venue,
+            "ask_venue": ask_venue,
+            "n_venues": len(live),
+        }
+
+
+def downs_by_exchange(status_events: Iterable[dict]) -> dict[str, list[int]]:
+    """Down-transition timestamps per exchange — the NBBO eviction points. Shared by
+    the `_build_nbbo` oracle and the streaming driver so the two can't disagree on
+    what evicts a venue's leg."""
     downs: dict[str, list[int]] = defaultdict(list)
     for s in status_events:
         if s["state"] == "down" and s["is_transition"]:
             downs[s["exchange"]].append(s["ts_ns"])
+    return downs
+
+
+def _build_nbbo(quotes: list[dict], status_events: list[dict]) -> list[dict]:
+    """Per-canonical NBBO from per-venue quotes — the in-memory oracle; the batch
+    path streams per partition (silver/main.py). Builds each venue's ts-sorted stream
+    (quotes + a `None` eviction sentinel at each down transition, carried forward
+    until the venue requotes) and delegates the cross-venue merge to `iter_nbbo`."""
+    downs = downs_by_exchange(status_events)
 
     by_canon: dict[str, dict[str, list[tuple[int, tuple | None]]]] = defaultdict(
         lambda: defaultdict(list)
@@ -372,24 +409,7 @@ def _build_nbbo(quotes: list[dict], status_events: list[dict]) -> list[dict]:
         for exchange, evs in venues.items():
             evs = [*evs, *((dts, None) for dts in downs.get(exchange, []))]
             streams[exchange] = sorted(evs, key=lambda e: e[0])
-        for ts, snap in merge_latest(streams):
-            live = {ex: q for ex, q in snap.items() if q is not None}
-            if not live:
-                continue
-            bid_venue, bid_q = max(live.items(), key=lambda kv: kv[1][0])
-            ask_venue, ask_q = min(live.items(), key=lambda kv: kv[1][1])
-            rows.append(
-                {
-                    "canonical_symbol": canonical,
-                    "date": record_date(ts // 1_000_000),
-                    "ts_ns": ts,
-                    "best_bid": bid_q[0],
-                    "best_ask": ask_q[1],
-                    "bid_venue": bid_venue,
-                    "ask_venue": ask_venue,
-                    "n_venues": len(live),
-                }
-            )
+        rows.extend(iter_nbbo(canonical, streams))
     return rows
 
 
