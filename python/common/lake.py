@@ -31,6 +31,11 @@ def filesystem_from_env() -> pafs.S3FileSystem:
         scheme=scheme,
         # MinIO ignores regions but pyarrow requires one to skip discovery.
         region=os.environ.get("S3_REGION", "us-east-1"),
+        # Batch builds make thousands of calls; ride through transient connection
+        # blips (local WSL2/MinIO, and expected on cloud S3) instead of aborting.
+        retry_strategy=pafs.AwsStandardS3RetryStrategy(
+            max_attempts=int(os.environ.get("S3_MAX_ATTEMPTS", "10"))
+        ),
     )
 
 
