@@ -107,6 +107,35 @@ def test_nbbo_evicts_down_venue() -> None:
     assert last["n_venues"] == 1
 
 
+def test_nbbo_evicts_stale_quiet_venue() -> None:
+    # A multi-venue leg goes quiet and the market moves: its frozen quote must be
+    # evicted, not carried into a crossed/wide NBBO (the basis +491bps tail).
+    s = 1_000_000_000
+    quotes = [
+        _q("BTC-USD", "coinbase", 1 * s, "100", "101"),   # coinbase quotes once, then quiet
+        _q("BTC-USD", "kraken", 2 * s, "99", "100"),
+        _q("BTC-USD", "kraken", 20 * s, "90", "91"),       # market drops ~10%, coinbase frozen
+    ]
+    last = _build_nbbo(quotes, [], max_age_ns=5 * s)[-1]
+    assert last["ts_ns"] == 20 * s
+    assert last["n_venues"] == 1 and last["bid_venue"] == "kraken"
+    assert last["best_bid"] == Decimal("90")  # not the stale coinbase 100
+    # without eviction the frozen coinbase bid (100) crosses the fresh 91 ask.
+    no_evict = _build_nbbo(quotes, [], max_age_ns=10**18)[-1]
+    assert no_evict["best_bid"] == Decimal("100") and no_evict["n_venues"] == 2
+
+
+def test_nbbo_keeps_quiet_venue_within_max_age() -> None:
+    # A leg quiet but within max_age is still valid — it must be carried forward.
+    s = 1_000_000_000
+    quotes = [
+        _q("BTC-USD", "coinbase", 1 * s, "100", "101"),
+        _q("BTC-USD", "kraken", 4 * s, "99", "100"),  # coinbase 3s old here, < 5s max-age
+    ]
+    last = _build_nbbo(quotes, [], max_age_ns=5 * s)[-1]
+    assert last["n_venues"] == 2 and last["best_bid"] == Decimal("100")
+
+
 def _q(canonical: str, exchange: str, ts: int, bid: str, ask: str) -> dict:
     return {
         "canonical_symbol": canonical,

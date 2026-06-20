@@ -23,7 +23,7 @@ from typing import Any
 import numpy as np
 import pyarrow as pa
 
-from common.asof import merge_latest
+from common.asof import MAX_LEG_AGE_NS, merge_latest
 from materializer.bronze import record_date
 
 _PRICE = pa.decimal128(38, 18)
@@ -61,7 +61,9 @@ BASIS_SUMMARY_SCHEMA = pa.schema(
 def _by_canonical(nbbo_rows: Iterable[dict]) -> dict[str, list[tuple[int, tuple]]]:
     out: dict[str, list[tuple[int, tuple]]] = defaultdict(list)
     for r in nbbo_rows:
-        out[r["canonical_symbol"]].append((r["ts_ns"], (r["best_bid"], r["best_ask"])))
+        out[r["canonical_symbol"]].append(
+            (r["ts_ns"], (r["ts_ns"], r["best_bid"], r["best_ask"]))
+        )
     for series in out.values():
         series.sort(key=lambda e: e[0])
     return out
@@ -71,18 +73,26 @@ def iter_basis(
     base: str,
     usd_stream: Iterable[tuple[int, Any]],
     usdt_stream: Iterable[tuple[int, Any]],
+    max_age_ns: int = MAX_LEG_AGE_NS,
 ) -> Iterator[dict]:
-    """Basis rows for one base from its two sorted NBBO legs (`(ts, (bid, ask))`).
+    """Basis rows for one base from its two sorted NBBO legs (`(ts, (qts, bid, ask))`).
 
-    The shared core of both the in-memory `build_basis` and the streaming gold
-    driver: the only difference between them is whether the legs are materialized
-    sorted lists or lazy per-partition iterators. Backward-only via merge_latest.
+    A leg whose NBBO is older than `max_age_ns` is treated as stale and the tick is
+    skipped — the single-venue USDT leg in particular simply gaps when its venue
+    freezes, and merge_latest would otherwise carry the frozen mid forward into a
+    bogus basis. The value embeds its own NBBO ts (`qts`) so the carried-forward age
+    is visible. The shared core of both the in-memory `build_basis` and the streaming
+    gold driver: the only difference between them is whether the legs are
+    materialized sorted lists or lazy per-partition iterators. Backward-only via
+    merge_latest.
     """
     for ts, snap in merge_latest({"usd": usd_stream, "usdt": usdt_stream}):
         if "usd" not in snap or "usdt" not in snap:
             continue  # one leg hasn't quoted yet — no basis
-        usd_bid, usd_ask = snap["usd"]
-        usdt_bid, usdt_ask = snap["usdt"]
+        usd_ts, usd_bid, usd_ask = snap["usd"]
+        usdt_ts, usdt_bid, usdt_ask = snap["usdt"]
+        if ts - usd_ts > max_age_ns or ts - usdt_ts > max_age_ns:
+            continue  # a stale (frozen/quiet) NBBO leg — gap rather than emit a lie
         usd_mid = (usd_bid + usd_ask) / Decimal(2)
         usdt_mid = (usdt_bid + usdt_ask) / Decimal(2)
         basis_abs = usd_mid - usdt_mid
@@ -101,7 +111,11 @@ def iter_basis(
         }
 
 
-def build_basis(nbbo_rows: Iterable[dict], pairs: list[tuple[str, str, str]]) -> list[dict]:
+def build_basis(
+    nbbo_rows: Iterable[dict],
+    pairs: list[tuple[str, str, str]],
+    max_age_ns: int = MAX_LEG_AGE_NS,
+) -> list[dict]:
     """Event-grain basis rows for each (base, usd_canonical, usdt_canonical) — the
     in-memory oracle; the batch path streams per partition (gold/main)."""
     by_canon = _by_canonical(nbbo_rows)
@@ -110,7 +124,7 @@ def build_basis(nbbo_rows: Iterable[dict], pairs: list[tuple[str, str, str]]) ->
         usd, usdt = by_canon.get(usd_c, []), by_canon.get(usdt_c, [])
         if not usd or not usdt:
             continue
-        rows.extend(iter_basis(base, usd, usdt))
+        rows.extend(iter_basis(base, usd, usdt, max_age_ns))
     return rows
 
 

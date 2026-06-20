@@ -164,14 +164,15 @@ def _iter_records(
 def _venue_quote_stream(
     fs: pafs.FileSystem, bucket: str, date: str, part: dict
 ) -> Iterable[tuple[int, tuple]]:
-    """Stream one venue's quotes as `(ts_ns, (best_bid, best_ask))` in fold (disk)
-    order, row group by row group — the whole partition is never resident."""
+    """Stream one venue's quotes as `(ts_ns, (ts_ns, best_bid, best_ask))` in fold
+    (disk) order, row group by row group — the whole partition is never resident.
+    The value embeds its own ts so iter_nbbo can evict a stale (quiet) leg."""
     for batch in iter_partition_batches(fs, bucket, "quotes", date, part):
         ts = batch.column("ts_ns").to_pylist()
         bid = batch.column("best_bid").to_pylist()
         ask = batch.column("best_ask").to_pylist()
         for t, b, a in zip(ts, bid, ask, strict=True):
-            yield t, (b, a)
+            yield t, (t, b, a)
 
 
 def _process_partition(
