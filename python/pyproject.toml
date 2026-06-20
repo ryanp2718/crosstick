@@ -28,7 +28,7 @@ dev = [
 asyncio_mode = "auto"
 testpaths = [
     "ingest/tests", "analytics/tests", "materializer/tests",
-    "common/tests", "silver/tests", "gold/tests",
+    "common/tests", "silver/tests", "gold/tests", "exporter/tests",
 ]
 pythonpath = ["."]
 # Integration tests need Docker (testcontainers); excluded by default so the

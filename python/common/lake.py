@@ -133,6 +133,24 @@ def list_partitions(
     return list(seen.values())
 
 
+def latest_date(fs: pafs.FileSystem, bucket: str, dataset: str) -> str | None:
+    """The newest `date=` partition present for one dataset, or None if empty.
+
+    Dates are ISO `YYYY-MM-DD` so lexical max == chronological max. Lists the
+    dataset prefix once (ListObjects only, no bodies) — used by the lake-exporter
+    to find which day's gold rollup to publish.
+    """
+    selector = pafs.FileSelector(f"{bucket}/{dataset}", recursive=True, allow_not_found=True)
+    latest: str | None = None
+    for info in fs.get_file_info(selector):
+        if info.type != pafs.FileType.File or not info.path.endswith(".parquet"):
+            continue
+        for seg in info.path.replace("\\", "/").split("/"):
+            if seg.startswith("date=") and (latest is None or seg[len("date="):] > latest):
+                latest = seg[len("date="):]
+    return latest
+
+
 def iter_partition_tables(
     fs: pafs.FileSystem, bucket: str, dataset: str, date: str, part: dict[str, str]
 ) -> Iterator[pa.Table]:

@@ -35,6 +35,11 @@ scrape_configs:
     # /metrics is served on the WS port (8080).
     static_configs:
       - targets: ["gateway:8080"]
+  - job_name: lake-exporter
+    # Batch/analytics tier: gold DQ + basis + lake freshness (refreshed ~60s;
+    # scraping faster just re-serves the cached snapshot).
+    static_configs:
+      - targets: ["lake-exporter:9120"]
   - job_name: redpanda
     static_configs:
       - targets: ["redpanda:9644"]

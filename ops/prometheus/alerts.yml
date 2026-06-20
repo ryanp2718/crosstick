@@ -82,3 +82,48 @@ groups:
         annotations:
           summary: "Gateway restarted"
           description: "The gateway process restarted in the last 15m — expect a warm-start; gateway_bbo_crossed_total should stay ~0 across it."
+
+  # Batch/analytics tier, surfaced by the lake-exporter (reads gold + the lake).
+  - name: crosstick-lakehouse
+    rules:
+      # Materializer stuck: even the busiest bronze dataset hasn't been written in
+      # 30m (2x the 900s flush interval). min() over datasets avoids false positives
+      # on genuinely sparse topics (liquidations only fire during volatility).
+      - alert: BronzeLakeStale
+        expr: min(lake_freshness_seconds{layer="bronze"}) > 1800
+        for: 5m
+        labels: { severity: warning }
+        annotations:
+          summary: "Bronze lake stale (>30m, no dataset written)"
+          description: "No new bronze object across any dataset for >30m — the materializer is likely stuck (up but not flushing) or the ingest feeds are down."
+
+      # A capture-clock backward step larger than the silver reorder window (W=60s)
+      # would trip LatenessError and fail the NBBO build loud. Clean days peak ~10-16s,
+      # so >60s is a genuine threat, not the known WSL2-guest residual.
+      - alert: ClockStepBeyondReorderWindow
+        expr: gold_dq_clock_worst_ms > 60000
+        labels: { severity: critical }
+        annotations:
+          summary: "Capture-clock step > 60s reorder window ({{ $labels.exchange }}/{{ $labels.symbol }})"
+          description: "Worst intra-epoch backward recv step {{ $value }}ms exceeds silver's W=60s — the NBBO build would fail loud. Investigate host/WSL2 clock (see host-clock-skew)."
+
+      # Elevated step COUNT vs the clean baseline (~150/venue/day). ~7000 was the
+      # w32time-stopped signature; >1000 flags a clock regression while staying well
+      # above the residual guest-clock noise.
+      - alert: ClockStepsElevated
+        expr: gold_dq_violations{check="clock_monotonic"} > 1000
+        for: 10m
+        labels: { severity: warning }
+        annotations:
+          summary: "Elevated capture-clock backward steps ({{ $labels.exchange }}/{{ $labels.symbol }})"
+          description: "{{ $value }} intra-epoch backward recv steps in the latest gold build (clean baseline ~150) — suspect a stopped/again-drifting host clock."
+
+      # The exporter itself stopped refreshing — gold DQ/basis/freshness gauges are
+      # stale even though the scrape target is up. Distinct from TargetDown.
+      - alert: LakeExporterStale
+        expr: time() - lake_exporter_last_success_seconds > 600
+        for: 5m
+        labels: { severity: warning }
+        annotations:
+          summary: "Lake-exporter refresh stale (>10m)"
+          description: "The lake-exporter has not completed a successful lake snapshot refresh in >10m (lake_exporter_refresh_errors_total rising?) — its gold/basis/freshness gauges are stale."
