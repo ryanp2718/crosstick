@@ -6,6 +6,7 @@ boundary, age), the start-offset key naming, and commit-after-PUT offsets.
 """
 from __future__ import annotations
 
+import time
 from types import SimpleNamespace
 
 import pytest
@@ -30,6 +31,24 @@ class FakeConsumer:
 
     async def commit(self, offsets: dict) -> None:
         self.commits.append(dict(offsets))
+
+
+class LagConsumer(FakeConsumer):
+    """FakeConsumer with the offset-introspection surface refresh_metrics uses."""
+
+    def __init__(self, highwaters: dict, positions: dict):
+        super().__init__()
+        self._highwaters = highwaters
+        self._positions = positions
+
+    def assignment(self) -> set:
+        return set(self._highwaters)
+
+    def highwater(self, tp: TopicPartition) -> int | None:
+        return self._highwaters.get(tp)
+
+    async def position(self, tp: TopicPartition) -> int:
+        return self._positions[tp]
 
 
 def msg(offset: int, *, value: bytes = b"x" * 10, ts: int = BASE_MS) -> SimpleNamespace:
@@ -95,6 +114,34 @@ async def test_age_flush(written) -> None:
     await mat.poll_once()
     assert len(written) == 1
     assert consumer.commits == [{TP: 1}]
+
+
+async def test_refresh_metrics_sets_lag_and_flush_age() -> None:
+    tp2 = TopicPartition("md.bbo.coinbase.BTC-USD", 1)
+    consumer = LagConsumer(
+        highwaters={TP: 1000, tp2: 5},
+        positions={TP: 600, tp2: 50},  # tp2 position past highwater → clamp to 0
+    )
+    mat = make_materializer(consumer)
+    mat._last_flush["trades"] = time.time() - 30  # a dataset flushed 30s ago
+
+    await mat.refresh_metrics()
+
+    reg = service_mod.REGISTRY
+    assert reg.get_sample_value(
+        "bronze_consumer_lag_messages", {"topic": TP.topic, "partition": "0"}
+    ) == 400
+    assert reg.get_sample_value(
+        "bronze_consumer_lag_messages", {"topic": tp2.topic, "partition": "1"}
+    ) == 0
+    age = reg.get_sample_value("bronze_flush_age_seconds", {"dataset": "trades"})
+    assert 25 <= age <= 90
+
+
+async def test_refresh_metrics_skips_partition_without_highwater() -> None:
+    consumer = LagConsumer(highwaters={TP: None}, positions={TP: 600})
+    mat = make_materializer(consumer)
+    await mat.refresh_metrics()  # no fetch yet → no sample, no crash
 
 
 async def test_run_flushes_remainder_on_shutdown(written) -> None:
