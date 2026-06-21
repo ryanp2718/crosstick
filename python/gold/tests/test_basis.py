@@ -75,5 +75,22 @@ def test_basis_summary_stats() -> None:
     s = build_basis_summary(series)[0]
     assert s["n_obs"] == 2
     assert s["basis_bps_mean"] == 2.0
+    assert s["basis_bps_median"] == 2.0
     assert (s["basis_bps_min"], s["basis_bps_max"]) == (1.0, 3.0)
     assert s["coverage_ns"] == 20
+
+
+def test_basis_summary_robust_to_outliers() -> None:
+    # 99 clean ticks at -4bps plus the two stale-leg tails (-129 / +491): the robust
+    # stats must stay pinned at -4 while raw min/max still flag the extremes.
+    bps = [-4.0] * 99 + [-129.0, 491.0]
+    series = [
+        {"base": "BTC", "date": "2026-06-12", "ts_ns": i, "basis_bps": v}
+        for i, v in enumerate(bps)
+    ]
+    s = build_basis_summary(series)[0]
+    assert s["n_obs"] == 101
+    assert s["basis_bps_median"] == -4.0
+    assert s["basis_bps_p1"] == -4.0
+    assert s["basis_bps_p99"] == -4.0
+    assert (s["basis_bps_min"], s["basis_bps_max"]) == (-129.0, 491.0)

@@ -220,7 +220,7 @@ two-sided NBBO. Two overwrite-keyed objects per date:
 | Dataset | Path | Row = | Key columns |
 |---|---|---|---|
 | `basis` | `basis/date={d}/` | one tick (either leg moved) | `base`, `ts_ns`, `usd_mid`, `usdt_mid`, `basis_abs`, `basis_bps`, `usd_bid`/`usd_ask`/`usdt_bid`/`usdt_ask` (`DECIMAL(38,18)`; `basis_bps` float) |
-| `basis_summary` | `basis_summary/date={d}/` | one base/day | `n_obs`, `basis_bps_mean`/`std`/`min`/`max`, `coverage_ns` |
+| `basis_summary` | `basis_summary/date={d}/` | one base/day | `n_obs`, `basis_bps_mean`/`std`/`median`/`min`/`max`/`p1`/`p99`, `coverage_ns` |
 
 `basis_abs = usd_mid − usdt_mid`; `basis_bps = basis_abs / usd_mid × 1e4`. This is
 the first signal driven through the full research spine (`RESEARCH_thesis.md` §5);
