@@ -51,8 +51,11 @@ BASIS_SUMMARY_SCHEMA = pa.schema(
         ("n_obs", pa.int64()),
         ("basis_bps_mean", pa.float64()),
         ("basis_bps_std", pa.float64()),
+        ("basis_bps_median", pa.float64()),
         ("basis_bps_min", pa.float64()),
         ("basis_bps_max", pa.float64()),
+        ("basis_bps_p1", pa.float64()),
+        ("basis_bps_p99", pa.float64()),
         ("coverage_ns", pa.int64()),
     ]
 )
@@ -118,14 +121,20 @@ def summary_row(base: str, date: str, bps: Sequence[float], ts: Sequence[int]) -
     """One basis_summary row from a (base, date) group's bps + ts values. Shared by
     build_basis_summary and the streaming driver, so the rollup can't diverge."""
     arr = np.asarray(bps, dtype=np.float64)
+    p1, p99 = np.percentile(arr, [1, 99])
     return {
         "base": base,
         "date": date,
         "n_obs": len(arr),
         "basis_bps_mean": float(arr.mean()),
         "basis_bps_std": float(arr.std()),
+        # median + p1/p99 so the mart isn't defined by a handful of stale-leg ticks;
+        # raw min/max kept as the outlier alarm.
+        "basis_bps_median": float(np.median(arr)),
         "basis_bps_min": float(arr.min()),
         "basis_bps_max": float(arr.max()),
+        "basis_bps_p1": float(p1),
+        "basis_bps_p99": float(p99),
         "coverage_ns": max(ts) - min(ts),
     }
 
