@@ -43,7 +43,7 @@ from decimal import Decimal
 import pyarrow as pa
 
 from analytics.corpus import CorpusRecord
-from common.asof import merge_latest
+from common.asof import MAX_LEG_AGE_NS, merge_latest
 from common.kafka_io import header_value
 from common.models import BookDelta, BookSnapshot, Status, decode
 from ingest.book import BookInvariantError, Level, OrderBook
@@ -348,19 +348,28 @@ def _quote_row(ev: _BookEvent) -> dict | None:
 
 
 def iter_nbbo(
-    canonical: str, venue_streams: Mapping[str, Iterable[tuple[int, tuple | None]]]
+    canonical: str,
+    venue_streams: Mapping[str, Iterable[tuple[int, tuple | None]]],
+    max_age_ns: int = MAX_LEG_AGE_NS,
 ) -> Iterator[dict]:
-    """Per-canonical NBBO from already ts-sorted per-venue `(ts, (bid,ask)|None)`
-    streams: max-bid / min-ask across the live venues on each tick, a `None` value
-    evicting that venue's leg (DESIGN_nbbo.md connection-state eviction). The shared
-    core of the in-memory `_build_nbbo` oracle and the streaming driver
-    (silver/main.py) — the only difference is whether the venue streams are
-    materialized sorted lists or lazy reorder+merge iterators. Backward-only via
-    `merge_latest`. Ties on best bid/ask are broken deterministically by venue name
-    so `bid_venue`/`ask_venue` don't depend on stream order (the price is identical
-    either way)."""
+    """Per-canonical NBBO from already ts-sorted per-venue `(ts, (qts,bid,ask)|None)`
+    streams: max-bid / min-ask across the live venues on each tick. A venue's leg is
+    evicted either by a `None` value (status-down eviction, DESIGN_nbbo.md) or when
+    its last quote is older than `max_age_ns` (staleness eviction — a quiet venue
+    would otherwise be carried into a crossed/wide NBBO). Each value embeds its own
+    quote ts (`qts`) so the carried-forward age is visible without changing
+    `merge_latest`. The shared core of the in-memory `_build_nbbo` oracle and the
+    streaming driver (silver/main.py) — the only difference is whether the venue
+    streams are materialized sorted lists or lazy reorder+merge iterators.
+    Backward-only via `merge_latest`. Ties on best bid/ask are broken
+    deterministically by venue name so `bid_venue`/`ask_venue` don't depend on
+    stream order (the price is identical either way)."""
     for ts, snap in merge_latest(venue_streams):
-        live = {ex: q for ex, q in snap.items() if q is not None}
+        live: dict[str, tuple] = {}
+        for ex, q in snap.items():
+            if q is None or ts - q[0] > max_age_ns:
+                continue  # status-down, or a stale (frozen/quiet) leg
+            live[ex] = (q[1], q[2])
         if not live:
             continue
         bid_venue, bid_q = max(live.items(), key=lambda kv: (kv[1][0], kv[0]))
@@ -388,11 +397,14 @@ def downs_by_exchange(status_events: Iterable[dict]) -> dict[str, list[int]]:
     return downs
 
 
-def _build_nbbo(quotes: list[dict], status_events: list[dict]) -> list[dict]:
+def _build_nbbo(
+    quotes: list[dict], status_events: list[dict], max_age_ns: int = MAX_LEG_AGE_NS
+) -> list[dict]:
     """Per-canonical NBBO from per-venue quotes — the in-memory oracle; the batch
     path streams per partition (silver/main.py). Builds each venue's ts-sorted stream
     (quotes + a `None` eviction sentinel at each down transition, carried forward
-    until the venue requotes) and delegates the cross-venue merge to `iter_nbbo`."""
+    until the venue requotes) and delegates the cross-venue merge to `iter_nbbo`.
+    Each quote value embeds its own ts so iter_nbbo can evict a stale leg."""
     downs = downs_by_exchange(status_events)
 
     by_canon: dict[str, dict[str, list[tuple[int, tuple | None]]]] = defaultdict(
@@ -400,7 +412,7 @@ def _build_nbbo(quotes: list[dict], status_events: list[dict]) -> list[dict]:
     )
     for q in quotes:
         by_canon[q["canonical_symbol"]][q["exchange"]].append(
-            (q["ts_ns"], (q["best_bid"], q["best_ask"]))
+            (q["ts_ns"], (q["ts_ns"], q["best_bid"], q["best_ask"]))
         )
 
     rows: list[dict] = []
@@ -409,7 +421,7 @@ def _build_nbbo(quotes: list[dict], status_events: list[dict]) -> list[dict]:
         for exchange, evs in venues.items():
             evs = [*evs, *((dts, None) for dts in downs.get(exchange, []))]
             streams[exchange] = sorted(evs, key=lambda e: e[0])
-        rows.extend(iter_nbbo(canonical, streams))
+        rows.extend(iter_nbbo(canonical, streams, max_age_ns))
     return rows
 
 

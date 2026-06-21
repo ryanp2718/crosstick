@@ -19,6 +19,15 @@ from collections.abc import Hashable, Iterable, Iterator, Mapping
 from itertools import groupby
 from typing import Any
 
+# Max age a leg's last quote stays valid in an as-of NBBO/basis before it is
+# evicted as stale. `merge_latest` carries a value forward indefinitely, so a
+# venue that goes quiet (without a status-down) would otherwise be carried into a
+# crossed/wide NBBO (multi-venue) or a frozen mid (single-venue), distorting the
+# basis. 10s sits above every venue's normal requote p99.9 (<=5s, measured) so a
+# healthy-but-quiet leg is not evicted, and 6x tighter than the reorder window.
+# The offline analog of the gateway's venue-health eviction (DESIGN_nbbo.md).
+MAX_LEG_AGE_NS = 10_000_000_000  # 10s
+
 
 class LatenessError(Exception):
     """An event arrived more than the allowed window behind the last emitted ts, so

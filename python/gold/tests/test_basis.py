@@ -50,6 +50,23 @@ def test_basis_missing_leg_yields_no_rows() -> None:
     assert build_basis([_nbbo("BTC-USD", 5, "100", "102")], PAIRS) == []
 
 
+def test_basis_evicts_stale_leg() -> None:
+    # The single-venue USDT leg freezes while USD keeps moving: the stale mid must
+    # be gapped, not carried forward into a bogus basis (the -129bps tail).
+    s = 1_000_000_000
+    nbbo = [
+        _nbbo("BTC-USD", 1 * s, "65000", "65010"),
+        _nbbo("BTC-USDT", 1 * s, "64990", "65000"),  # USDT quotes once, then freezes
+        _nbbo("BTC-USD", 2 * s, "65000", "65010"),
+        _nbbo("BTC-USD", 20 * s, "64000", "64010"),  # market drops; USDT frozen at 64995
+    ]
+    rows = build_basis(nbbo, PAIRS, max_age_ns=5 * s)
+    assert [r["ts_ns"] for r in rows] == [1 * s, 2 * s]  # 20s tick gapped (USDT 19s stale)
+    # without eviction the frozen 64995 USDT mid yields a ~-155bps lie at 20s.
+    last = build_basis(nbbo, PAIRS, max_age_ns=10**18)[-1]
+    assert last["ts_ns"] == 20 * s and last["usdt_mid"] == Decimal("64995")
+
+
 def test_basis_summary_stats() -> None:
     series = [
         {"base": "BTC", "date": "2026-06-12", "ts_ns": 10, "basis_bps": 1.0},

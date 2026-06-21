@@ -72,16 +72,17 @@ def build_for_date(fs: pafs.FileSystem, silver_bucket: str, date: str) -> list[d
 def _nbbo_stream(
     fs: pafs.FileSystem, silver_bucket: str, date: str, canonical_symbol: str
 ) -> Iterator[tuple[int, tuple]]:
-    """Stream one canonical's NBBO partition as sorted `(ts_ns, (best_bid, best_ask))`.
-    NBBO is written ts-ascending by silver (it is merge_latest output), so the file
-    is already ordered — the leg feeds straight into the k-way merge."""
+    """Stream one canonical's NBBO partition as sorted `(ts_ns, (ts_ns, best_bid,
+    best_ask))`. NBBO is written ts-ascending by silver (it is merge_latest output),
+    so the file is already ordered — the leg feeds straight into the k-way merge. The
+    value embeds its own ts so iter_basis can evict a stale (frozen) leg."""
     part = {"symbol": canonical_symbol}
     for table in iter_partition_tables(fs, silver_bucket, "nbbo", date, part):
         ts = table.column("ts_ns").to_pylist()
         bids = table.column("best_bid").to_pylist()
         asks = table.column("best_ask").to_pylist()
         for t, bid, ask in zip(ts, bids, asks, strict=True):
-            yield t, (bid, ask)
+            yield t, (t, bid, ask)
 
 
 def write_basis_for_date(
