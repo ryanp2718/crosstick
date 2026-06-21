@@ -244,6 +244,32 @@ services:
         condition: service_healthy
     restart: unless-stopped
 
+  # ─── lake-exporter: batch/analytics tier as Prometheus metrics ────────────
+  # Reads MinIO (gold DQ scorecard + basis + per-layer freshness) and exposes
+  # /metrics; Prometheus scrapes it like the others. Pull-based + env-driven via
+  # filesystem_from_env() so cloud cutover is an env change. depends on the
+  # buckets (minio-init), not redpanda — it never touches the log.
+  lake-exporter:
+    build:
+      context: ./python
+      dockerfile: Dockerfile
+    command: ["python", "-m", "exporter.main"]
+    environment:
+      S3_ENDPOINT: http://minio:9000
+      S3_ACCESS_KEY: minio
+      S3_SECRET_KEY: minio12345
+      LAKE_BUCKET: lake
+      SILVER_BUCKET: silver
+      GOLD_BUCKET: gold
+      METRICS_PORT: "9120"
+      REFRESH_SEC: "60"
+    ports:
+      - "9120:9120"
+    depends_on:
+      minio-init:
+        condition: service_completed_successfully
+    restart: unless-stopped
+
   # ─── observability ────────────────────────────────────────────────────────
   # Config-mounting services: prometheus/grafana read these mounts ONCE at
   # container creation. Editing a file under ops/ does NOT take effect on `up -d`

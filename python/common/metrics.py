@@ -67,32 +67,39 @@ queue_depth = Gauge(
 )
 
 
-class _MetricsHandler(BaseHTTPRequestHandler):
-    def do_GET(self) -> None:
-        if self.path == "/metrics":
-            body = generate_latest(REGISTRY)
-            self.send_response(200)
-            self.send_header("Content-Type", "text/plain; version=0.0.4")
-            self.send_header("Content-Length", str(len(body)))
-            self.end_headers()
-            self.wfile.write(body)
-        else:
-            self.send_response(404)
-            self.end_headers()
+def _handler_for(registry: CollectorRegistry) -> type[BaseHTTPRequestHandler]:
+    class _MetricsHandler(BaseHTTPRequestHandler):
+        def do_GET(self) -> None:
+            if self.path == "/metrics":
+                body = generate_latest(registry)
+                self.send_response(200)
+                self.send_header("Content-Type", "text/plain; version=0.0.4")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+            else:
+                self.send_response(404)
+                self.end_headers()
 
-    def log_message(self, format: str, *args: object) -> None:
-        return
+        def log_message(self, format: str, *args: object) -> None:
+            return
+
+    return _MetricsHandler
 
 
-def serve_metrics_in_background(port: int | None = None) -> None:
+def serve_metrics_in_background(
+    port: int | None = None, registry: CollectorRegistry = REGISTRY
+) -> None:
     """Start a metrics HTTP server on a daemon thread.
 
     Threading (not asyncio) is intentional — prom-client renders are sync and
-    we want metrics to keep responding even if the event loop is busy.
+    we want metrics to keep responding even if the event loop is busy. `registry`
+    defaults to the shared ingest/materializer REGISTRY; the lake-exporter passes
+    its own so it serves only its lake-derived metrics.
     """
     if port is None:
         port = int(os.environ.get("METRICS_PORT", "9100"))
-    server = ThreadingHTTPServer(("0.0.0.0", port), _MetricsHandler)
+    server = ThreadingHTTPServer(("0.0.0.0", port), _handler_for(registry))
     thread = Thread(target=server.serve_forever, name="metrics-http", daemon=True)
     thread.start()
 

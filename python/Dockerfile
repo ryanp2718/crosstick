@@ -15,5 +15,6 @@ COPY common ./common
 COPY ingest ./ingest
 COPY analytics ./analytics
 COPY materializer ./materializer
+COPY exporter ./exporter
 
 CMD ["python", "-m", "ingest.main"]
