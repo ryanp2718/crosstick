@@ -4,6 +4,13 @@ name: crosstick
 # Materializer projects topics to Parquet on MinIO; warehouse (DuckDB + dbt)
 # queries the lake; gateway computes live derived signals (BBO, spread) from
 # the same topic firehose it fans out to WS clients.
+#
+# App services carry healthchecks so `docker compose up -d --wait` blocks on a
+# real ready signal. NOTE: depends_on orders `compose up` only — on a host/Docker
+# reboot the daemon restarts every `unless-stopped` container at once, ignoring
+# it. That reboot thundering herd + the RAM-tight box are analyzed (with the
+# measure-first memory-limit plan and the .wslconfig cap) in
+# docs/scale-out.md "Local stack startup".
 
 services:
   # ─── source of truth ──────────────────────────────────────────────────────
@@ -142,6 +149,12 @@ services:
     depends_on:
       redpanda:
         condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:9101/metrics', timeout=2)"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
     restart: unless-stopped
 
   ingest-coinbase:
@@ -159,6 +172,12 @@ services:
     depends_on:
       redpanda:
         condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:9102/metrics', timeout=2)"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
     restart: unless-stopped
 
   # Perp capture: liquidations, mark/funding, open-interest poll, L2 book +
@@ -178,6 +197,12 @@ services:
     depends_on:
       redpanda:
         condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:9104/metrics', timeout=2)"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
     restart: unless-stopped
 
   ingest-kraken:
@@ -195,6 +220,12 @@ services:
     depends_on:
       redpanda:
         condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:9103/metrics', timeout=2)"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
     restart: unless-stopped
 
   # ─── stream materializer (Kappa: stream → Parquet projection) ─────────────
@@ -224,6 +255,12 @@ services:
         condition: service_healthy
       minio-init:
         condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:9110/metrics', timeout=2)"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
     restart: unless-stopped
 
   # ─── Node gateway: fanout + live BBO/spread derivation ────────────────────
@@ -242,6 +279,12 @@ services:
     depends_on:
       redpanda:
         condition: service_healthy
+    healthcheck:
+      test: ["CMD", "node", "-e", "require('http').get('http://localhost:8080/metrics',r=>process.exit(r.statusCode===200?0:1)).on('error',()=>process.exit(1))"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
     restart: unless-stopped
 
   # ─── lake-exporter: batch/analytics tier as Prometheus metrics ────────────
@@ -268,6 +311,12 @@ services:
     depends_on:
       minio-init:
         condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:9120/metrics', timeout=2)"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
     restart: unless-stopped
 
   # ─── observability ────────────────────────────────────────────────────────
