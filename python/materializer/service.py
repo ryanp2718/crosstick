@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 from dataclasses import dataclass, field
 
 import pyarrow.fs
@@ -21,7 +22,7 @@ import pyarrow.parquet as pq
 from aiokafka import AIOKafkaConsumer
 from aiokafka.abc import ConsumerRebalanceListener
 from aiokafka.structs import TopicPartition
-from prometheus_client import Counter
+from prometheus_client import Counter, Gauge
 
 from analytics.capture import record_from_message
 from analytics.corpus import CorpusRecord
@@ -51,6 +52,22 @@ bronze_objects = Counter(
 bronze_value_bytes = Counter(
     "bronze_value_bytes_total",
     "Uncompressed record-value bytes written to bronze",
+    ["dataset"],
+    registry=REGISTRY,
+)
+# Producer-side pipeline-lag gauges (refreshed on a cadence in run()). The
+# lake-side freshness alone misses a consumer that is behind-but-flushing (lag
+# high, objects still landing) or up-but-stuck (consuming into the buffer but not
+# flushing) — these two close that gap.
+bronze_consumer_lag = Gauge(
+    "bronze_consumer_lag_messages",
+    "Unconsumed messages in the log per assigned partition (highwater - position)",
+    ["topic", "partition"],
+    registry=REGISTRY,
+)
+bronze_flush_age = Gauge(
+    "bronze_flush_age_seconds",
+    "Seconds since the last successful bronze flush, per dataset",
     ["dataset"],
     registry=REGISTRY,
 )
@@ -96,6 +113,7 @@ class Materializer:
         *,
         flush_bytes: int = 16 * 1024 * 1024,
         flush_interval_sec: float = 900.0,
+        metrics_interval_sec: float = 15.0,
     ):
         self.consumer = consumer
         self.fs = filesystem
@@ -103,8 +121,11 @@ class Materializer:
         self.canonical_map = canonical_map
         self.flush_bytes = flush_bytes
         self.flush_interval_sec = flush_interval_sec
+        self.metrics_interval_sec = metrics_interval_sec
         self.records_flushed = 0
         self._buffers: dict[TopicPartition, _Buffer] = {}
+        self._last_flush: dict[str, float] = {}  # dataset -> wall-clock of last PUT
+        self._last_metrics = 0.0  # loop time of last gauge refresh
         self._stopping = False
 
     def rebalance_listener(self) -> ConsumerRebalanceListener:
@@ -117,7 +138,29 @@ class Materializer:
         """Consume until shutdown(); final sweep flushes whatever is buffered."""
         while not self._stopping:
             await self.poll_once()
+            await self._refresh_metrics_due()
         await self.flush_all()
+
+    async def _refresh_metrics_due(self) -> None:
+        now = asyncio.get_running_loop().time()
+        if now - self._last_metrics >= self.metrics_interval_sec:
+            self._last_metrics = now
+            await self.refresh_metrics()
+
+    async def refresh_metrics(self) -> None:
+        """Refresh the producer-side lag gauges: per-partition consumer lag
+        (highwater - position) and per-dataset seconds-since-last-flush."""
+        now = time.time()
+        for dataset, flushed_at in self._last_flush.items():
+            bronze_flush_age.labels(dataset=dataset).set(now - flushed_at)
+        for tp in self.consumer.assignment():
+            hw = self.consumer.highwater(tp)
+            if hw is None:
+                continue  # no fetch yet — highwater unknown
+            pos = await self.consumer.position(tp)
+            bronze_consumer_lag.labels(topic=tp.topic, partition=str(tp.partition)).set(
+                max(hw - pos, 0)
+            )
 
     async def poll_once(self, timeout_ms: int = 1000) -> int:
         """One consume-buffer-flush cycle; returns records consumed."""
@@ -175,6 +218,7 @@ class Materializer:
         # the restart re-reads this chunk and overwrites the same key.
         await self.consumer.commit({tp: buf.records[-1].offset + 1})
         self.records_flushed += len(buf.records)
+        self._last_flush[meta.dataset] = time.time()
         bronze_records.labels(dataset=meta.dataset).inc(len(buf.records))
         bronze_objects.labels(dataset=meta.dataset).inc()
         bronze_value_bytes.labels(dataset=meta.dataset).inc(buf.value_bytes)

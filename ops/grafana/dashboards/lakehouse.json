@@ -187,6 +187,55 @@
       "transformations": [
         { "id": "organize", "options": { "excludeByName": { "Time": true, "job": true, "instance": true } } }
       ]
+    },
+    {
+      "id": 12,
+      "title": "Materializer consumer lag / partition — red >50k = falling behind ingest",
+      "type": "timeseries",
+      "gridPos": { "x": 0, "y": 35, "w": 12, "h": 7 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [
+        { "expr": "bronze_consumer_lag_messages", "legendFormat": "{{topic}} p{{partition}}", "refId": "A" }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": { "drawStyle": "line", "fillOpacity": 10 },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "red", "value": 50000 }
+            ]
+          }
+        }
+      },
+      "options": { "legend": { "displayMode": "table", "placement": "right", "calcs": ["last", "max"] } }
+    },
+    {
+      "id": 13,
+      "title": "Bronze flush age / dataset (s) — sawtooths to the 900s flush interval; flat-climbing = stuck",
+      "type": "timeseries",
+      "gridPos": { "x": 12, "y": 35, "w": 12, "h": 7 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [
+        { "expr": "bronze_flush_age_seconds", "legendFormat": "{{dataset}}", "refId": "A" }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "custom": { "drawStyle": "line", "fillOpacity": 5 },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "yellow", "value": 900 },
+              { "color": "red", "value": 1800 }
+            ]
+          }
+        }
+      },
+      "options": { "legend": { "displayMode": "table", "placement": "right", "calcs": ["last", "max"] } }
     }
   ]
 }

@@ -64,6 +64,18 @@ groups:
           summary: "Gateway consumer lag high ({{ $labels.topic }} p{{ $labels.partition }})"
           description: "gateway_consumer_lag_messages > 50000 for 5m on {{ $labels.topic }} p{{ $labels.partition }} — the gateway is not keeping up with ingest."
 
+      # Materializer falling behind ingest (bronze projection). 10m (vs the gateway's
+      # 5m) rides out the consume pauses during a 16MB zstd PUT, so only a sustained
+      # backlog fires. Complements BronzeLakeStale: lag catches behind-but-flushing,
+      # freshness catches up-but-stuck.
+      - alert: MaterializerLagHigh
+        expr: bronze_consumer_lag_messages > 50000
+        for: 10m
+        labels: { severity: warning }
+        annotations:
+          summary: "Materializer consumer lag high ({{ $labels.topic }} p{{ $labels.partition }})"
+          description: "bronze_consumer_lag_messages > 50000 for 10m on {{ $labels.topic }} p{{ $labels.partition }} — the materializer is not keeping up with ingest; bronze will fall behind."
+
       # Any scrape target unreachable (crashed service, bad target). The safety
       # net that keeps a misconfigured scrape from being silent.
       - alert: TargetDown
