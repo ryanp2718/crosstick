@@ -104,3 +104,55 @@ work is provider/cost selection, lifecycle config, and keeping reads
 remote-friendly: compaction into larger objects, and relational aggregation pushed
 to DuckDB over Parquet rather than materialized in Python. Trigger: raw-history
 needs exceed the box's disk, or batch compute contends with live capture.
+
+## Local stack startup: thundering herd on a RAM-tight box
+
+**Today.** The whole stack — 12 long-running containers plus two init jobs — runs
+in one Docker Desktop / WSL2 VM on a 15 GB Windows box that idles with only
+~1.3 GB free (WSL2 + Docker + browsers + OS). `depends_on` health-gates the
+data-plane on `redpanda`/`minio`, and every app service now carries a healthcheck
+so `docker compose up -d --wait` blocks on a real ready signal and `docker ps`
+shows which container is still coming up.
+
+**The cost — and the trap.** `depends_on` orders **`docker compose up` only**. On a
+host reboot or a Docker Desktop restart, the daemon restarts every
+`restart: unless-stopped` container *simultaneously*, ignoring `depends_on`
+entirely. So the cure the ordering buys you on `up` does not apply to the case that
+actually hurts: the reboot. All 12 containers cold-start at once and two things
+follow:
+
+- **Engine flap.** There is no `.wslconfig`, so the VM grows dynamically toward
+  ~80 % of host RAM; the simultaneous cold-start spike starves the Windows host and
+  the Docker engine returns 500/502 on *new-container start* (`_ping` 500,
+  `containers/<id>/start` 502 "unexpected EOF") while already-running containers
+  keep serving. Observed repeatedly — see the engine-flap memory.
+- **NotLeaderForPartition storm.** The ingesters/materializer/gateway connect before
+  Redpanda has elected partition leaders, so the Kafka clients retry-storm until the
+  broker settles. Self-healing (client backoff), but it is load piled on exactly
+  when the box is most starved.
+
+**The levers, by leverage.**
+
+1. **Cap the VM (`%USERPROFILE%\.wslconfig`).** The single most direct fix for the
+   engine flap — bound the VM so it can't starve the Windows host. Apply with
+   `wsl --shutdown` (then restart Docker Desktop). This is a host file, outside the
+   repo:
+   ```ini
+   [wsl2]
+   memory=11GB   # leave ~4 GB for Windows on a 15 GB box
+   swap=4GB      # spike headroom so a cold-start burst doesn't OOM
+   ```
+2. **Per-service `mem_limit` (compose) — measure first.** Bounds each container so
+   the aggregate can't exhaust the VM. Deliberately *not* set blind: too-low limits
+   OOM-kill into a restart loop that is worse than the herd, and Redpanda and the
+   lake-exporter (which reads whole gold objects into memory) are the sensitive
+   ones. Size from a live `docker stats --no-stream` on a settled stack, then set
+   limits at roughly 1.5–2× observed RSS. Do this once the engine is healthy enough
+   to measure.
+3. **Healthchecks (done).** Don't fix the flap, but make stabilization observable
+   and give `up --wait` a real gate.
+
+**The durable fix** is the same cloud cutover as the storage section above:
+off-box compute + managed object store removes the single-VM RAM ceiling, and a
+real orchestrator (or provider-managed restarts) gives dependency-ordered,
+resource-bounded startup that Docker Desktop's reboot path does not.
