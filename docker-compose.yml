@@ -7,10 +7,11 @@ name: crosstick
 #
 # App services carry healthchecks so `docker compose up -d --wait` blocks on a
 # real ready signal. NOTE: depends_on orders `compose up` only — on a host/Docker
-# reboot the daemon restarts every `unless-stopped` container at once, ignoring
-# it. That reboot thundering herd + the RAM-tight box are analyzed (with the
-# measure-first memory-limit plan and the .wslconfig cap) in
-# docs/scale-out.md "Local stack startup".
+# reboot the daemon restarts every `unless-stopped` container at once, ignoring it.
+# Redpanda's --memory cap (below) is what keeps it from reserving most of the VM
+# and leaving the RAM-tight box with no headroom for a new container to start; the
+# reboot herd and the measured budget are analyzed in docs/scale-out.md
+# "Local stack startup".
 
 services:
   # ─── source of truth ──────────────────────────────────────────────────────
@@ -29,6 +30,8 @@ services:
       - --schema-registry-addr=internal://0.0.0.0:8081,external://0.0.0.0:18081
       - --mode=dev-container
       - --smp=1
+      # Cap Seastar's reservation; without it Redpanda grabs most of the VM (scale-out.md).
+      - --memory=1536M
       - --default-log-level=warn
     ports:
       - "19092:19092"   # Kafka API (external)
