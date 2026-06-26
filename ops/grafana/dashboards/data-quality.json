@@ -2,7 +2,7 @@
   "title": "Data Quality",
   "uid": "data-quality",
   "schemaVersion": 39,
-  "version": 1,
+  "version": 2,
   "editable": true,
   "refresh": "5s",
   "time": { "from": "now-1h", "to": "now" },
@@ -197,6 +197,55 @@
         { "expr": "ALERTS{alertstate=\"firing\"}", "instant": true, "format": "table", "refId": "A" }
       ],
       "options": { "showHeader": true }
+    },
+    {
+      "id": 10,
+      "title": "Host recv-clock backward steps / venue (live canary) — should be 0",
+      "type": "timeseries",
+      "gridPos": { "x": 0, "y": 26, "w": 12, "h": 7 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [
+        {
+          "expr": "sum by (exchange) (increase(md_recv_clock_backward_steps_total[5m]))",
+          "legendFormat": "{{exchange}}",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": { "drawStyle": "line", "fillOpacity": 20 },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "red", "value": 0.5 }
+            ]
+          }
+        }
+      },
+      "options": { "legend": { "displayMode": "table", "placement": "right", "calcs": ["sum"] } }
+    },
+    {
+      "id": 11,
+      "title": "Host recv-clock worst backward step / venue (ms, since restart)",
+      "type": "timeseries",
+      "gridPos": { "x": 12, "y": 26, "w": 12, "h": 7 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [
+        {
+          "expr": "md_recv_clock_worst_step_ms",
+          "legendFormat": "{{exchange}}",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ms",
+          "custom": { "drawStyle": "line", "fillOpacity": 5 }
+        }
+      },
+      "options": { "legend": { "displayMode": "table", "placement": "right", "calcs": ["max"] } }
     }
   ]
 }

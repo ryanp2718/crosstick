@@ -44,6 +44,8 @@ from common.metrics import (
     exchange_latency,
     messages_received,
     queue_depth,
+    recv_clock_backward_steps,
+    recv_clock_worst_step_ms,
     ws_reconnects,
 )
 from common.models import BookLevel, BookSnapshot, Side, Status, encode
@@ -217,6 +219,14 @@ class BaseIngester(ABC):
         # Initialize state metric.
         for ctx in self.contexts.values():
             book_state.labels(exchange=exchange, symbol=ctx.symbol).set(0)
+
+        # Live recv-clock canary (see _observe_recv_clock). Instance-level so a
+        # backward step across a reconnect gap is still caught; pre-init the series
+        # at 0 so the "should be 0" panel/alert always has a baseline.
+        self._prev_recv_ns: int | None = None
+        self._worst_recv_step_ms: float = 0.0
+        recv_clock_backward_steps.labels(exchange=exchange)
+        recv_clock_worst_step_ms.labels(exchange=exchange).set(0.0)
 
         self._shutdown = asyncio.Event()
         # New queue per connection; allocated in _connect_and_stream.
@@ -575,6 +585,22 @@ class BaseIngester(ABC):
                 ws_reconnects.labels(exchange=self.exchange, reason="stale").inc()
                 return
 
+    def _observe_recv_clock(self, recv_ns: int) -> None:
+        """Live host-clock canary: count backward steps between consecutive WS-frame
+        recv timestamps. One process clock read in arrival order, so a step back is a
+        real wall-clock regression — none of the fold/epoch/snapshot reordering the
+        silver `clock_monotonic` check must exclude, so a healthy host reads exactly 0.
+        """
+        prev = self._prev_recv_ns
+        self._prev_recv_ns = recv_ns
+        if prev is None or recv_ns >= prev:
+            return
+        recv_clock_backward_steps.labels(exchange=self.exchange).inc()
+        step_ms = (prev - recv_ns) / 1e6
+        if step_ms > self._worst_recv_step_ms:
+            self._worst_recv_step_ms = step_ms
+            recv_clock_worst_step_ms.labels(exchange=self.exchange).set(step_ms)
+
     async def _reader(self, ws: websockets.WebSocketClientProtocol) -> None:
         """Pulls frames off the WS as fast as possible; pushes to bounded queue.
 
@@ -587,6 +613,7 @@ class BaseIngester(ABC):
             async for raw in ws:
                 local_recv_ts_ns = time.time_ns()
                 self._last_msg_monotonic = time.monotonic()
+                self._observe_recv_clock(local_recv_ts_ns)
                 if isinstance(raw, str):
                     raw = raw.encode("utf-8")
                 bytes_received.labels(exchange=self.exchange).inc(len(raw))

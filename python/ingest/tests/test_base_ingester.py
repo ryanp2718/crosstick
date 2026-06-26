@@ -1001,3 +1001,56 @@ async def test_book_invariant_increments_metric_with_kind(
     assert _invariant_count("fake", "X", "crossed_after_delta") > before, (
         "expected md_book_invariant_violations_total to increment with kind"
     )
+
+
+# ─── live recv-clock canary (md_recv_clock_*) ──────────────────────────────
+
+
+def _recv_clock(exchange: str) -> tuple[float, float]:
+    from common.metrics import recv_clock_backward_steps, recv_clock_worst_step_ms
+    steps = recv_clock_backward_steps.labels(exchange=exchange)._value.get()
+    worst = recv_clock_worst_step_ms.labels(exchange=exchange)._value.get()
+    return steps, worst
+
+
+def _clock_ingester(exchange: str) -> FakeIngester:
+    return FakeIngester(
+        exchange=exchange, symbols=["X"], ws_url="ws://unused", producer=FakeProducer(),
+    )
+
+
+def test_recv_clock_monotonic_counts_no_backward_steps() -> None:
+    """A strictly increasing recv clock (the healthy host) records zero steps."""
+    ing = _clock_ingester("clk-mono")
+    before, _ = _recv_clock("clk-mono")
+    for ns in (100, 200, 300, 400):
+        ing._observe_recv_clock(ns)
+    steps, worst = _recv_clock("clk-mono")
+    assert steps == before
+    assert worst == 0.0
+
+
+def test_recv_clock_counts_backward_step_and_tracks_worst() -> None:
+    """Each backward step increments the counter; the worst-step gauge is a
+    high-water mark, unchanged by a smaller later step."""
+    ing = _clock_ingester("clk-back")
+    before, _ = _recv_clock("clk-back")
+    ing._observe_recv_clock(1_000_000_000)
+    ing._observe_recv_clock(950_000_000)   # back 50 ms
+    ing._observe_recv_clock(960_000_000)   # forward again — no step
+    ing._observe_recv_clock(900_000_000)   # back 60 ms — new worst
+    ing._observe_recv_clock(880_000_000)   # back 20 ms — worse count, smaller step
+    steps, worst = _recv_clock("clk-back")
+    assert steps == before + 3
+    assert worst == pytest.approx(60.0)
+
+
+def test_recv_clock_persists_across_reconnect_gap() -> None:
+    """_prev_recv_ns is instance-level (not reset per connection), so a step
+    between the last frame of one connection and the first of the next is caught."""
+    ing = _clock_ingester("clk-recon")
+    before, _ = _recv_clock("clk-recon")
+    ing._observe_recv_clock(5_000_000_000)  # last frame of connection A
+    ing._observe_recv_clock(4_000_000_000)  # first frame of connection B, clock behind
+    steps, _ = _recv_clock("clk-recon")
+    assert steps == before + 1
