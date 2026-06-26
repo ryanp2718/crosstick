@@ -86,6 +86,19 @@ groups:
           summary: "Scrape target down: {{ $labels.job }} ({{ $labels.instance }})"
           description: "Prometheus cannot scrape {{ $labels.instance }} in job {{ $labels.job }}."
 
+      # Live host capture-clock regression, at the source (vs the per-build
+      # gold_dq_clock_* the scorecard derives from silver). NTP slew never steps
+      # backward, and this measures consecutive WS-frame clock reads with no
+      # fold/epoch reordering to confound it — so a healthy host reads exactly 0
+      # and any backward step is a real fault (corrupts recv-latency + ordering).
+      - alert: RecvClockBackwardStep
+        expr: sum by (exchange) (increase(md_recv_clock_backward_steps_total[15m])) > 0
+        for: 5m
+        labels: { severity: warning }
+        annotations:
+          summary: "Host capture clock stepped backward ({{ $labels.exchange }})"
+          description: "md_recv_clock_backward_steps_total rose for {{ $labels.exchange }} — the capture host's wall clock went backward between consecutive WS frames (worst: md_recv_clock_worst_step_ms). See host-clock-skew."
+
       # Process restart marker. Info-severity; also the empirical close-out
       # signal for the epoch fix (watch bbo_crossed across a restart).
       - alert: GatewayRestarted

@@ -65,6 +65,20 @@ queue_depth = Gauge(
     ["component", "name"],
     registry=REGISTRY,
 )
+# Live host capture-clock canary: backward steps in time.time_ns() between
+# consecutive WS frames (the per-build gold_dq_clock_* comes from the scorecard).
+recv_clock_backward_steps = Counter(
+    "md_recv_clock_backward_steps_total",
+    "Backward steps in the host capture clock between consecutive WS frames",
+    ["exchange"],
+    registry=REGISTRY,
+)
+recv_clock_worst_step_ms = Gauge(
+    "md_recv_clock_worst_step_ms",
+    "Largest backward host-clock step since process start (ms)",
+    ["exchange"],
+    registry=REGISTRY,
+)
 
 
 def _handler_for(registry: CollectorRegistry) -> type[BaseHTTPRequestHandler]:
