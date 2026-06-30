@@ -1,8 +1,8 @@
 import { describe, expect, it } from "vitest";
 
 import type { CanonicalInstrument } from "../src/canonical.js";
-import type { BBOMsg } from "../src/messages.js";
-import { NBBOAggregator } from "../src/nbbo.js";
+import type { BBOMsg, NBBOMsg } from "../src/messages.js";
+import { isFreshCross, NBBOAggregator } from "../src/nbbo.js";
 
 const BTC_USD: CanonicalInstrument = {
   canonical_id: "BTC-USD",
@@ -251,5 +251,43 @@ describe("NBBOAggregator", () => {
       if (live) expect(live.constituents).toEqual(["coinbase"]);
       expect(agg.snapshot(5)[0].constituents).toEqual(["coinbase"]);
     });
+  });
+});
+
+describe("isFreshCross", () => {
+  // Build a crossed NBBO with controllable per-leg ages. Each leg is quoted at
+  // an explicit ms instant (local_ts_ns = ms * 1e6, exact in float64) and read
+  // back at nowMs, so leg_age_ms = nowMs - quoted-ms is exact. coinbase carries
+  // the lower ask; kraken carries the higher, crossing bid.
+  function crossedNbbo(bidLegMs: number, askLegMs: number, nowMs: number): NBBOMsg {
+    const agg = new NBBOAggregator();
+    agg.onBBO(BTC_USD, bbo("coinbase", "BTC-USD", "100", "1", "101", "1", askLegMs * 1e6), nowMs);
+    const nbbo = agg.onBBO(BTC_USD, bbo("kraken", "BTC/USD", "102", "1", "103", "1", bidLegMs * 1e6), nowMs);
+    if (!nbbo || !nbbo.crossed) throw new Error("expected a crossed NBBO");
+    return nbbo;
+  }
+
+  it("counts a cross when both winning legs are fresh", () => {
+    expect(isFreshCross(crossedNbbo(2900, 2900, 3000), 1000)).toBe(true); // both 100ms old
+  });
+
+  it("ignores a cross carried by a stale winning leg", () => {
+    const nbbo = crossedNbbo(1000, 3000, 3000); // bid leg 2000ms old, ask fresh
+    expect(nbbo.best_bid.leg_age_ms).toBe(2000);
+    expect(nbbo.best_ask.leg_age_ms).toBe(0);
+    expect(isFreshCross(nbbo, 1000)).toBe(false);
+  });
+
+  it("treats the age threshold as inclusive on both legs", () => {
+    const nbbo = crossedNbbo(2000, 2000, 3000); // both exactly 1000ms old
+    expect(isFreshCross(nbbo, 1000)).toBe(true);
+    expect(isFreshCross(nbbo, 999)).toBe(false);
+  });
+
+  it("never counts an uncrossed NBBO, however fresh", () => {
+    const agg = new NBBOAggregator();
+    const nbbo = agg.onBBO(BTC_USD, bbo("coinbase", "BTC-USD", "100", "1", "101", "1"), 1);
+    expect(nbbo!.crossed).toBe(false);
+    expect(isFreshCross(nbbo!, 1_000_000)).toBe(false);
   });
 });

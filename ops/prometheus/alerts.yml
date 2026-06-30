@@ -15,14 +15,17 @@ groups:
           summary: "Crossed BBO reconstructed for {{ $labels.exchange }}"
           description: "gateway_bbo_crossed_total is rising — the gateway is emitting a crossed within-venue book for {{ $labels.exchange }}."
 
-      # Cross-venue NBBO inversion (best_bid >= best_ask across exchanges).
+      # Cross-venue NBBO inversion (best_bid >= best_ask across exchanges). The
+      # metric counts only crosses where both winning legs are fresh (the gateway
+      # excludes stale-leg crosses, the benign majority), so a sustained rate is a
+      # genuine simultaneous inversion: a corrupt venue book or real latency arb.
       - alert: GatewayNBBOCrossed
         expr: sum by (canonical_id) (rate(gateway_nbbo_crossed_total[5m])) > 0
         for: 2m
         labels: { severity: warning }
         annotations:
           summary: "Crossed NBBO for {{ $labels.canonical_id }}"
-          description: "Negative cross-venue spread on {{ $labels.canonical_id }} — a stale or bad leg, or a venue with a corrupt book."
+          description: "Negative cross-venue spread on {{ $labels.canonical_id }} with both winning legs fresh — a corrupt venue book, or a sustained cross-venue dislocation."
 
       # Ingester book-invariant violations (snapshot_crossed / non_monotonic_seq
       # / crossed_after_delta). Source-side corruption caught before publish.
@@ -88,16 +91,21 @@ groups:
 
       # Live host capture-clock regression, at the source (vs the per-build
       # gold_dq_clock_* the scorecard derives from silver). NTP slew never steps
-      # backward, and this measures consecutive WS-frame clock reads with no
-      # fold/epoch reordering to confound it — so a healthy host reads exactly 0
-      # and any backward step is a real fault (corrupts recv-latency + ordering).
+      # backward, so any backward step between consecutive WS frames is a fault.
+      # Floored on magnitude (the worst step since process start), mirroring the
+      # batch ClockStepBeyondReorderWindow: the WSL2 guest has a sub-10ms residual
+      # (06-28 worst 5.3ms) that the raw count fires on continuously and benignly,
+      # while a genuine regression steps far past 100ms. The worst-step gauge is a
+      # since-start high-water mark, so this latches until the process restarts
+      # re-zeros it (a healthy host then never re-crosses) — a real fault stays
+      # surfaced rather than silently clearing. Predicted to read 0 on cloud+chrony.
       - alert: RecvClockBackwardStep
-        expr: sum by (exchange) (increase(md_recv_clock_backward_steps_total[15m])) > 0
+        expr: max by (exchange) (md_recv_clock_worst_step_ms) > 100
         for: 5m
         labels: { severity: warning }
         annotations:
           summary: "Host capture clock stepped backward ({{ $labels.exchange }})"
-          description: "md_recv_clock_backward_steps_total rose for {{ $labels.exchange }} — the capture host's wall clock went backward between consecutive WS frames (worst: md_recv_clock_worst_step_ms). See host-clock-skew."
+          description: "md_recv_clock_worst_step_ms is {{ $value }}ms for {{ $labels.exchange }} (>100ms floor, well past the WSL2 residual) — the capture host's wall clock went backward between consecutive WS frames. See host-clock-skew."
 
       # Process restart marker. Info-severity; also the empirical close-out
       # signal for the epoch fix (watch bbo_crossed across a restart).
