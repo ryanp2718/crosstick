@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import { Aggregator, MAX_PENDING_DELTAS } from "../src/aggregator.js";
-import { bboCrossed } from "../src/metrics.js";
+import { bboCrossed, bookSnapshotStale } from "../src/metrics.js";
 import type { BookDeltaMsg, BookSnapshotMsg, WireLevel } from "../src/messages.js";
 
 function snap(
@@ -25,6 +25,12 @@ function delta(
 // Read the gateway_bbo_crossed_total value for one exchange (0 if unseen).
 async function crossedFor(exchange: string): Promise<number> {
   const m = await bboCrossed.get();
+  return m.values.find((v) => v.labels.exchange === exchange)?.value ?? 0;
+}
+
+// Read the gateway_book_snapshot_stale_total value for one exchange (0 if unseen).
+async function staleFor(exchange: string): Promise<number> {
+  const m = await bookSnapshotStale.get();
   return m.values.find((v) => v.labels.exchange === exchange)?.value ?? 0;
 }
 
@@ -181,6 +187,20 @@ describe("Aggregator", () => {
       expect(a.applyBook(delta(6, [["100.5", "3"]], [], 9))?.bid_px).toBe("100.5");
       // Same epoch, stale seq → dropped.
       expect(a.applyBook(delta(6, [["100.7", "3"]], [], 9))).toBeNull();
+    });
+
+    it("skips a stale same-epoch re-snapshot instead of rewinding the book", async () => {
+      const a = new Aggregator();
+      a.applyBook(snap(5, [["100", "1"]], [["101", "1"]], 9));
+      // A live delta deletes the old top and advances the book to seq 7.
+      a.applyBook(delta(7, [["100", "0"], ["100.6", "2"]], [], 9));
+      // A periodic re-snapshot stamped at the OLD seq 6 (captured before delta 7
+      // applied) arrives late; resetting to it would resurrect the deleted 100
+      // bid and rewind the 100.6 top.
+      const before = await staleFor("kraken");
+      expect(a.applyBook(snap(6, [["100", "1"]], [["101", "1"]], 9))).toBeNull();
+      expect(a.snapshot()[0]).toMatchObject({ bid_px: "100.6", ask_px: "101" });
+      expect(await staleFor("kraken")).toBe(before + 1);
     });
   });
 

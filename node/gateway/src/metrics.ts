@@ -88,6 +88,18 @@ export const bboCrossed = new Counter({
   registers: [registry],
 });
 
+// Same-epoch re-snapshots skipped because the book already passed their
+// sequence. The ingester stamps a periodic re-snapshot at the seq captured
+// before an in-flight delta was applied; in arrival order that delta lands
+// first, so resetting to the older snapshot would rewind and resurrect deleted
+// levels (the residual crossed-book source after the 06-12 epoch fix).
+export const bookSnapshotStale = new Counter({
+  name: "gateway_book_snapshot_stale_total",
+  help: "Stale same-epoch re-snapshots skipped to avoid rewinding the book",
+  labelNames: ["exchange"] as const,
+  registers: [registry],
+});
+
 export const venueUp = new Gauge({
   name: "gateway_venue_up",
   help: "Venue health from md.status.* / liveness timeout (1 up, 0 down)",
