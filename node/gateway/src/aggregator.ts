@@ -1,6 +1,6 @@
 import { Book } from "./book.js";
 import { cmpDecimal } from "./decimal.js";
-import { bboCrossed } from "./metrics.js";
+import { bboCrossed, bookSnapshotStale } from "./metrics.js";
 import type { BBOMsg, BookDeltaMsg, BookSnapshotMsg } from "./messages.js";
 
 // Deltas retained per stream while waiting for its snapshot (drop-oldest on
@@ -55,7 +55,12 @@ export class Aggregator {
       book = new Book();
       this.books.set(key, book);
     }
-    book.applySnapshot(msg.sequence, epoch, msg.bids, msg.asks);
+    if (!book.applySnapshot(msg.sequence, epoch, msg.bids, msg.asks)) {
+      // Stale same-epoch re-snapshot the book already passed: skip the rewind.
+      // Live book unchanged, same-epoch deltas already applied → nothing to drain.
+      bookSnapshotStale.inc({ exchange: msg.exchange });
+      return null;
+    }
     // Drain only this snapshot's own epoch (seq guard drops what it supersedes);
     // retain other epochs for their own snapshot. ts from the last applied msg.
     let last: BookSnapshotMsg | BookDeltaMsg = msg;
@@ -87,8 +92,9 @@ export class Aggregator {
     const ask = book.bestAsk();
     if (!bid || !ask) return null; // one-sided book has no BBO
 
-    // Crossed within-venue book (ask < bid) = upstream corruption: count it but
-    // still emit — the gateway is a faithful projection, not a silent fixer.
+    // Crossed within-venue book (ask < bid): count it but still emit — a
+    // faithful projection, not a silent fixer. The re-snapshot rewind that drove
+    // this is now guarded (book.ts), so a residual cross is upstream corruption.
     if (cmpDecimal(ask[0], bid[0]) < 0) bboCrossed.inc({ exchange: msg.exchange });
 
     const prev = this.lastBbo.get(key);

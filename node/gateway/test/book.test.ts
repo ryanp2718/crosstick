@@ -60,12 +60,31 @@ describe("Book", () => {
     expect(b.bestAsk()).toBeNull();
   });
 
-  it("resets unconditionally on a snapshot (reconnect with lower seq)", () => {
+  it("resets on a new-epoch snapshot even with a lower seq (reconnect)", () => {
     const b = new Book();
     b.applySnapshot(50, 0, [["100", "1"]], [["101", "1"]]);
-    b.applySnapshot(0, 0, [["200", "1"]], [["201", "1"]]);
+    // A reconnect resets the per-connection seq counter and carries a new epoch.
+    expect(b.applySnapshot(0, 1, [["200", "1"]], [["201", "1"]])).toBe(true);
     expect(b.bestBid()).toEqual(["200", "1"]);
     expect(b.seq).toBe(0);
+  });
+
+  it("skips a stale same-epoch re-snapshot the book has already passed", () => {
+    const b = new Book();
+    b.applySnapshot(5, 0, [["100", "1"]], [["101", "1"]]);
+    b.applyDelta(7, [["100.6", "2"]], []); // book advances past the re-snapshot's seq
+    // A periodic re-snapshot stamped at the older seq 6 would rewind to it.
+    expect(b.applySnapshot(6, 0, [["100", "1"]], [["101", "1"]])).toBe(false);
+    expect(b.bestBid()).toEqual(["100.6", "2"]); // unchanged
+    expect(b.seq).toBe(7);
+  });
+
+  it("applies a forward same-epoch re-snapshot", () => {
+    const b = new Book();
+    b.applySnapshot(5, 0, [["100", "1"]], [["101", "1"]]);
+    expect(b.applySnapshot(8, 0, [["200", "1"]], [["201", "1"]])).toBe(true);
+    expect(b.bestBid()).toEqual(["200", "1"]);
+    expect(b.seq).toBe(8);
   });
 
   it("adopts the snapshot's epoch", () => {
