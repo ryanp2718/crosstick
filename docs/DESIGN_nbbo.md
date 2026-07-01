@@ -10,7 +10,7 @@ fanout.
 For each canonical instrument (e.g. `BTC-USD`), maintain a live best bid and
 best ask drawn from all venues that quote it, and publish dedup'd state-change
 messages to `md.nbbo.<canonical_id>`. The single-exchange BBO topics
-(`md.bbo.<exchange>.<symbol>`) remain in parallel — NBBO is a derived view, not
+(`md.bbo.<exchange>.<symbol>`) remain in parallel; NBBO is a derived view, not
 a replacement.
 
 ## Scope decisions
@@ -68,7 +68,7 @@ instruments:
 `canonical_id` format = `<BASE>-<QUOTE>`. Matches Coinbase's convention,
 human-readable, no escaping needed in topic names.
 
-### Dedup on L1 tuple only — `(bid_px, bid_sz, ask_px, ask_sz)`
+### Dedup on the L1 tuple only: `(bid_px, bid_sz, ask_px, ask_sz)`
 
 Same dedup grain as single-exchange BBO. If the source venue switches (Coinbase
 pulls, Kraken matches the same price+size), **no NBBO emit**.
@@ -95,24 +95,23 @@ consumer expects different behavior. Surfacing the age is honest; consumers
 with different tolerances (1s for HFT, 30s for dashboards) coexist without
 gateway changes.
 
-**Refinement (v1.1): connection-state eviction — NOT quote-age gating.** The
+**Refinement (v1.1): connection-state eviction, NOT quote-age gating.** The
 above still holds for *quote freshness* (a quiet-but-live venue keeps its leg).
 But a stale leg from a **dead** ingester silently won the best slot and produced
 a persistent crossed NBBO (false arb) for hours in Phase-3 testing. The gateway
-cannot distinguish "venue quiet" from "venue dead" — it only sees `leg_age_ms`.
+cannot distinguish "venue quiet" from "venue dead"; it only sees `leg_age_ms`.
 The ingester can: it owns the WS connection. So ingesters now publish per-exchange
 liveness on `md.status.<exchange>` (heartbeat `up` while streaming; graceful
 `down` on shutdown), and the gateway **evicts a venue's legs from NBBO** on an
 explicit `down` or after `NBBO_LIVENESS_TIMEOUT_MS` (default 5s) with no
-heartbeat — which covers a crash/kill that emits no `down`. The missed-heartbeat
+heartbeat, which covers a crash/kill that emits no `down`. The missed-heartbeat
 timeout is measured in **log time** (the gateway's stream clock vs. the last
-heartbeat's `ts_ns`), evaluated as messages are consumed — never wall clock — so
+heartbeat's `ts_ns`), evaluated as messages are consumed (never wall clock), so
 a replayed log reproduces the same evictions at the same points (D1 in
-`ARCHITECTURE.md`). This is driven by
-real connection state, not a time-threshold on quotes, so it does not reintroduce
-the arbitrary gating rejected above. Evicted legs stay in the aggregator and
-rejoin automatically when the venue comes back. Consumers still get `leg_age_ms`
-for their own finer-grained freshness calls.
+`ARCHITECTURE.md`). This is driven by real connection state, not a time-threshold
+on quotes, so it does not reintroduce the arbitrary gating rejected above. Evicted
+legs stay in the aggregator and rejoin automatically when the venue comes back.
+Consumers still get `leg_age_ms` for their own finer-grained freshness calls.
 
 ### Tie-break: larger size wins; alphabetical fallback
 
@@ -122,7 +121,7 @@ also tied, exchanges sort alphabetically.
 
 **Why.** Single venue per side keeps the schema simple (one `exchange` string,
 not an array). The "real liquidity at top of book" question is a separate
-analytic — could become `md.nbbo.liquidity.<id>` later if asked for. Not in
+analytic; it could become `md.nbbo.liquidity.<id>` later if asked for. Not in
 v1.
 
 ### Compacted topics
@@ -156,27 +155,28 @@ have zero constituents (avoid emitting empty NBBOs).
 
 ```ts
 interface NBBOMsg {
-  type: 'nbbo';
+  t: 'nbbo';
   canonical_id: string;          // 'BTC-USD'
   base: string;                  // 'BTC'
   quote: string;                 // 'USD'
   best_bid: {
-    px: number;
-    sz: number;
+    px: string;                  // exact source decimal string, passed through lossless
+    sz: string;
     exchange: string;            // venue currently holding the slot
-    leg_ts_ns: bigint;           // local_ts_ns of the source BBOMsg
+    leg_ts_ns: number;           // local_ts_ns of the source BBOMsg (epoch ns)
     leg_age_ms: number;          // (stream_now_ns - leg_ts_ns) / 1e6
   };
   best_ask: { /* same shape */ };
-  spread: number;                // best_ask.px - best_bid.px (signed; negative = crossed)
+  crossed: boolean;              // exact cmpDecimal(ask, bid) < 0, not the float spread sign
+  spread: number;                // best_ask.px - best_bid.px (signed)
   mid: number;                   // (best_bid.px + best_ask.px) / 2
   constituents: string[];        // exchanges currently contributing a quote
-  local_ts_ns: bigint;           // stream time at compute (see below)
+  local_ts_ns: number;           // stream time at compute (see below)
 }
 ```
 
-`local_ts_ns` and `leg_age_ms` are **stream time** — the max event-time across
-the gateway's consumed messages at compute, not wall clock — so `md.nbbo.*` is a
+`local_ts_ns` and `leg_age_ms` are **stream time**: the max event-time across
+the gateway's consumed messages at compute, not wall clock, so `md.nbbo.*` is a
 pure function of the log and replays byte-for-byte (D1). In live operation
 stream time tracks wall clock within consumer lag (milliseconds).
 
@@ -196,7 +196,8 @@ interface StatusMsg {
 ```
 
 Mirrored Python type: `Status` in `python/common/models.py`; topic helpers
-`status_topic()` in `python/common/kafka_io.py` and `node/gateway/src/messages.ts`.
+`status_topic()` in `python/common/kafka_io.py` and `statusTopic()` in
+`node/gateway/src/messages.ts`.
 
 ## Code architecture
 
@@ -214,15 +215,17 @@ node/gateway/src/
                    //                                 producer.send + broadcaster.broadcast
   metrics.ts       // add: nbboProduced{canonical_id,result},
                    //      nbboConstituents{canonical_id},
-                   //      nbboCrossed_total{canonical_id}
+                   //      nbboCrossed{canonical_id}
+                   //      (Prometheus names: gateway_nbbo_produced_total,
+                   //       gateway_nbbo_constituents, gateway_nbbo_crossed_total)
 ```
 
 In-process wiring (aggregator → nbbo via callback, not Kafka round-trip) keeps
-NBBO latency equal to BBO latency — no extra hop.
+NBBO latency equal to BBO latency, with no extra hop.
 
 ## Implementation phases
 
-### Phase 1 — single-constituent NBBO end-to-end
+### Phase 1: single-constituent NBBO end-to-end
 
 - `ops/instruments.yml` with `BTC-USD` mapping Coinbase only initially
 - `CanonicalMap` loader + lookup
@@ -237,7 +240,7 @@ Validation: NBBO `BTC-USD` should match Coinbase BBO `BTC-USD` exactly (same
 px, sz, ts; `constituents: ["coinbase"]`). Compare on the dashboard side by
 side.
 
-### Phase 2 — bring up Kraken, validate cross-venue
+### Phase 2: bring up Kraken, validate cross-venue
 
 - Add Kraken venue entry to `ops/instruments.yml` for `BTC-USD`
 - Start the Kraken ingester (already in docker-compose)
@@ -248,30 +251,30 @@ side.
   - `leg_age_ms` populated correctly per side
   - crossed-market events occasionally fire (verify red dashboard cell)
 
-### Phase 3 — operational tests
+### Phase 3: operational tests
 
 - Drop Kraken ingester mid-session → NBBO `leg_age_ms` for Kraken grows
   (and, with v1.1 venue-health, the Kraken leg is evicted after the liveness
-  timeout and the book uncrosses). ✓ verified
+  timeout and the book uncrosses). (verified)
 - Restart gateway → **external** consumers bootstrap current state from the
-  compacted `md.nbbo.*` topic; the gateway itself does NOT read `md.nbbo.*` back
-  — it re-derives NBBO purely from the live `md.book.*` log (Kappa-clean). ✓ verified
-- Browser reconnect → NBBO snapshot replay works (single- and two-leg). ✓ verified
+  compacted `md.nbbo.*` topic; the gateway itself does NOT read `md.nbbo.*` back.
+  It re-derives NBBO purely from the live `md.book.*` log (Kappa-clean). (verified)
+- Browser reconnect → NBBO snapshot replay works (single- and two-leg). (verified)
 
 ## Out of scope (v1)
 
-- Cross-stablecoin "USD-class" NBBO topic — add later as parallel stream if
+- Cross-stablecoin "USD-class" NBBO topic: add later as a parallel stream if
   asked for
-- Liquidity-aggregated NBBO (`sum(sz)` across venues at top price) — separate
+- Liquidity-aggregated NBBO (`sum(sz)` across venues at top price): a separate
   analytic stream if asked for
-- Gateway-side staleness gating *on quote age* — surfacing `leg_age_ms` covers
+- Gateway-side staleness gating *on quote age*: surfacing `leg_age_ms` covers
   this. (Note: v1.1 adds *connection-state* eviction via `md.status.*`, which is
-  a liveness signal, not a quote-age threshold — see the Refinement above.)
-- Routing-grade NBBO (dedup on venue switches) — per-exchange BBO topics cover
+  a liveness signal, not a quote-age threshold; see the Refinement above.)
+- Routing-grade NBBO (dedup on venue switches): per-exchange BBO topics cover
   this consumer
-- Hot-reload of `instruments.yml` — gateway restart handles map changes for now
-- Cross-exchange trade tape / VWAP — separate concept, separate stream
-- NBBO for instruments with only one venue declared in the map — works
+- Hot-reload of `instruments.yml`: gateway restart handles map changes for now
+- Cross-exchange trade tape / VWAP: separate concept, separate stream
+- NBBO for instruments with only one venue declared in the map: works
   correctly (NBBO == single-exchange BBO), but consider whether the topic is
   worth emitting; v1 emits it anyway for uniformity
 
