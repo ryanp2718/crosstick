@@ -15,8 +15,10 @@
 //                 (D2a). No snapshot inside the lookback degrades to waiting
 //                 for the next periodic one, exactly like a cold start.
 //   md.trades.* — live edge; trades are events, not state to rebuild.
-//   md.status.* — earliest; compacted, so this replays the latest liveness
-//                 per venue into the stream clock and eviction state.
+//   md.status.* — first offset at/after (now - lookback), same as deltas:
+//                 recent heartbeats seed liveness + the stream clock, cheap and
+//                 independent of cleanup policy (an earliest seek replays a
+//                 delete-policy status topic's full history).
 //
 // Replayed inputs would re-publish md.bbo/md.nbbo already in the log. That is
 // NOT harmless when the per-topic backlogs drain unevenly: the stream clock is
@@ -77,7 +79,7 @@ export async function planWarmStart(
     if (cls === "other") continue;
     const offsets = await admin.fetchTopicOffsets(topic);
     const byTs =
-      cls === "snapshots" || cls === "deltas"
+      cls === "snapshots" || cls === "deltas" || cls === "status"
         ? new Map(
             (await admin.fetchTopicOffsetsByTimestamp(topic, cutoffMs)).map((o) => [
               o.partition,
@@ -86,18 +88,16 @@ export async function planWarmStart(
           )
         : new Map<number, string>();
 
-    for (const { partition, high, low } of offsets) {
+    for (const { partition, high } of offsets) {
       const hwm = BigInt(high);
       let offset: string;
       switch (cls) {
-        case "status":
-          offset = low;
-          break;
         case "trades":
           offset = high; // live edge
           break;
         case "snapshots":
-        case "deltas": {
+        case "deltas":
+        case "status": {
           const ts = byTs.get(partition);
           const tsOff = ts === undefined ? -1n : BigInt(ts);
           const withinLookback = tsOff >= 0n && tsOff < hwm;
