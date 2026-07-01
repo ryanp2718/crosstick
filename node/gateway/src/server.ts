@@ -24,7 +24,7 @@ import {
   venueUp,
   wsClients,
 } from "./metrics.js";
-import { NBBOAggregator } from "./nbbo.js";
+import { isFreshCross, NBBOAggregator } from "./nbbo.js";
 import { routeMessage, type RouteResult } from "./router.js";
 import { DrainGate, planWarmStart } from "./warmstart.js";
 
@@ -73,6 +73,12 @@ const TOPIC_PATTERNS = [/^md\.book\..+/, /^md\.trades\..+/, /^md\.status\..+/];
 // sends no graceful "down"). Measured in log time, not wall clock, so eviction
 // replays deterministically (D1). Ingesters heartbeat every 2s.
 const LIVENESS_TIMEOUT_MS = Number(process.env.NBBO_LIVENESS_TIMEOUT_MS ?? 5000);
+// A crossed NBBO only increments gateway_nbbo_crossed_total when both winning
+// legs are no older than this (stream time). Older than this and the cross is a
+// benign stale-leg artifact, not corruption, so it must not page. Well under the
+// 5s liveness eviction: a leg that survives eviction can still be too stale to
+// trust as a live cross. The wire `crossed` flag is unaffected (stays faithful).
+const NBBO_CROSS_MAX_LEG_AGE_MS = Number(process.env.NBBO_CROSS_MAX_LEG_AGE_MS ?? 1000);
 // Warm-start lookback (D2b): how far back to search for a book snapshot on
 // restart. Must exceed the ingesters' snapshot_interval_s (300s) so a healthy
 // stream always has one inside the window; 2x gives slack for a venue that
@@ -226,7 +232,9 @@ async function main(): Promise<void> {
   const emitNbbo = (nbbo: NBBOMsg): void => {
     if (gate?.warming) return; // held through the warm-start drain
     nbboConstituents.set({ canonical_id: nbbo.canonical_id }, nbbo.constituents.length);
-    if (nbbo.crossed) nbboCrossed.inc({ canonical_id: nbbo.canonical_id });
+    if (isFreshCross(nbbo, NBBO_CROSS_MAX_LEG_AGE_MS)) {
+      nbboCrossed.inc({ canonical_id: nbbo.canonical_id });
+    }
     bboInflight.inc();
     const p: Promise<unknown> = producer
       .send({

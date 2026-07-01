@@ -73,7 +73,7 @@ export const nbboConstituents = new Gauge({
 
 export const nbboCrossed = new Counter({
   name: "gateway_nbbo_crossed_total",
-  help: "NBBO emissions with negative spread (best_bid >= best_ask across venues)",
+  help: "Crossed NBBO emissions where both winning legs are fresh (stale-leg crosses excluded; see NBBO_CROSS_MAX_LEG_AGE_MS)",
   labelNames: ["canonical_id"] as const,
   registers: [registry],
 });

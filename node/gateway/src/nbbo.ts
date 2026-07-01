@@ -134,6 +134,19 @@ function beatsAsk(candidate: BBOMsg, incumbent: BBOMsg): boolean {
   return cmpDecimal(candidate.ask_sz, incumbent.ask_sz) > 0;
 }
 
+// A crossed NBBO is only worth counting when both winning legs are fresh. A
+// cross carried by a stale leg (one venue quoted, the market moved, its old
+// quote now crosses a live one) is a benign artifact of not age-evicting legs,
+// not a reconstruction defect. The wire `crossed` flag stays faithful either
+// way -- consumers still filter on leg_age_ms at their own threshold.
+export function isFreshCross(nbbo: NBBOMsg, maxLegAgeMs: number): boolean {
+  return (
+    nbbo.crossed &&
+    nbbo.best_bid.leg_age_ms <= maxLegAgeMs &&
+    nbbo.best_ask.leg_age_ms <= maxLegAgeMs
+  );
+}
+
 function legFor(src: BBOMsg, side: "bid" | "ask", nowMs: number): NBBOLeg {
   const px = side === "bid" ? src.bid_px : src.ask_px;
   const sz = side === "bid" ? src.bid_sz : src.ask_sz;
