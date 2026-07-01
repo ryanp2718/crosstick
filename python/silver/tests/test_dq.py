@@ -1,6 +1,7 @@
 """Unit tests for the silver DQ transforms (pure, no infrastructure)."""
 from __future__ import annotations
 
+from decimal import Decimal
 from pathlib import Path
 
 from analytics.corpus import CorpusRecord
@@ -107,6 +108,33 @@ def test_crossed_delta_is_flagged() -> None:
     crossed = _book_rows(facts, 1002)[0]
     assert crossed["invariant_kind"] == "crossed_after_delta"
     assert crossed["crossed"] is True
+
+
+def test_resnapshot_collision_is_not_a_non_monotonic_violation() -> None:
+    # A periodic re-snapshot is stamped at the current sequence (here 7, an
+    # existing delta's seq). Sorted snap-first, it precedes its same-seq delta,
+    # which is then already incorporated -> skip, do not raise + clear the book.
+    recs = [
+        _rec(book_snapshot_topic("coinbase", "BTC-USD"),
+             _snap("coinbase", "BTC-USD", 5, [("100", "1")], [("101", "1")]), 0),
+        _rec(book_delta_topic("coinbase", "BTC-USD"),
+             _delta("coinbase", "BTC-USD", 6, [("100.5", "2")], []), 0),
+        _rec(book_delta_topic("coinbase", "BTC-USD"),
+             _delta("coinbase", "BTC-USD", 7, [("100.6", "2")], []), 1),
+        _rec(book_snapshot_topic("coinbase", "BTC-USD"),
+             _snap("coinbase", "BTC-USD", 7, [("100.6", "2")], [("101", "1")]), 2),
+        _rec(book_delta_topic("coinbase", "BTC-USD"),
+             _delta("coinbase", "BTC-USD", 8, [("100.7", "2")], []), 3),
+    ]
+    facts = build_silver(recs, cmap())
+    # Neither the re-snapshot nor its colliding delta is flagged.
+    assert all(r["invariant_kind"] is None for r in _book_rows(facts, 7))
+    # Book is intact (not cleared): the next delta keeps both sides, so the
+    # spread stays tight instead of going one-sided onto an emptied book.
+    (eight,) = _book_rows(facts, 8)
+    assert eight["best_bid"] == Decimal("100.7")
+    assert eight["best_ask"] == Decimal("101")  # ask survived -> book was not cleared
+    assert eight["invariant_kind"] is None
 
 
 def test_latency_skips_locally_generated_records() -> None:

@@ -31,6 +31,9 @@ worse than a miss for a quality floor):
 Non-monotonic regressions are caught for *all* exchanges by the OrderBook fold
 (it raises `non_monotonic_seq`); the contiguous policy only adds detection of
 monotonic-but-missing gaps that the OrderBook cannot see (e.g. kraken 6 -> 8).
+One exception is folded in `_fold`: a periodic re-snapshot is stamped at an
+existing delta's sequence, so that delta sorts right after it (snap-first) and is
+already incorporated -> skipped as redundant, not flagged as a regression.
 """
 from __future__ import annotations
 
@@ -218,6 +221,8 @@ def _fold(book_recs: Iterable[_BookRec], contiguous: bool) -> Iterator[_BookEven
         try:
             if r.kind == "snap":
                 book.apply_snapshot(r.sequence, r.bids, r.asks)
+            elif r.sequence == book.sequence:
+                pass  # re-snapshot borrowed this delta's seq; already incorporated
             else:
                 book.apply_delta(r.sequence, r.bids, r.asks)
         except BookInvariantError as e:
