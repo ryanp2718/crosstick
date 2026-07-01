@@ -1,127 +1,128 @@
 # crosstick
 
-**Real-time, cross-exchange cryptocurrency market-data platform.** Reconstructs
-full L2 order books from Coinbase, Binance, and Kraken, derives a live
-cross-exchange NBBO, on a Kappa-shaped architecture with Redpanda as the single
-durable log and source of truth.
+[![CI](https://github.com/ryanp2718/crosstick/actions/workflows/ci.yml/badge.svg)](https://github.com/ryanp2718/crosstick/actions/workflows/ci.yml)
 
-> Status: the real-time half (ingest → transport → gateway → NBBO → dashboard) is
-> built and validated against live exchange data. The analytics half (lake,
-> warehouse, batch roll-ups) is on the roadmap below.
+**Real-time, cross-exchange cryptocurrency market-data platform.** It reconstructs
+full L2 order books from Coinbase, Binance, and Kraken, derives a live
+cross-exchange NBBO, and lands every event in a Parquet lake for replay and
+analysis. The design is Kappa-shaped: Redpanda holds the raw feed as one durable,
+replayable log, and every downstream stream and table is a pure function of it.
+
+> **Status.** Both halves run on live exchange data. The streaming spine (ingest →
+> Redpanda → gateway → NBBO → dashboard) is built and validated, and so is the
+> batch lake (bronze → silver → gold), including a point-in-time-correct
+> stablecoin-basis mart and a per-venue data-quality scorecard. What's left is the
+> modelling surface: a feature store, a fee-aware backtest harness, and a cloud
+> cutover.
 
 ## Architecture
 
-```
-        ┌─ Coinbase ─┐  ┌─ Binance ─┐  ┌─ Kraken ─┐     WebSocket L2 + trades
-        └─────┬──────┘  └─────┬─────┘  └────┬─────┘
-              └───────────────┼─────────────┘
-                              ▼
-              Python ingesters  (asyncio · uvloop)
-        L2 book reconstruction · CRC32 gap detection
-        per-symbol sequence state machine · msgspec
-                              ▼
-              ┌──────────────────────────────┐
-              │     Redpanda  (Kafka API)     │   source of truth — a replayable log
-              │  md.book.*   md.trades.*      │
-              │  md.bbo.*    md.nbbo.*        │
-              │         md.status.*           │
-              └───────────────┬──────────────┘
-          ┌───────────────────┴────────────────────┐
-          ▼                                          ▼
-  Node / TS gateway (kafkajs · ws)        Stream materializer
-  live BBO + spread                         → bronze Parquet on MinIO
-  cross-exchange NBBO                        → DuckDB + dbt medallion (roadmap)
-  per-client backpressure                   → PySpark daily roll-ups (roadmap)
-  venue-health leg eviction                 → Grafana board #2 (roadmap)
-  WS fan-out + snapshot-on-connect
-          │
-          ▼
-  Browser dashboard (WS)   +   Prometheus / Grafana board #1 (ops)
+```mermaid
+flowchart TD
+    CB[Coinbase] --> ING
+    BN["Binance (+ perps)"] --> ING
+    KR[Kraken] --> ING
+    ING["Python ingesters<br/>L2 reconstruction · CRC32 · gap detection and resync"] --> RP
+    RP["Redpanda: replayable source-of-truth log (Kafka API)<br/>md.book · md.trades · md.bbo · md.nbbo · md.status"] --> GW & MAT
+    GW["Node/TS gateway<br/>live BBO · cross-exchange NBBO · per-client backpressure"] --> DASH[Browser dashboard]
+    MAT["Materializer (streaming)<br/>bronze Parquet on MinIO"] --> SG["silver + gold (batch, per UTC date)<br/>DQ facts · as-of NBBO · basis mart · scorecard"]
+    GW -.-> OBS["Prometheus · Grafana (ops)"]
+    MAT -.-> OBS
 ```
 
-## Why it's interesting
+## Highlights
 
-- **Kappa-shaped, replayable topics.** Redpanda is the single source of truth, and
-  every derived stream is a pure function of the raw log: `md.bbo.*` derives from
-  `md.book.*`, and `md.nbbo.*` is stamped and evicted in **stream time** (max
-  event-time across consumed messages, never `Date.now()`), so a replay reproduces
-  it byte-for-byte. On restart the gateway re-derives its books from the log —
-  seeking each topic by class (latest snapshot, deltas from a bounded lookback,
-  status from earliest) rather than re-warming from the live edge. The history of
-  these two gaps (D1, D2) and how they were closed is in
-  [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md).
+- **Replayable by construction.** Every derived stream is a pure function of the
+  raw log: `md.bbo.*` is computed from `md.book.*`, and `md.nbbo.*` is stamped and
+  evicted in *stream time* (the max event-time across consumed messages, never
+  `Date.now()`), so a replay reproduces it byte-for-byte. On restart the gateway
+  re-derives its books from the log, seeking each topic by class (latest snapshot,
+  deltas from a bounded lookback, status from earliest) rather than re-warming off
+  the live edge.
 - **Real L2 order-book reconstruction.** Bounded-depth books per venue
-  (`SortedDict`), CRC32 checksum validation against the exchange, and
-  sequence-gap detection with buffering + resync — driven by a
-  `BOOTSTRAP → BUFFERING → LIVE → STALE` state machine per symbol.
-- **Cross-exchange NBBO with strict bucketing.** Best bid/offer across venues per
-  canonical instrument — and `BTC-USD` (Coinbase/Kraken) is *never* merged with
-  `BTC-USDT` (Binance), because USDT≠USD is a real FX/credit basis, not noise.
+  (`SortedDict`), CRC32 checksum validation against the exchange, and sequence-gap
+  detection with buffering and resync, all driven by a per-symbol
+  `BOOTSTRAP → BUFFERING → LIVE → STALE` state machine.
+- **Cross-exchange NBBO that respects the quote asset.** Best bid and offer across
+  venues per canonical instrument, where `BTC-USD` (Coinbase, Kraken) is *never*
+  merged with `BTC-USDT` (Binance): USDT is not USD, and the gap between them is a
+  real basis, not noise.
+- **Point-in-time-correct analytics.** The gold basis mart joins each base's USD
+  and USDT NBBO with a backward-only as-of join, so no observation ever sees a
+  future quote. A leg that has gone quiet past a staleness bound is dropped rather
+  than carried forward into a fabricated price. All price math is `DECIMAL(38,18)`.
 - **Connection-state venue eviction.** A dead ingester used to leave a frozen leg
   that could win the NBBO and print a phantom crossed book. Venues now heartbeat
-  liveness on `md.status.*`; the gateway evicts a dead venue's legs on explicit
-  shutdown *or* missed-heartbeat timeout — connection state, not naive quote-age
-  gating.
+  liveness on `md.status.*`, and the gateway evicts a venue's legs on explicit
+  shutdown or missed-heartbeat timeout. The trigger is connection state, not naive
+  quote-age gating.
 - **Backpressure that protects the hot path.** Per-client WebSocket send buffers
-  are bounded; a slow consumer is dropped rather than allowed to stall fan-out
-  for everyone.
-- **An honest size ceiling.** An 8 MiB limit is enforced end-to-end (producer →
-  broker → consumer); Coinbase's re-encoded L2 snapshot message runs ~1.1 MiB at
-  current depth (the raw full-depth WS frame is larger, ~5 MiB), so oversize fails
-  loudly instead of silently truncating.
-- **Observability first-class.** Prometheus metrics on every component, with a
+  are bounded; a slow consumer is dropped rather than allowed to stall fan-out for
+  everyone.
+- **A hard size ceiling, enforced end to end.** An 8 MiB limit holds across
+  producer, broker, and consumer. Coinbase's re-encoded L2 snapshot runs ~1.1 MiB
+  at current depth (the raw full-depth frame is ~5 MiB), so an oversize message
+  fails loudly instead of silently truncating.
+- **Observability throughout.** Prometheus metrics on every component, with a
   provisioned Grafana ops dashboard.
 
 ## Status & roadmap
 
 **Built and validated against live data**
 
-- [x] Python ingesters — Coinbase, Binance, Kraken (L2 + trades, CRC, resync)
-- [x] Redpanda transport + topic/schema contracts
-- [x] Node/TS gateway — live BBO/spread, cross-exchange NBBO, backpressure,
+- [x] Python ingesters for Coinbase, Binance, and Kraken (L2 + trades, CRC, resync)
+- [x] Redpanda transport with topic and schema contracts
+- [x] Node/TS gateway: live BBO/spread, cross-exchange NBBO, backpressure,
       snapshot-on-connect
-- [x] Venue-health liveness + NBBO leg eviction
-- [x] Browser dashboard — staleness-aware greying + crossed-book warnings
-- [x] Prometheus + Grafana ops dashboard
-- [x] CI gate (GitHub Actions) — vitest, pytest, ruff, tsc on push/PR
-- [x] Stream materializer — bronze Parquet lake on MinIO, exactly-once at the
-      file grain
-- [x] Cross-process integration harness — corpus replay through the real
-      gateway over ephemeral Redpanda, incl. byte-identical NBBO determinism
-- [x] Perp capture (Binance USDⓈ-M) — L2 book + aggTrade tape, liquidations,
+- [x] Venue-health liveness and NBBO leg eviction
+- [x] Browser dashboard with staleness-aware greying and crossed-book warnings
+- [x] Prometheus + Grafana ops dashboard, plus a lake/batch metrics exporter
+- [x] CI gate (GitHub Actions): vitest, pytest, ruff, tsc on push/PR
+- [x] Streaming materializer writing a bronze Parquet lake on MinIO, idempotent at
+      the file grain (a crash re-reads the in-flight chunk and rewrites the
+      identical object, so re-runs never duplicate or drop data)
+- [x] Silver/gold batch transforms: data-quality facts, as-of-joined NBBO, the
+      stablecoin-basis mart, and a per-venue data-quality scorecard
+- [x] Cross-process integration harness: corpus replay through the real gateway
+      over ephemeral Redpanda, including byte-identical NBBO determinism
+- [x] Perp capture (Binance USDⓈ-M): L2 book + aggTrade tape, liquidations,
       mark/funding, open-interest poll, on two routed WS connections; validated
       live end-to-end (book → NBBO `BTC-USDT-PERP` → bronze)
 
-**Roadmap (the analytics half of the diagram)**
+**Roadmap (the modelling surface)**
 
-- [ ] DuckDB + dbt silver/gold marts (medallion over the event log — see
-      `docs/DESIGN_analytics.md`; the schema is an event/tick store, not a star)
-- [ ] PySpark daily long-horizon roll-ups
-- [ ] Grafana board #2 (business metrics)
-- [ ] Airflow orchestration
+- [ ] Point-in-time feature store for downstream modelling, DIY first with Feast
+      later (the gold mart's as-of joins are the groundwork)
+- [ ] Fee- and latency-aware backtest harness over replay + silver
+- [ ] Research features off the event-grain book (order-flow imbalance, queue
+      dynamics, trade-sign autocorrelation)
+- [ ] Long-horizon roll-ups and orchestration for the batch transforms
+- [ ] Cloud cutover
 
 ## Tech stack
 
-| Layer | Tools |
-|---|---|
-| Ingest | Python (asyncio, uvloop), aiokafka, msgspec, sortedcontainers — managed by `uv` |
-| Transport | Redpanda (Kafka API) |
-| Gateway | Node 22 + TypeScript, kafkajs, `ws`, prom-client — tested with vitest |
-| Observability | Prometheus, Grafana |
-| Analytics (roadmap) | MinIO (S3), DuckDB, dbt, PySpark, Airflow |
+- **Ingest:** Python (asyncio, uvloop), aiokafka, msgspec, sortedcontainers; managed by [`uv`](https://docs.astral.sh/uv/).
+- **Transport:** Redpanda (Kafka API).
+- **Gateway:** Node 22 + TypeScript, kafkajs, `ws`, prom-client; tested with vitest.
+- **Lake:** PyArrow + Parquet on MinIO (S3), written as idempotent, overwrite-keyed objects.
+- **Observability:** Prometheus, Grafana.
 
 ## Repo layout
 
 ```
-python/            ingesters + analytics (uv-managed)
-  common/          msgspec models, kafka_io, metrics, backoff, ratelimit
-  ingest/          base_ingester state machine + per-exchange drivers (+ tests)
-  analytics/       analytics modules (+ tests)
-node/gateway/      kafkajs → ws gateway: BBO, NBBO, backpressure (src/, test/)
-dashboard/         static WS client, served by the gateway
-ops/               instruments.yml, prometheus/ (config + alerts), grafana provisioning, smoke.py
-docs/              design docs (ARCHITECTURE.md, DESIGN_nbbo.md, scale-out.md)
-docker-compose.yml redpanda, prometheus, grafana, ingesters, materializer, gateway
+python/             ingesters + lake transforms (uv-managed)
+  common/           msgspec models, kafka_io, lake helpers, as-of join, metrics, backoff
+  ingest/           base_ingester state machine + per-exchange drivers (+ tests)
+  materializer/     md.* topics → bronze Parquet, streaming (+ tests)
+  silver/           bronze → DQ facts + nbbo/quotes, batch per date (+ tests)
+  gold/             silver → basis mart + data-quality scorecard, batch (+ tests)
+  exporter/         lake/batch metrics for Prometheus (+ tests)
+  analytics/        capture + replay corpus for the integration harness
+node/gateway/       kafkajs → ws gateway: BBO, NBBO, backpressure (src/, test/)
+dashboard/          static WS client, served by the gateway
+ops/                instruments.yml, prometheus/ (config + alerts), grafana provisioning, smoke.py
+docker-compose.yml  redpanda, minio, ingesters, materializer, gateway, lake-exporter, prometheus, grafana
+docs/               architecture + design docs
 ```
 
 ## Quickstart
@@ -138,7 +139,7 @@ docker compose up -d redpanda prometheus grafana
 cd node/gateway; pnpm install
 $env:KAFKA_BROKERS="localhost:19092"; pnpm exec tsx src/server.ts
 
-# 3. An ingester (separate shell) — give each a distinct METRICS_PORT
+# 3. An ingester (separate shell); give each a distinct METRICS_PORT
 cd python; uv sync
 $env:EXCHANGE="kraken"; $env:SYMBOLS="BTC/USD"
 $env:KAFKA_BROKERS="localhost:19092"; $env:METRICS_PORT="9103"
@@ -148,12 +149,12 @@ $env:KAFKA_BROKERS="localhost:19092"; $env:METRICS_PORT="9103"
 ```
 
 Dev mode runs the gateway and ingesters on the host against Redpanda's external
-listener (`localhost:19092`); ports per exchange are binance `9101`, coinbase
-`9102`, kraken `9103`. Full container mode is via `docker compose`.
+listener (`localhost:19092`); metrics ports per exchange are binance `9101`,
+coinbase `9102`, kraken `9103`. Full container mode is via `docker compose`.
 
-Prometheus/Grafana read their mounted config (`ops/prometheus/`, `ops/grafana/`)
-only at container creation. After editing it, recreate rather than restart, then
-smoke-check that it actually loaded:
+Prometheus and Grafana read their mounted config (`ops/prometheus/`,
+`ops/grafana/`) only at container creation. After editing it, recreate rather than
+restart, then smoke-check that it actually loaded:
 
 ```powershell
 docker compose up -d --force-recreate prometheus grafana
@@ -163,16 +164,20 @@ python ops/smoke.py   # asserts rules loaded + dashboards provisioned
 ## Testing
 
 ```powershell
-cd node/gateway; pnpm test                            # vitest — 50 tests
-cd python; .venv\Scripts\python.exe -m pytest -q      # pytest — 120 tests
+cd node/gateway; pnpm test                            # vitest
+cd python; .venv\Scripts\python.exe -m pytest -q      # pytest
 ```
+
+Both suites run on every push and PR through the CI workflow; the badge at the top
+of this README reflects their current state.
 
 ## Design docs
 
 The *why* behind the architecture lives in [`docs/`](docs/):
 
-- [`ARCHITECTURE.md`](docs/ARCHITECTURE.md) — system-wide stock-take: the
-  load-bearing decisions, the honest Kappa caveats, and the analytics-half spec
-- [`DESIGN_nbbo.md`](docs/DESIGN_nbbo.md) — cross-exchange NBBO: strict quote
-  bucketing, tie-breaks, per-leg staleness, and connection-state venue eviction
-- [`scale-out.md`](docs/scale-out.md) — scaling the pipeline horizontally
+- [`DESIGN_nbbo.md`](docs/DESIGN_nbbo.md): cross-exchange NBBO, with strict quote
+  bucketing, tie-breaks, per-leg staleness, and connection-state venue eviction.
+- [`DESIGN_perp_capture.md`](docs/DESIGN_perp_capture.md): perp capture on Binance
+  futures, ranked unbackfillable-first, over two routed WS connections.
+- [`data-contracts.md`](docs/data-contracts.md): the wire envelopes and the
+  bronze, silver, and gold lake schemas, topic by topic.

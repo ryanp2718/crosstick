@@ -39,5 +39,14 @@ redis-data/
 # Logs
 *.log
 
-# Agent resume doc (local-only)
-HANDOFF.md
+# Interview notes (local-only)
+INTERVIEW/
+
+# Local-only working docs (never committed)
+CONSISTENCY_AUDIT.md
+
+# Design docs held back from publication until polished (kept local, re-add when ready)
+docs/ARCHITECTURE.md
+docs/DESIGN_analytics.md
+docs/RESEARCH_thesis.md
+docs/scale-out.md
