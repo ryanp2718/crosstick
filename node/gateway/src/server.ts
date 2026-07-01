@@ -100,6 +100,14 @@ const KAFKA_REBALANCE_TIMEOUT_MS = Number(process.env.KAFKA_REBALANCE_TIMEOUT_MS
 // stop warm-start evictions, but it slows the drain and would hurt replay over a
 // future high-latency remote/tiered log, so it stays default until proven needed.
 const KAFKA_MAX_BYTES = Number(process.env.KAFKA_MAX_BYTES ?? 10 * 1024 * 1024);
+// Hand control back to the event loop every N consumed messages. kafkajs runs
+// eachMessage for every message in a fetched batch; a synchronous handler drains
+// the whole batch's microtasks before the loop services I/O, so a large bursty
+// batch (warm-start replay or catch-up after lag) freezes the HTTP /metrics
+// endpoint and WS broadcasts for seconds and flaps the healthcheck. Yielding
+// every N messages bounds that stall; N is large enough that the per-batch
+// steady-state adds ~no overhead.
+const CONSUME_YIELD_EVERY = Number(process.env.CONSUME_YIELD_EVERY ?? 500);
 
 async function serveStatic(rel: string, res: http.ServerResponse): Promise<void> {
   const full = path.resolve(DASHBOARD_DIR, rel);
@@ -300,9 +308,17 @@ async function main(): Promise<void> {
     }
   };
 
+  // Rolling count since the last event-loop yield (see CONSUME_YIELD_EVERY).
+  let sinceYield = 0;
   await consumer.run({
     eachMessage: async ({ topic, partition, message }) => {
       if (!message.value) return;
+      // Periodically yield so a large bursty batch can't starve I/O (HTTP
+      // /metrics, WS writes) by draining its whole microtask chain first.
+      if (++sinceYield >= CONSUME_YIELD_EVERY) {
+        sinceYield = 0;
+        await new Promise<void>((resolve) => setImmediate(resolve));
+      }
       const tp = lastOffsets.get(topic) ?? new Map<number, bigint>();
       tp.set(partition, BigInt(message.offset));
       lastOffsets.set(topic, tp);
