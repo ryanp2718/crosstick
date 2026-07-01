@@ -84,6 +84,22 @@ const NBBO_CROSS_MAX_LEG_AGE_MS = Number(process.env.NBBO_CROSS_MAX_LEG_AGE_MS ?
 // stream always has one inside the window; 2x gives slack for a venue that
 // missed an interval. See src/warmstart.ts for the per-topic-class seek rules.
 const WARMSTART_LOOKBACK_MS = Number(process.env.WARMSTART_LOOKBACK_MS ?? 600_000);
+// Consumer group session timeout. The kafkajs default (30s) is too tight for the
+// warm-start replay against the single-shard (smp=1) redpanda: the replay's
+// fetches plus the ingesters' produce firehose serialize on one shard, so
+// heartbeats queue behind them and miss the window — the coordinator evicts the
+// member ("not aware of this member") and the drain livelocks (see warmstart.ts).
+// 90s lets a delayed heartbeat land in the load gaps before eviction; well within
+// redpanda's 300s group_max_session_timeout_ms. A multi-shard/managed broker
+// removes the contention, so this is just a conservative default there.
+const KAFKA_SESSION_TIMEOUT_MS = Number(process.env.KAFKA_SESSION_TIMEOUT_MS ?? 90_000);
+// Must be >= sessionTimeout (kafkajs default 60s), so it is raised alongside.
+const KAFKA_REBALANCE_TIMEOUT_MS = Number(process.env.KAFKA_REBALANCE_TIMEOUT_MS ?? 90_000);
+// Total fetch ceiling. Left at the kafkajs default; exposed only as an escape
+// hatch — a smaller cap eases shard saturation if the timeout raise alone doesn't
+// stop warm-start evictions, but it slows the drain and would hurt replay over a
+// future high-latency remote/tiered log, so it stays default until proven needed.
+const KAFKA_MAX_BYTES = Number(process.env.KAFKA_MAX_BYTES ?? 10 * 1024 * 1024);
 
 async function serveStatic(rel: string, res: http.ServerResponse): Promise<void> {
   const full = path.resolve(DASHBOARD_DIR, rel);
@@ -180,6 +196,11 @@ async function main(): Promise<void> {
     // to consume (Coinbase L2 snapshot ~1.1 MiB), else the broker truncates
     // and the fetch loops without progress.
     maxBytesPerPartition: MAX_MESSAGE_BYTES,
+    maxBytes: KAFKA_MAX_BYTES,
+    // Raised from the 30s default so warm-start replay can't get the member
+    // evicted off the single-shard broker (see KAFKA_SESSION_TIMEOUT_MS).
+    sessionTimeout: KAFKA_SESSION_TIMEOUT_MS,
+    rebalanceTimeout: KAFKA_REBALANCE_TIMEOUT_MS,
   });
   const admin = kafka.admin();
   await producer.connect();
