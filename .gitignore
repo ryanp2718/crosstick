@@ -48,5 +48,10 @@ CONSISTENCY_AUDIT.md
 # Design docs held back from publication until polished (kept local, re-add when ready)
 docs/ARCHITECTURE.md
 docs/DESIGN_analytics.md
+docs/DESIGN_cloud_cutover.md
+docs/DESIGN_venue_flap_fix.md
 docs/RESEARCH_thesis.md
 docs/scale-out.md
+
+# Local diagnostic / one-off scripts (not part of the shipped product)
+python/scripts/
