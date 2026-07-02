@@ -99,10 +99,10 @@ flowchart LR
         depth["depth WS · /public/stream + REST snapshot"]
     end
     market -->|forceOrder| L["md.liquidations.*"]
-    market -->|markPrice@1s| M["md.markprice.*"]
+    market -->|"markPrice@1s"| M["md.markprice.*"]
     market -->|aggTrade| Tr["md.trades.*"]
     market -.->|REST poll| OI["md.openinterest.*"]
-    depth -->|depth@100ms| B["md.book.*"]
+    depth -->|"depth@100ms"| B["md.book.*"]
     depth --> S["md.status.binance-futures"]
 ```
 

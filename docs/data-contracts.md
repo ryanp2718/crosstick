@@ -10,9 +10,21 @@ cross-language map:
   `node/gateway/src/messages.ts`.
 - **Corpus format:** `python/analytics/corpus.py`.
 
-A divergence between the Python and Node mirrors is a bug — D5 in
+A divergence between the Python and Node mirrors is a bug. D5 in
 `ARCHITECTURE.md` tracks the missing cross-language oracle that would catch it
 mechanically.
+
+The log is the source of truth; bronze mirrors it verbatim, and every silver and
+gold table is a batch projection of bronze:
+
+```mermaid
+flowchart LR
+    log["Redpanda log<br/>md.book · md.trades · md.status · md.bbo · md.nbbo<br/>+ derivatives (liq · mark · oi)"]
+    bronze["bronze<br/>every md.* topic projected 1:1<br/>corpus-shaped rows"]
+    silver["silver (per UTC date)<br/>book_quality · quotes · latency<br/>status_events · nbbo"]
+    gold["gold (per UTC date)<br/>scorecard · basis · basis_summary"]
+    log --> bronze --> silver --> gold
+```
 
 ## Topics
 
@@ -31,10 +43,10 @@ mechanically.
 - `{symbol}` in a **topic name** is the normalized form (`normalize_symbol`:
   any character outside `[a-zA-Z0-9._-]` becomes `-`; Kraken's `BTC/USD` →
   `BTC-USD`). The native symbol is preserved in the message body (`symbol`
-  field) — it is **not** in a record header. Record **keys** carry the native
+  field); it is **not** in a record header. Record **keys** carry the native
   form (e.g. `kraken:BTC/USD`).
 - `{canonical_id}` is `<BASE>-<QUOTE>` from `ops/instruments.yml`. Quote
-  currencies are strictly bucketed (USD ≠ USDT) — see `DESIGN_nbbo.md`.
+  currencies are strictly bucketed (USD ≠ USDT); see `DESIGN_nbbo.md`.
 - The gateway pre-creates the compacted `md.nbbo.*` / `md.status.*` topics at
   startup; firehose topics are auto-created on first produce and inherit the
   cluster default cleanup (delete).
@@ -51,12 +63,12 @@ mechanically.
   consumer must replay to one interval.
 - `BookSnapshot` / `BookDelta` carry an `epoch` (per-WS-connection generation,
   default `0`). coinbase/kraken reset `sequence` on each reconnect, so the
-  gateway only applies a delta to a book of the same `epoch` — a prior
+  gateway only applies a delta to a book of the same `epoch`, so a prior
   connection's deltas can't corrupt a fresh snapshot. Compared by equality only
   (never as a clock); pre-epoch records decode as `0`.
-- `NBBOMsg.local_ts_ns` and per-leg `leg_age_ms` are **stream time** — the max
+- `NBBOMsg.local_ts_ns` and per-leg `leg_age_ms` are **stream time** (the max
   event-time across the gateway's consumed messages at compute, not wall
-  clock — so `md.nbbo.*` replays byte-for-byte (D1 in `ARCHITECTURE.md`). In
+  clock), so `md.nbbo.*` replays byte-for-byte (D1 in `ARCHITECTURE.md`). In
   live operation stream time tracks wall clock within consumer lag (ms).
 
 ## Retention
@@ -64,14 +76,14 @@ mechanically.
 Delete-policy topics inherit the cluster `log_retention_ms`, set to **30 days**
 by `redpanda-init` in `docker-compose.yml` (Redpanda's default is 7 days).
 Until the materializer (Phase 1) projects topics to the lake, the log is the
-only store — retention is the data-loss horizon. Compacted topics keep the
+only store, so retention is the data-loss horizon. Compacted topics keep the
 latest record per key indefinitely.
 
 **Bronze lake lifecycle.** The materializer now persists bronze to the `lake`
 bucket, so the log is just the replay buffer. To stop the lake growing unbounded,
 `minio-init` sets a MinIO lifecycle rule expiring raw `lake` objects after **30
 days** (matching `log_retention_ms`); verify with `mc ilm rule ls local/lake`.
-On the dev box this is generous — ~200 GB free is months of headroom — and it
+On the dev box this is generous (~200 GB free is months of headroom), and it
 deletes nothing until objects age past 30 days. The horizon is the
 raw-history-vs-disk tradeoff; the durable layer's real fix is off-box object
 storage with tiered lifecycle (`scale-out.md`), where the identical S3 lifecycle
@@ -86,7 +98,7 @@ API applies unchanged.
 - Book levels are `[price, size]` string arrays (`BookLevel` is `array_like`).
 - Timestamps are epoch **nanoseconds** (`*_ts_ns`). They exceed 2^53, so
   Node's `JSON.parse` rounds them to ~200ns granularity (see the NOTE in
-  `messages.ts`) — do not treat gateway-side values as exact.
+  `messages.ts`); do not treat gateway-side values as exact.
 - Hard ceiling: **8 MiB** per message pre-compression (`MAX_MESSAGE_BYTES`),
   mirrored at the producer, the broker (`kafka_batch_max_bytes`), and the
   gateway consumer. Producers use gzip; the broker stores whatever codec the
@@ -108,7 +120,7 @@ Status and gateway-derived records (bbo/nbbo) carry no headers.
 ## Bronze lake (materializer)
 
 The materializer (`python/materializer`) projects every `md.*` topic verbatim
-to Parquet on the `lake` bucket — the insurance layer of the medallion plan
+to Parquet on the `lake` bucket, the insurance layer of the medallion plan
 (`DESIGN_analytics.md`). Object paths are Hive-partitioned, canonical-resolved
 via `ops/instruments.yml`:
 
@@ -120,13 +132,13 @@ via `ops/instruments.yml`:
 | `liquidations` | `md.liquidations.*` | same |
 | `mark_price` | `md.markprice.*` | same |
 | `open_interest` | `md.openinterest.*` | same |
-| `status` | `md.status.*` | `status/exchange={ex}/date=…/` |
-| `nbbo` | `md.nbbo.*` | `nbbo/symbol={canonical}/date=…/` |
+| `status` | `md.status.*` | `status/exchange={ex}/date=.../` |
+| `nbbo` | `md.nbbo.*` | `nbbo/symbol={canonical}/date=.../` |
 
-- **Object naming:** `{partition:03d}-{start_offset:012d}.parquet` — keyed by
+- **Object naming:** `{partition:03d}-{start_offset:012d}.parquet`, keyed by
   the chunk's **start offset only** (Kafka Connect S3-sink convention). The
   end offset of a chunk is wall-clock-dependent (the age flush), but the start
-  is always the committed consumer offset — so a crash-retry rewrites the
+  is always the committed consumer offset, so a crash-retry rewrites the
   *identical* key, turning at-least-once into exactly-once at the file grain.
   End offset and record count live in the Parquet footer metadata
   (`crosstick:start_offset` / `end_offset` / `record_count` /
@@ -134,27 +146,27 @@ via `ops/instruments.yml`:
   sorted listing implies coverage.
 - **Rows are corpus-shaped:** the columns are exactly the `CorpusRecord`
   fields below (`topic`, `partition`, `offset`, `timestamp_ms`, `key`,
-  `value`, `headers`) — any bronze slice reads back as replay fodder.
+  `value`, `headers`); any bronze slice reads back as replay fodder.
 - **Chunk cuts:** size-dominant (`FLUSH_BYTES`, 16 MiB), plus a UTC
   date-boundary cut (keeps `date=` partitions honest) and an age sweep
-  (`FLUSH_INTERVAL_SEC` — the bronze-lag bound for cold topics, not the
+  (`FLUSH_INTERVAL_SEC`, the bronze-lag bound for cold topics, not the
   primary trigger). Compression is zstd.
 - **Commit discipline:** offsets are committed only *after* the Parquet PUT,
-  one chunk at a time — at most one PUT is ever un-committed, which is what
+  one chunk at a time, so at most one PUT is ever un-committed, which is what
   makes the start-offset overwrite argument airtight. The consumer group
   (`materializer`) is the durable "how far has bronze got" cursor.
 - Unmapped `(exchange, symbol)` pairs partition by the normalized native
-  symbol (warn-once) — bronze never drops data over missing reference data.
+  symbol (warn-once); bronze never drops data over missing reference data.
 
 ## Silver datasets
 
 `python -m silver.main <date>` reads bronze and writes the validated/reconstructed
 silver datasets (`DESIGN_analytics.md` Phase 2 data-quality slice + Phase 4 basis
 slice) to the `silver` bucket. Values are decoded once (`common.models.decode`) and books reconstructed
-through the real `ingest.book.OrderBook` — the same engine as live ingest, so the
+through the real `ingest.book.OrderBook`, the same engine as live ingest, so the
 facts agree with the gateway's live metrics by construction. Hive-partitioned,
 canonical-resolved; **one overwrite-keyed `part.parquet` per partition** (a layer
-aggregates a whole date, so a recompute rewrites the object — idempotent, the same
+aggregates a whole date, so a recompute rewrites the object: idempotent, the same
 discipline as bronze's start-offset keys, but at date grain).
 
 | Dataset | Path | Row = | Key columns |
@@ -176,7 +188,7 @@ discipline as bronze's start-offset keys, but at date grain).
   normal). Non-monotonic regressions are caught for all venues by the OrderBook
   fold (`non_monotonic_seq`).
 - **`latency`** skips locally-generated records (`exchange_ts_ns == 0`:
-  re-emitted snapshots, binance(-futures) snapshots — no exchange clock behind
+  re-emitted snapshots, binance(-futures) snapshots, with no exchange clock behind
   them). Cross-venue `exchange_ts_ns` comparisons inherit the clock-domain caveat
   (`ARCHITECTURE.md` D4). `bbo`/`nbbo` carry no headers and are validated live by
   the gateway, so they are not re-checked here.
@@ -191,7 +203,7 @@ discipline as bronze's start-offset keys, but at date grain).
 ## Gold scorecard (data-quality mart)
 
 `python -m gold.main <date>` aggregates the silver facts into the scorecard mart
-on the `gold` bucket — a gold mart reads silver, never bronze. One overwrite-keyed
+on the `gold` bucket (a gold mart reads silver, never bronze). One overwrite-keyed
 object per date: `scorecard/date={d}/part.parquet`. Plain Parquet (DuckDB-queryable
 ad-hoc; dbt formalizes gold marts at Phase 4/5, over typed silver).
 
@@ -201,7 +213,7 @@ Fact table keyed `(exchange, canonical_symbol, date, check)`:
 |---|---|
 | `n_records`, `n_violations` | denominator + the headline pass/fail count for the check |
 | `p50_ms` / `p95_ms` / `p99_ms` | latency percentiles (latency checks only; null otherwise) |
-| `detail` | compact JSON breakdown (by-kind invariant counts, `total_missing`, `downtime_sec`, …) |
+| `detail` | compact JSON breakdown (by-kind invariant counts, `total_missing`, `downtime_sec`, ...) |
 
 Checks: `sequence_gap`, `book_invariant`, `coverage` (per book symbol);
 `latency.{dataset}` (per firehose dataset); `venue_uptime` (per exchange,
@@ -213,8 +225,8 @@ for ops/CI gating.
 `python -m gold.main <date>` also builds the stablecoin-basis mart from the silver
 `nbbo` dataset (a gold mart reads silver, never bronze). For each base quoted in
 both USD and USDT (e.g. `BTC-USD` vs `BTC-USDT`; perp `-PERP` canonicals
-excluded), it as-of joins the two NBBO series — backward-only, so each observation
-is point-in-time correct — and emits the basis where **both** legs have a valid
+excluded), it as-of joins the two NBBO series (backward-only, so each observation
+is point-in-time correct) and emits the basis where **both** legs have a valid
 two-sided NBBO. Two overwrite-keyed objects per date:
 
 | Dataset | Path | Row = | Key columns |
@@ -222,7 +234,7 @@ two-sided NBBO. Two overwrite-keyed objects per date:
 | `basis` | `basis/date={d}/` | one tick (either leg moved) | `base`, `ts_ns`, `usd_mid`, `usdt_mid`, `basis_abs`, `basis_bps`, `usd_bid`/`usd_ask`/`usdt_bid`/`usdt_ask` (`DECIMAL(38,18)`; `basis_bps` float) |
 | `basis_summary` | `basis_summary/date={d}/` | one base/day | `n_obs`, `basis_bps_mean`/`std`/`median`/`min`/`max`/`p1`/`p99`, `coverage_ns` |
 
-`basis_abs = usd_mid − usdt_mid`; `basis_bps = basis_abs / usd_mid × 1e4`. This is
+`basis_abs = usd_mid - usdt_mid`; `basis_bps = basis_abs / usd_mid * 1e4`. This is
 the first signal driven through the full research spine (`RESEARCH_thesis.md` §5);
 the later ladder rungs (price-discovery, carry, OFI) reuse the same as-of join.
 
@@ -240,7 +252,7 @@ line, in capture order:
 
 Replay (`analytics/replay.py`) sends every record to **partition 0** of its
 original topic; the broker assigns fresh offsets `0..N-1`. Per-topic order is
-preserved exactly; **cross-topic order is not** — but the gateway no longer
+preserved exactly; **cross-topic order is not**, but the gateway no longer
 needs it imposed: a delta arriving before its stream's snapshot is buffered
 and drained in order (D2 in `ARCHITECTURE.md`). Replay determinism is asserted
 end-to-end in `analytics/tests/test_gateway_integration.py`: an adversarial
