@@ -92,13 +92,14 @@ describe("planWarmStart", () => {
     expect(seeks[0].offset).toBe("5000");
   });
 
-  it("seeks trades to the live edge and status to earliest", async () => {
+  it("seeks trades to the live edge and status to the first offset at/after the cutoff", async () => {
     const admin = stubAdmin({
       "md.trades.kraken.BTC-USD": {
         partitions: [{ partition: 0, high: "900", low: "100" }],
       },
       "md.status.kraken": {
         partitions: [{ partition: 0, high: "40", low: "3" }],
+        atCutoff: [{ partition: 0, offset: "31" }], // recent heartbeat inside lookback
       },
     });
     const seeks = await planWarmStart(
@@ -106,8 +107,19 @@ describe("planWarmStart", () => {
     );
     expect(seeks).toEqual([
       { topic: "md.trades.kraken.BTC-USD", partition: 0, offset: "900" },
-      { topic: "md.status.kraken", partition: 0, offset: "3" },
+      { topic: "md.status.kraken", partition: 0, offset: "31" }, // seeded, no drainTo
     ]);
+  });
+
+  it("seeks status to the live edge when no heartbeat is inside the lookback", async () => {
+    const admin = stubAdmin({
+      "md.status.kraken": {
+        partitions: [{ partition: 0, high: "40", low: "3" }],
+        atCutoff: [{ partition: 0, offset: "-1" }], // broker: no message ≥ cutoff
+      },
+    });
+    const seeks = await planWarmStart(admin, ["md.status.kraken"], NOW, LOOKBACK);
+    expect(seeks[0].offset).toBe("40");
   });
 
   it("skips topics the gateway doesn't warm from", async () => {
