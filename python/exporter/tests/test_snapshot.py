@@ -6,6 +6,7 @@ test_exporter_integration.py.
 """
 from __future__ import annotations
 
+import os
 from datetime import UTC, datetime
 
 import pyarrow as pa
@@ -13,6 +14,7 @@ from pyarrow import fs as pafs
 
 from common.lake import partition_key, write_object
 from exporter.snapshot import (
+    _newest_per_dataset,
     basis_families,
     build_families,
     freshness_families,
@@ -53,6 +55,12 @@ def _index(families) -> dict[tuple, float]:
     return out
 
 
+def _seed(fs: pafs.LocalFileSystem, bucket: str, key: str, mtime: float) -> None:
+    """Write a 1-row parquet at bucket/key and stamp its mtime deterministically."""
+    write_object(fs, bucket, key, pa.table({"x": [1]}))
+    os.utime(f"{bucket}/{key}", (mtime, mtime))
+
+
 def test_scorecard_families_maps_each_check() -> None:
     idx = _index(scorecard_families(SCORECARD_ROWS, DATE))
     k = (("check", "sequence_gap"), ("exchange", "kraken"), ("symbol", "BTC-USD"))
@@ -86,6 +94,53 @@ def test_freshness_families_is_age_since_newest() -> None:
     gold = ("lake_freshness_seconds", (("dataset", "scorecard"), ("layer", "gold")))
     assert idx[bronze] == 1000.0
     assert idx[gold] == 500.0
+
+
+def test_newest_per_dataset_prunes_to_latest_date(tmp_path) -> None:
+    # Freshness is the newest file in each branch's *latest* date= partition,
+    # maxed across branches; a newer mtime backfilled into an older date is not
+    # walked (the bounded-cost trade). kraken's 06-27 mtime (2000) is ignored in
+    # favour of its 06-28 (1000); binance's 06-28 (1500) is the dataset max.
+    fs = pafs.LocalFileSystem()
+    lake = str(tmp_path / "lake")
+    _seed(fs, lake, "bbo/exchange=kraken/symbol=BTC-USD/date=2026-06-27/part.parquet", 2000.0)
+    _seed(fs, lake, "bbo/exchange=kraken/symbol=BTC-USD/date=2026-06-28/part.parquet", 1000.0)
+    _seed(fs, lake, "bbo/exchange=binance/symbol=BTC-USD/date=2026-06-28/part.parquet", 1500.0)
+
+    assert _newest_per_dataset(fs, lake) == {"bbo": 1500.0}
+
+
+def test_newest_per_dataset_across_layouts(tmp_path) -> None:
+    # One walk per bucket must resolve every partition depth and key each dataset
+    # independently: lake 3-level (exchange/symbol/date), silver 2-level
+    # (exchange/date), gold 1-level (date). gold's older 06-27 (300) is pruned for
+    # 06-28 (250), the same latest-date rule at a shallower depth.
+    fs = pafs.LocalFileSystem()
+    bucket = str(tmp_path / "mixed")
+    _seed(fs, bucket, "bbo/exchange=kraken/symbol=BTC-USD/date=2026-06-28/part.parquet", 100.0)
+    _seed(fs, bucket, "status_events/exchange=kraken/date=2026-06-28/part.parquet", 200.0)
+    _seed(fs, bucket, "scorecard/date=2026-06-27/part.parquet", 300.0)
+    _seed(fs, bucket, "scorecard/date=2026-06-28/part.parquet", 250.0)
+
+    assert _newest_per_dataset(fs, bucket) == {
+        "bbo": 100.0, "status_events": 200.0, "scorecard": 250.0,
+    }
+
+
+def test_newest_per_dataset_multi_file_and_empty(tmp_path) -> None:
+    # Within the latest partition the newest of several files wins; a non-parquet
+    # sidecar is ignored; a missing bucket lists to nothing rather than raising.
+    fs = pafs.LocalFileSystem()
+    lake = str(tmp_path / "lake")
+    part = "trades/exchange=kraken/symbol=BTC-USD/date=2026-06-28"
+    _seed(fs, lake, f"{part}/000-000000000000.parquet", 100.0)
+    _seed(fs, lake, f"{part}/001-000000000500.parquet", 175.0)
+    _seed(fs, lake, f"{part}/002-000000001000.parquet", 150.0)
+    with open(f"{lake}/{part}/_SUCCESS", "w") as fh:
+        fh.write("")
+
+    assert _newest_per_dataset(fs, lake) == {"trades": 175.0}
+    assert _newest_per_dataset(fs, str(tmp_path / "does-not-exist")) == {}
 
 
 def test_build_families_over_local_fs(tmp_path) -> None:

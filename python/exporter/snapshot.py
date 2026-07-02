@@ -114,25 +114,47 @@ def basis_families(rows: list[dict]) -> list[GaugeMetricFamily]:
 
 
 # ── I/O orchestration ─────────────────────────────────────────────────────────
-def _newest_per_dataset(fs: pafs.FileSystem, bucket: str) -> dict[str, float]:
-    """Newest object mtime (epoch s) per dataset in a bucket. One recursive list;
-    fine at dev scale — at cloud scale move to a prefix-scoped / slower cadence.
+def _basename(path: str) -> str:
+    return path.replace("\\", "/").rstrip("/").rsplit("/", 1)[-1]
 
-    The dataset is the first path segment after the bucket prefix — derived by
-    stripping the prefix (not positional indexing) so it holds for an S3 bucket
-    (one segment) and a LocalFileSystem path (many) alike."""
-    sel = pafs.FileSelector(bucket, recursive=True, allow_not_found=True)
-    prefix = bucket.replace("\\", "/").rstrip("/") + "/"
+
+def _newest_parquet_mtime(fs: pafs.FileSystem, directory: str) -> float:
+    """Newest .parquet mtime (epoch s) under `directory`, descending only the
+    greatest `date=` partition per branch rather than the whole subtree.
+
+    Dates are ISO so lexical-max is newest; the other dims (exchange=/symbol=) fan
+    out but are few, so cost tracks one day of data per branch, not the full
+    retained history. A newer mtime backfilled into an older date is not reflected,
+    the right trade for an "is data still landing" gauge.
+    """
+    infos = fs.get_file_info(pafs.FileSelector(directory, allow_not_found=True))
+    files = (i for i in infos if i.type == pafs.FileType.File and i.path.endswith(".parquet"))
+    newest = max((i.mtime.timestamp() for i in files if i.mtime is not None), default=0.0)
+
+    subdirs = [i for i in infos if i.type == pafs.FileType.Directory]
+    dates = [d for d in subdirs if _basename(d.path).startswith("date=")]
+    branches = [d for d in subdirs if not _basename(d.path).startswith("date=")]
+    if dates:
+        branches.append(max(dates, key=lambda d: _basename(d.path)))
+    for d in branches:
+        newest = max(newest, _newest_parquet_mtime(fs, d.path))
+    return newest
+
+
+def _newest_per_dataset(fs: pafs.FileSystem, bucket: str) -> dict[str, float]:
+    """Newest object mtime (epoch s) per top-level dataset in a bucket.
+
+    A non-recursive list names the datasets; each is walked date-pruned
+    (`_newest_parquet_mtime`) so cost tracks recent data, not the whole bucket,
+    which is what stalled a full recursive walk once the lake grew large.
+    """
     out: dict[str, float] = {}
-    for info in fs.get_file_info(sel):
-        if info.type != pafs.FileType.File or not info.path.endswith(".parquet"):
+    for info in fs.get_file_info(pafs.FileSelector(bucket, allow_not_found=True)):
+        if info.type != pafs.FileType.Directory:
             continue
-        rel = info.path.replace("\\", "/")
-        rel = rel[len(prefix):] if rel.startswith(prefix) else rel
-        dataset = rel.split("/", 1)[0]
-        mtime = info.mtime.timestamp() if info.mtime is not None else 0.0
-        if mtime > out.get(dataset, 0.0):
-            out[dataset] = mtime
+        mtime = _newest_parquet_mtime(fs, info.path)
+        if mtime > 0.0:
+            out[_basename(info.path)] = mtime
     return out
 
 
