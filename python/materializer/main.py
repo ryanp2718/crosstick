@@ -17,12 +17,11 @@ import asyncio
 import logging
 import os
 import signal
-from pathlib import Path
 
 from aiokafka import AIOKafkaConsumer
-from pyarrow import fs as pafs
 
 from common.kafka_io import brokers_from_env
+from common.lake import filesystem_from_env, instruments_path_from_env
 from common.metrics import install_uvloop_if_available, serve_metrics_in_background
 from materializer.bronze import CanonicalMap
 from materializer.service import Materializer
@@ -30,27 +29,6 @@ from materializer.service import Materializer
 log = logging.getLogger(__name__)
 
 GROUP_ID = "materializer"
-
-
-def filesystem_from_env() -> pafs.S3FileSystem:
-    endpoint = os.environ.get("S3_ENDPOINT", "http://localhost:9000")
-    scheme = "https" if endpoint.startswith("https://") else "http"
-    return pafs.S3FileSystem(
-        access_key=os.environ.get("S3_ACCESS_KEY", "minio"),
-        secret_key=os.environ.get("S3_SECRET_KEY", "minio12345"),
-        endpoint_override=endpoint,
-        scheme=scheme,
-        # MinIO ignores regions but pyarrow requires one to skip discovery.
-        region=os.environ.get("S3_REGION", "us-east-1"),
-    )
-
-
-def instruments_path_from_env() -> Path:
-    raw = os.environ.get("INSTRUMENTS_FILE")
-    if raw:
-        return Path(raw)
-    # Source-tree default (python/ is the cwd for local runs); compose sets the env.
-    return Path(__file__).resolve().parents[2] / "ops" / "instruments.yml"
 
 
 async def amain() -> None:
