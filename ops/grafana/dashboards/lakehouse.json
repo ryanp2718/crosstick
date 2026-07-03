@@ -153,7 +153,7 @@
       "gridPos": { "x": 0, "y": 20, "w": 12, "h": 7 },
       "datasource": { "type": "prometheus", "uid": "prometheus" },
       "targets": [
-        { "expr": "gold_dq_latency_ms", "legendFormat": "{{exchange}} {{symbol}} {{quantile}}", "refId": "A" }
+        { "expr": "gold_dq_latency_ms", "legendFormat": "{{exchange}} {{symbol}} {{dataset}} {{quantile}}", "refId": "A" }
       ],
       "fieldConfig": {
         "defaults": { "unit": "ms", "custom": { "drawStyle": "line", "fillOpacity": 5 } }
