@@ -32,7 +32,7 @@ SCORECARD_ROWS = [
     {"exchange": "kraken", "canonical_symbol": "BTC-USD", "date": DATE, "check": "clock_monotonic",
      "n_records": 100, "n_violations": 5, "p50_ms": None, "p95_ms": None, "p99_ms": None,
      "detail": '{"inter_epoch_steps": 1, "worst_lateness_ms": 1234.5}'},
-    {"exchange": "kraken", "canonical_symbol": "BTC-USD", "date": DATE, "check": "latency",
+    {"exchange": "kraken", "canonical_symbol": "BTC-USD", "date": DATE, "check": "latency.trades",
      "n_records": 100, "n_violations": 0, "p50_ms": 1.0, "p95_ms": 5.0, "p99_ms": 12.0,
      "detail": None},
     {"exchange": "kraken", "canonical_symbol": None, "date": DATE, "check": "status",
@@ -65,11 +65,11 @@ def test_scorecard_families_maps_each_check() -> None:
     idx = _index(scorecard_families(SCORECARD_ROWS, DATE))
     k = (("check", "sequence_gap"), ("exchange", "kraken"), ("symbol", "BTC-USD"))
     assert idx[("gold_dq_violations", k)] == 2
-    assert idx[("gold_dq_records", (("check", "latency"), ("exchange", "kraken"),
+    assert idx[("gold_dq_records", (("check", "latency.trades"), ("exchange", "kraken"),
                                     ("symbol", "BTC-USD")))] == 100
-    # latency percentiles fan out by quantile; only the latency row carries them.
-    assert idx[("gold_dq_latency_ms", (("exchange", "kraken"), ("quantile", "p99"),
-                                       ("symbol", "BTC-USD")))] == 12.0
+    # latency percentiles fan out by quantile, labelled with the source dataset.
+    assert idx[("gold_dq_latency_ms", (("dataset", "trades"), ("exchange", "kraken"),
+                                       ("quantile", "p99"), ("symbol", "BTC-USD")))] == 12.0
     # clock worst-step parsed out of the detail JSON.
     clock = ("gold_dq_clock_worst_ms", (("exchange", "kraken"), ("symbol", "BTC-USD")))
     assert idx[clock] == 1234.5

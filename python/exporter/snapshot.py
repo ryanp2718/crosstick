@@ -9,7 +9,7 @@ Metric taxonomy (domain-prefixed, matching `md_*` / `bronze_*` / `gateway_*`):
   - lake_freshness_seconds{layer,dataset}   age of the newest object per dataset
   - gold_dq_violations{check,exchange,symbol}
   - gold_dq_records{check,exchange,symbol}
-  - gold_dq_latency_ms{exchange,symbol,quantile}
+  - gold_dq_latency_ms{exchange,symbol,dataset,quantile}
   - gold_dq_clock_worst_ms{exchange,symbol} worst intra-epoch backward recv step
   - gold_scorecard_date_seconds             UTC midnight of the reported date
   - gold_basis_bps{base,stat}  /  gold_basis_obs{base}
@@ -63,7 +63,7 @@ def scorecard_families(rows: list[dict], date: str | None) -> list[GaugeMetricFa
     )
     lat = GaugeMetricFamily(
         "gold_dq_latency_ms", "Exchange->recv latency percentiles from the gold scorecard",
-        labels=["exchange", "symbol", "quantile"],
+        labels=["exchange", "symbol", "dataset", "quantile"],
     )
     clk = GaugeMetricFamily(
         "gold_dq_clock_worst_ms", "Worst intra-epoch backward recv-clock step (ms)",
@@ -73,11 +73,12 @@ def scorecard_families(rows: list[dict], date: str | None) -> list[GaugeMetricFa
         ex, sym, chk = r["exchange"], _sym(r["canonical_symbol"]), r["check"]
         viol.add_metric([chk, ex, sym], float(r["n_violations"]))
         rec.add_metric([chk, ex, sym], float(r["n_records"]))
-        if chk == "latency":
+        if chk.startswith("latency."):
+            dataset = chk[len("latency."):]
             for q in ("p50", "p95", "p99"):
                 v = r.get(f"{q}_ms")
                 if v is not None:
-                    lat.add_metric([ex, sym, q], float(v))
+                    lat.add_metric([ex, sym, dataset, q], float(v))
         if chk == "clock_monotonic" and r.get("detail"):
             try:
                 worst = json.loads(r["detail"]).get("worst_lateness_ms")
