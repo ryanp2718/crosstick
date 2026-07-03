@@ -2,3 +2,6 @@ patchedDependencies:
   kafkajs@2.2.4: patches/kafkajs@2.2.4.patch
 allowBuilds:
   esbuild: true
+overrides:
+  vite: 6.4.3
+  tsx>esbuild: 0.28.1
