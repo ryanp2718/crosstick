@@ -264,11 +264,12 @@ async function main(): Promise<void> {
     if (isFreshCross(nbbo, NBBO_CROSS_MAX_LEG_AGE_MS)) {
       nbboCrossed.inc({ canonical_id: nbbo.canonical_id });
     }
+    const data = JSON.stringify(nbbo); // once, shared by the Kafka value and WS send
     bboInflight.inc();
     const p: Promise<unknown> = producer
       .send({
         topic: nbboTopic(nbbo.canonical_id),
-        messages: [{ key: nbbo.canonical_id, value: JSON.stringify(nbbo) }],
+        messages: [{ key: nbbo.canonical_id, value: data }],
       })
       .then(() => nbboProduced.inc({ canonical_id: nbbo.canonical_id, result: "ok" }))
       .catch((err) => {
@@ -280,7 +281,7 @@ async function main(): Promise<void> {
         bboInflight.dec();
       });
     inFlight.add(p);
-    broadcaster.broadcast(nbbo);
+    broadcaster.broadcast(data);
   };
 
   // Venue health: last md.status heartbeat per exchange, in heartbeat log time
@@ -348,6 +349,7 @@ async function main(): Promise<void> {
       if (!gate?.warming) {
         if (result.publish) {
           const bbo = result.publish;
+          const data = JSON.stringify(bbo); // once, shared by the Kafka value and WS send
           bboInflight.inc();
           // Fire-and-forget: awaiting producer.send here would cap publish rate
           // at 1/broker-RTT per partition (same antipattern the python ingester
@@ -356,7 +358,7 @@ async function main(): Promise<void> {
           const p: Promise<unknown> = producer
             .send({
               topic: bboTopic(bbo.exchange, bbo.symbol),
-              messages: [{ key: `${bbo.exchange}:${bbo.symbol}`, value: JSON.stringify(bbo) }],
+              messages: [{ key: `${bbo.exchange}:${bbo.symbol}`, value: data }],
             })
             .then(() => bboProduced.inc({ result: "ok" }))
             .catch((err) => {
@@ -368,8 +370,11 @@ async function main(): Promise<void> {
               bboInflight.dec();
             });
           inFlight.add(p);
+          broadcaster.broadcast(data);
+        } else if (result.broadcast && broadcaster.size > 0) {
+          // Trade relay: forward the raw wire bytes (valid JSON, decoded above).
+          broadcaster.broadcast(message.value.toString("utf8"));
         }
-        if (result.broadcast) broadcaster.broadcast(result.broadcast);
 
         // nbboPublish and nbboBroadcast are the same object (see router.ts);
         // emitNbbo does both the compacted-topic publish and the WS broadcast.

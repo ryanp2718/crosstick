@@ -34,9 +34,12 @@ export class Broadcaster {
     return this.clients.size;
   }
 
-  broadcast(msg: unknown): void {
-    const data = JSON.stringify(msg);
+  // `data` is an already-serialized frame: the caller stringifies once and shares
+  // the string between the Kafka value and this WS send (G1). Returns before the
+  // fan-out loop when no client is connected (G2).
+  broadcast(data: string): void {
     wsBroadcasts.inc();
+    if (this.clients.size === 0) return;
     for (const c of this.clients) {
       if (c.readyState !== OPEN) {
         this.clients.delete(c);
