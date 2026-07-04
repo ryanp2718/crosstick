@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import { Aggregator, MAX_PENDING_DELTAS } from "../src/aggregator.js";
-import { bboCrossed, bookSnapshotStale } from "../src/metrics.js";
+import { bboCrossed, bookResnapshotHeal, bookSnapshotStale } from "../src/metrics.js";
 import type { BookDeltaMsg, BookSnapshotMsg, WireLevel } from "../src/messages.js";
 
 function snap(
@@ -31,6 +31,12 @@ async function crossedFor(exchange: string): Promise<number> {
 // Read the gateway_book_snapshot_stale_total value for one exchange (0 if unseen).
 async function staleFor(exchange: string): Promise<number> {
   const m = await bookSnapshotStale.get();
+  return m.values.find((v) => v.labels.exchange === exchange)?.value ?? 0;
+}
+
+// Read the gateway_book_resnapshot_heal_total value for one exchange (0 if unseen).
+async function healFor(exchange: string): Promise<number> {
+  const m = await bookResnapshotHeal.get();
   return m.values.find((v) => v.labels.exchange === exchange)?.value ?? 0;
 }
 
@@ -201,6 +207,22 @@ describe("Aggregator", () => {
       expect(a.applyBook(snap(6, [["100", "1"]], [["101", "1"]], 9))).toBeNull();
       expect(a.snapshot()[0]).toMatchObject({ bid_px: "100.6", ask_px: "101" });
       expect(await staleFor("kraken")).toBe(before + 1);
+    });
+
+    it("applies a stale same-epoch re-snapshot to HEAL a crossed book", async () => {
+      const a = new Aggregator();
+      a.applyBook(snap(5, [["100", "1"]], [["101", "1"]], 9));
+      // A delta strands a bid above the ask → the book is crossed (corrupt).
+      const crossed = a.applyBook(delta(7, [["200", "1"]], [], 9));
+      expect(crossed).toMatchObject({ bid_px: "200", ask_px: "101" });
+      // The periodic re-snapshot at the OLD seq 6 would normally be skipped as a
+      // rewind, but because the book is crossed it is applied as a resync.
+      const staleBefore = await staleFor("kraken");
+      const healBefore = await healFor("kraken");
+      const healed = a.applyBook(snap(6, [["100", "1"]], [["101", "1"]], 9));
+      expect(healed).toMatchObject({ bid_px: "100", ask_px: "101" }); // healed
+      expect(await healFor("kraken")).toBe(healBefore + 1);
+      expect(await staleFor("kraken")).toBe(staleBefore); // not counted as a skip
     });
   });
 

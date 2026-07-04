@@ -110,6 +110,18 @@ export const bookSnapshotStale = new Counter({
   registers: [registry],
 });
 
+// Stale same-epoch re-snapshots applied ANYWAY because the book was crossed
+// (corrupt): the snapshot resyncs it instead of the guard skipping it, healing a
+// warm-start-stranded cross within one re-snapshot interval. A steady stream here
+// means a book is repeatedly corrupting (investigate the onset); a few after a
+// restart is the warm-start heal working as intended.
+export const bookResnapshotHeal = new Counter({
+  name: "gateway_book_resnapshot_heal_total",
+  help: "Crossed books healed by applying a same-epoch re-snapshot the guard would otherwise skip",
+  labelNames: ["exchange"] as const,
+  registers: [registry],
+});
+
 export const venueUp = new Gauge({
   name: "gateway_venue_up",
   help: "Venue health from md.status.* / liveness timeout (1 up, 0 down)",
