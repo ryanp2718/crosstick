@@ -29,9 +29,13 @@ export class Book {
 
   // Returns false (mutates nothing) for a stale same-epoch re-snapshot whose seq
   // the book has already passed — resetting to it would rewind and resurrect
-  // since-deleted levels, crossing newer quotes. A genuine resync is a new epoch.
+  // since-deleted levels, crossing newer quotes. EXCEPTION: when the book is
+  // already crossed (corrupt), the authoritative uncrossed snapshot is taken as a
+  // resync that heals it, bounding a cross to one re-snapshot interval instead of
+  // persisting to epoch end (a warm-start buffer gap can strand a level; see
+  // aggregator MAX_PENDING_DELTAS). A genuine resync is otherwise a new epoch.
   applySnapshot(seq: number, epoch: number, bids: WireLevel[], asks: WireLevel[]): boolean {
-    if (epoch === this.epoch && seq <= this.seq) return false;
+    if (epoch === this.epoch && seq <= this.seq && !this.isCrossed()) return false;
     this.bids.clear();
     this.asks.clear();
     for (const [px, sz] of bids) if (!isZeroSize(sz)) this.bids.set(px, sz);
@@ -64,5 +68,13 @@ export class Book {
   bestAsk(): Level | null {
     const px = this.asks.minKey();
     return px === undefined ? null : [px, this.asks.get(px)!];
+  }
+
+  // Top-of-book inverted (ask < bid) — a corrupt state a fresh same-epoch
+  // snapshot is allowed to heal (see applySnapshot).
+  isCrossed(): boolean {
+    const bid = this.bids.maxKey();
+    const ask = this.asks.minKey();
+    return bid !== undefined && ask !== undefined && cmpDecimal(ask, bid) < 0;
   }
 }

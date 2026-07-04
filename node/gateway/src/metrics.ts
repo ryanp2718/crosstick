@@ -78,6 +78,16 @@ export const nbboCrossed = new Counter({
   registers: [registry],
 });
 
+// Fresh crosses that also clear the materiality floor (NBBO_CROSS_MIN_BPS). The
+// raw counter above still fires on the benign sub-bp venue lock/cross baseline;
+// this is the subset worth paging on (a real tens-of-bps inversion).
+export const nbboCrossedMaterial = new Counter({
+  name: "gateway_nbbo_crossed_material_total",
+  help: "Fresh crossed NBBO emissions with cross depth >= NBBO_CROSS_MIN_BPS bps (benign tick-scale venue locks excluded)",
+  labelNames: ["canonical_id"] as const,
+  registers: [registry],
+});
+
 // Per-venue INTERNAL crossed top-of-book (ask < bid within one exchange's book).
 // Distinct from nbboCrossed (cross-venue): this catches book-reconstruction
 // corruption — the 06-12 warm-start failure that was entirely unobserved.
@@ -96,6 +106,18 @@ export const bboCrossed = new Counter({
 export const bookSnapshotStale = new Counter({
   name: "gateway_book_snapshot_stale_total",
   help: "Stale same-epoch re-snapshots skipped to avoid rewinding the book",
+  labelNames: ["exchange"] as const,
+  registers: [registry],
+});
+
+// Stale same-epoch re-snapshots applied ANYWAY because the book was crossed
+// (corrupt): the snapshot resyncs it instead of the guard skipping it, healing a
+// warm-start-stranded cross within one re-snapshot interval. A steady stream here
+// means a book is repeatedly corrupting (investigate the onset); a few after a
+// restart is the warm-start heal working as intended.
+export const bookResnapshotHeal = new Counter({
+  name: "gateway_book_resnapshot_heal_total",
+  help: "Crossed books healed by applying a same-epoch re-snapshot the guard would otherwise skip",
   labelNames: ["exchange"] as const,
   registers: [registry],
 });

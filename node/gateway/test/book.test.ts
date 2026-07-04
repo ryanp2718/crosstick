@@ -103,6 +103,19 @@ describe("Book", () => {
     expect(b.seq).toBe(8);
   });
 
+  it("applies a stale same-epoch re-snapshot when the book is crossed (heal)", () => {
+    const b = new Book();
+    b.applySnapshot(5, 0, [["100", "1"]], [["101", "1"]]);
+    b.applyDelta(7, [["200", "1"]], []); // strands a bid above the ask → crossed
+    expect(b.isCrossed()).toBe(true);
+    // The stale seq-6 re-snapshot would normally be skipped, but a crossed book
+    // takes it as a resync that heals the corruption.
+    expect(b.applySnapshot(6, 0, [["100", "1"]], [["101", "1"]])).toBe(true);
+    expect(b.isCrossed()).toBe(false);
+    expect(b.bestBid()).toEqual(["100", "1"]);
+    expect(b.seq).toBe(6);
+  });
+
   it("adopts the snapshot's epoch", () => {
     const b = new Book();
     b.applySnapshot(0, 7, [["100", "1"]], [["101", "1"]]);

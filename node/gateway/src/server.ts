@@ -19,12 +19,13 @@ import {
   messagesConsumed,
   nbboConstituents,
   nbboCrossed,
+  nbboCrossedMaterial,
   nbboProduced,
   registry,
   venueUp,
   wsClients,
 } from "./metrics.js";
-import { isFreshCross, NBBOAggregator } from "./nbbo.js";
+import { crossBps, isFreshCross, NBBOAggregator } from "./nbbo.js";
 import { routeMessage, type RouteResult } from "./router.js";
 import { DrainGate, planWarmStart } from "./warmstart.js";
 
@@ -79,6 +80,12 @@ const LIVENESS_TIMEOUT_MS = Number(process.env.NBBO_LIVENESS_TIMEOUT_MS ?? 5000)
 // 5s liveness eviction: a leg that survives eviction can still be too stale to
 // trust as a live cross. The wire `crossed` flag is unaffected (stays faithful).
 const NBBO_CROSS_MAX_LEG_AGE_MS = Number(process.env.NBBO_CROSS_MAX_LEG_AGE_MS ?? 1000);
+// A fresh cross also pages (gateway_nbbo_crossed_material_total) only when its
+// depth reaches this many bps. Cross-venue markets routinely lock/cross by well
+// under a bp (measured p99 ~1.5 bps, max ~5 bps across the two spot venues), so
+// the raw counter stays noisy by design; 10 bps sits ~2x above that benign
+// envelope while still catching a real tens-of-bps inversion.
+const NBBO_CROSS_MIN_BPS = Number(process.env.NBBO_CROSS_MIN_BPS ?? 10);
 // Warm-start lookback (D2b): how far back to search for a book snapshot on
 // restart. Must exceed the ingesters' snapshot_interval_s (300s) so a healthy
 // stream always has one inside the window; 2x gives slack for a venue that
@@ -263,6 +270,9 @@ async function main(): Promise<void> {
     nbboConstituents.set({ canonical_id: nbbo.canonical_id }, nbbo.constituents.length);
     if (isFreshCross(nbbo, NBBO_CROSS_MAX_LEG_AGE_MS)) {
       nbboCrossed.inc({ canonical_id: nbbo.canonical_id });
+      if (crossBps(nbbo) >= NBBO_CROSS_MIN_BPS) {
+        nbboCrossedMaterial.inc({ canonical_id: nbbo.canonical_id });
+      }
     }
     const data = JSON.stringify(nbbo); // once, shared by the Kafka value and WS send
     bboInflight.inc();
