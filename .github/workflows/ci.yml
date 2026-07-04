@@ -1,14 +1,13 @@
 name: CI
 
 on:
-  push:
-    branches: [main]
   pull_request:
+  merge_group:
 
-# Newer push to a branch cancels its in-flight run.
+# Cancel superseded PR runs; never cancel a merge-queue run (that fails the entry).
 concurrency:
-  group: ci-${{ github.ref }}
-  cancel-in-progress: true
+  group: ci-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 permissions:
   contents: read
