@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import type { CanonicalInstrument } from "../src/canonical.js";
 import type { BBOMsg, NBBOMsg } from "../src/messages.js";
-import { isFreshCross, NBBOAggregator } from "../src/nbbo.js";
+import { crossBps, isFreshCross, NBBOAggregator } from "../src/nbbo.js";
 
 const BTC_USD: CanonicalInstrument = {
   canonical_id: "BTC-USD",
@@ -289,5 +289,40 @@ describe("isFreshCross", () => {
     const nbbo = agg.onBBO(BTC_USD, bbo("coinbase", "BTC-USD", "100", "1", "101", "1"), 1);
     expect(nbbo!.crossed).toBe(false);
     expect(isFreshCross(nbbo!, 1_000_000)).toBe(false);
+  });
+});
+
+describe("crossBps", () => {
+  // A cross where kraken's bid crosses coinbase's (lower) ask; kraken's own ask is
+  // parked far away so coinbase always wins the ask. Legs default to a real ns
+  // timestamp read back at nowMs≈0, so both are age 0 (fresh).
+  function cross(bidPx: string, askPx: string): NBBOMsg {
+    const agg = new NBBOAggregator();
+    agg.onBBO(BTC_USD, bbo("coinbase", "BTC-USD", "1", "1", askPx, "1"), 1);
+    const nbbo = agg.onBBO(BTC_USD, bbo("kraken", "BTC/USD", bidPx, "1", "9999999", "1"), 2);
+    if (!nbbo?.crossed) throw new Error("expected a crossed NBBO");
+    return nbbo;
+  }
+
+  it("reports the cross depth in bps, positive when crossed", () => {
+    expect(crossBps(cross("101", "100"))).toBeCloseTo(99.5, 1); // (1/100.5)*1e4
+  });
+
+  it("stays ~1 bp for a benign tick-scale venue lock", () => {
+    expect(crossBps(cross("100.01", "100.00"))).toBeCloseTo(1.0, 1);
+  });
+
+  it("is <= 0 for an uncrossed book (never counted anyway)", () => {
+    const agg = new NBBOAggregator();
+    const nbbo = agg.onBBO(BTC_USD, bbo("coinbase", "BTC-USD", "100", "1", "101", "1"), 1);
+    expect(nbbo!.crossed).toBe(false);
+    expect(crossBps(nbbo!)).toBeLessThanOrEqual(0);
+  });
+
+  it("gates the material counter as the server does: fresh AND >= floor", () => {
+    const FLOOR = 10;
+    const material = (n: NBBOMsg) => isFreshCross(n, 1000) && crossBps(n) >= FLOOR;
+    expect(material(cross("101", "100"))).toBe(true); // ~100 bps inversion
+    expect(material(cross("100.01", "100.00"))).toBe(false); // ~1 bp, below floor
   });
 });

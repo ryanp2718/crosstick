@@ -147,6 +147,13 @@ export function isFreshCross(nbbo: NBBOMsg, maxLegAgeMs: number): boolean {
   );
 }
 
+// Cross depth in basis points: how far the best bid exceeds the best ask,
+// relative to mid. Positive only when crossed (spread < 0). A materiality floor
+// on this separates a benign tick-scale venue lock/cross from a real inversion.
+export function crossBps(nbbo: NBBOMsg): number {
+  return nbbo.mid > 0 ? (-nbbo.spread / nbbo.mid) * 1e4 : 0;
+}
+
 function legFor(src: BBOMsg, side: "bid" | "ask", nowMs: number): NBBOLeg {
   const px = side === "bid" ? src.bid_px : src.ask_px;
   const sz = side === "bid" ? src.bid_sz : src.ask_sz;

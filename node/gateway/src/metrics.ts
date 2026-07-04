@@ -78,6 +78,16 @@ export const nbboCrossed = new Counter({
   registers: [registry],
 });
 
+// Fresh crosses that also clear the materiality floor (NBBO_CROSS_MIN_BPS). The
+// raw counter above still fires on the benign sub-bp venue lock/cross baseline;
+// this is the subset worth paging on (a real tens-of-bps inversion).
+export const nbboCrossedMaterial = new Counter({
+  name: "gateway_nbbo_crossed_material_total",
+  help: "Fresh crossed NBBO emissions with cross depth >= NBBO_CROSS_MIN_BPS bps (benign tick-scale venue locks excluded)",
+  labelNames: ["canonical_id"] as const,
+  registers: [registry],
+});
+
 // Per-venue INTERNAL crossed top-of-book (ask < bid within one exchange's book).
 // Distinct from nbboCrossed (cross-venue): this catches book-reconstruction
 // corruption — the 06-12 warm-start failure that was entirely unobserved.
