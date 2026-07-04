@@ -22,6 +22,22 @@ describe("cmpDecimal", () => {
   it("handles sub-1 values with empty integer part", () => {
     expect(cmpDecimal("0.1", "0.2")).toBeLessThan(0);
   });
+
+  it("expands scientific notation to compare by value, not lexically", () => {
+    // A tiny size arrives as "1E-8"; the raw-digit path alone would sort it as a
+    // 4-char integer run and rank it ABOVE a normal size. It must not.
+    expect(cmpDecimal("1E-8", "0.5")).toBeLessThan(0);
+    expect(cmpDecimal("1E-8", "0.00000001")).toBe(0); // same value, both forms
+    expect(cmpDecimal("1E-8", "2E-8")).toBeLessThan(0);
+    expect(cmpDecimal("1.5E-8", "1E-8")).toBeGreaterThan(0);
+    expect(cmpDecimal("1e-8", "1E-8")).toBe(0); // case-insensitive exponent
+  });
+
+  it("expands a positive exponent (e.g. a round six-figure price)", () => {
+    expect(cmpDecimal("1E+5", "99999")).toBeGreaterThan(0); // 100000 > 99999
+    expect(cmpDecimal("1E+5", "100000")).toBe(0);
+    expect(cmpDecimal("1.234E+1", "12.34")).toBe(0); // mid-run decimal point
+  });
 });
 
 describe("Book", () => {
