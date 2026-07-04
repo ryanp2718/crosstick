@@ -39,15 +39,20 @@
     },
     {
       "id": 2,
-      "title": "Crossed NBBO rate / pair (cross-venue) — should be 0",
+      "title": "Crossed NBBO rate / pair (cross-venue) — raw baseline vs material (>= NBBO_CROSS_MIN_BPS)",
       "type": "timeseries",
       "gridPos": { "x": 12, "y": 0, "w": 12, "h": 7 },
       "datasource": { "type": "prometheus", "uid": "prometheus" },
       "targets": [
         {
           "expr": "sum by (canonical_id) (rate(gateway_nbbo_crossed_total[5m]))",
-          "legendFormat": "{{canonical_id}}",
+          "legendFormat": "{{canonical_id}} raw",
           "refId": "A"
+        },
+        {
+          "expr": "sum by (canonical_id) (rate(gateway_nbbo_crossed_material_total[5m]))",
+          "legendFormat": "{{canonical_id}} material",
+          "refId": "B"
         }
       ],
       "fieldConfig": {

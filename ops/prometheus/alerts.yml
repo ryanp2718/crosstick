@@ -15,17 +15,22 @@ groups:
           summary: "Crossed BBO reconstructed for {{ $labels.exchange }}"
           description: "gateway_bbo_crossed_total is rising — the gateway is emitting a crossed within-venue book for {{ $labels.exchange }}."
 
-      # Cross-venue NBBO inversion (best_bid >= best_ask across exchanges). The
-      # metric counts only crosses where both winning legs are fresh (the gateway
-      # excludes stale-leg crosses, the benign majority), so a sustained rate is a
-      # genuine simultaneous inversion: a corrupt venue book or real latency arb.
+      # Cross-venue NBBO inversion (best_bid >= best_ask across exchanges) deep
+      # enough to matter. Fresh cross-venue locks/crosses of 1-2 bps are normal
+      # fragmented-market microstructure (measured ~26k/h benign), so paging on
+      # gateway_nbbo_crossed_total would be pure noise; the gateway floors that at
+      # NBBO_CROSS_MIN_BPS (10) into _material_total, and only a real tens-of-bps
+      # inversion (corrupt venue book, canonical mismap, basis leak) reaches it.
+      # The floor is global, not per-canonical: it fits the current BTC/ETH two-
+      # spot-venue set and would need revisiting for a low-priced or coarser-tick
+      # instrument. Raw gateway_nbbo_crossed_total stays on the data-quality board.
       - alert: GatewayNBBOCrossed
-        expr: sum by (canonical_id) (rate(gateway_nbbo_crossed_total[5m])) > 0
+        expr: sum by (canonical_id) (rate(gateway_nbbo_crossed_material_total[5m])) > 0
         for: 2m
         labels: { severity: warning }
         annotations:
-          summary: "Crossed NBBO for {{ $labels.canonical_id }}"
-          description: "Negative cross-venue spread on {{ $labels.canonical_id }} with both winning legs fresh — a corrupt venue book, or a sustained cross-venue dislocation."
+          summary: "Material crossed NBBO for {{ $labels.canonical_id }}"
+          description: "Cross-venue spread on {{ $labels.canonical_id }} inverted by >= NBBO_CROSS_MIN_BPS with both winning legs fresh — beyond benign microstructure: a corrupt venue book, canonical mismap, or sustained dislocation."
 
       # Ingester book-invariant violations (snapshot_crossed / non_monotonic_seq
       # / crossed_after_delta). Source-side corruption caught before publish.
