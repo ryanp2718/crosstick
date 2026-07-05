@@ -1,6 +1,7 @@
 # crosstick
 
 [![CI](https://github.com/ryanp2718/crosstick/actions/workflows/ci.yml/badge.svg)](https://github.com/ryanp2718/crosstick/actions/workflows/ci.yml)
+[![determinism](https://github.com/ryanp2718/crosstick/actions/workflows/determinism.yml/badge.svg)](https://github.com/ryanp2718/crosstick/actions/workflows/determinism.yml)
 
 **Real-time, cross-exchange cryptocurrency market-data platform.** It reconstructs
 full L2 order books from Coinbase, Binance, and Kraken, derives a live
@@ -84,7 +85,10 @@ flowchart TD
 - [x] Silver/gold batch transforms: data-quality facts, as-of-joined NBBO, the
       stablecoin-basis mart, and a per-venue data-quality scorecard
 - [x] Cross-process integration harness: corpus replay through the real gateway
-      over ephemeral Redpanda, including byte-identical NBBO determinism
+      over ephemeral Redpanda, including byte-identical NBBO determinism (the
+      determinism badge above tracks exactly that test on `main`)
+- [x] Offline demo: one-command paced corpus replay through an isolated compose
+      stack, lighting the dashboard with no exchange connectivity
 - [x] Perp capture (Binance USDⓈ-M): L2 book + aggTrade tape, liquidations,
       mark/funding, open-interest poll, on two routed WS connections; validated
       live end-to-end (book → NBBO `BTC-USDT-PERP` → bronze)
@@ -117,13 +121,41 @@ python/             ingesters + lake transforms (uv-managed)
   silver/           bronze → DQ facts + nbbo/quotes, batch per date (+ tests)
   gold/             silver → basis mart + data-quality scorecard, batch (+ tests)
   exporter/         lake/batch metrics for Prometheus (+ tests)
-  analytics/        capture + replay corpus for the integration harness
+  analytics/        capture + replay corpora for the integration harness and demo
 node/gateway/       kafkajs → ws gateway: BBO, NBBO, backpressure (src/, test/)
 dashboard/          static WS client, served by the gateway
+demo/               offline demo: isolated compose stack + captured corpus fixture
 ops/                instruments.yml, prometheus/ (config + alerts), grafana provisioning, smoke.py
 docker-compose.yml  redpanda, minio, ingesters, materializer, gateway, lake-exporter, prometheus, grafana
 docs/               architecture + design docs
 ```
+
+## Offline demo
+
+The fastest way to see the system run: no API keys, no exchange connectivity,
+one command.
+
+```powershell
+docker compose -f demo/docker-compose.yml up --build
+# open http://localhost:8080   (override the port with DEMO_GATEWAY_PORT)
+docker compose -f demo/docker-compose.yml down
+```
+
+A one-shot replay service seeds an ephemeral Redpanda with the topics from
+`demo/corpus.jsonl.gz` (a ~5-minute verbatim capture of the live `md.*` feed,
+shipped as a short test fixture), waits for the gateway's warm-start plan, then
+replays the corpus at its original inter-arrival times. The same gateway image
+that serves production derives BBO and NBBO live off the replay, so the
+dashboard renders exactly like a live market; the captured window includes real
+cross-venue dislocations, which show up red in the spread column. When the
+corpus runs out the dashboard reports the feed stall, and `down` discards all
+broker state, so every `up` starts fresh. The demo project is fully isolated
+from the main `docker-compose.yml` stack (own project name, own broker, no
+shared volumes).
+
+The determinism badge at the top of this README is the same replay machinery
+under CI: a corpus replayed twice through fresh broker and gateway state must
+produce byte-identical `md.bbo.*` / `md.nbbo.*` streams.
 
 ## Quickstart
 
