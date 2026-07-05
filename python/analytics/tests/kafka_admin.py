@@ -1,31 +1,16 @@
-"""Admin helpers shared by the integration harness (ephemeral Redpanda).
+"""Test-only admin helpers for the integration harness (ephemeral Redpanda).
 
 Kept separate from conftest fixtures so both replay and gateway integration
-tests can reuse them.
+tests can reuse them. Topic creation lives in `analytics.kafka_admin` (shared
+with the offline demo).
 """
 from __future__ import annotations
 
 import asyncio
 
-from aiokafka.admin import AIOKafkaAdminClient, NewTopic
-from aiokafka.errors import TopicAlreadyExistsError
+from aiokafka.admin import AIOKafkaAdminClient
 
 from common.kafka_io import brokers_from_env
-
-
-async def create_single_partition_topics(topics: list[str]) -> None:
-    """Pre-create topics with one partition so replay offsets are 0..N-1 and
-    per-topic ordering is deterministic."""
-    admin = AIOKafkaAdminClient(bootstrap_servers=brokers_from_env())
-    await admin.start()
-    try:
-        await admin.create_topics(
-            [NewTopic(t, num_partitions=1, replication_factor=1) for t in topics]
-        )
-    except TopicAlreadyExistsError:
-        pass
-    finally:
-        await admin.close()
 
 
 async def delete_topics(topics: list[str]) -> None:

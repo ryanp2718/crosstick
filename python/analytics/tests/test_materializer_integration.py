@@ -29,8 +29,9 @@ from aiokafka import AIOKafkaConsumer
 from pyarrow import fs as pafs
 
 from analytics.corpus import CorpusRecord, read_corpus
+from analytics.kafka_admin import create_single_partition_topics
 from analytics.replay import replay_corpus
-from analytics.tests.kafka_admin import create_single_partition_topics, seed_group_offsets
+from analytics.tests.kafka_admin import seed_group_offsets
 from common.kafka_io import brokers_from_env, make_producer
 from materializer.bronze import CanonicalMap, table_to_records
 from materializer.service import Materializer
