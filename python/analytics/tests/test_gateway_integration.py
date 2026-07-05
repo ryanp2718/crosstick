@@ -61,12 +61,9 @@ from pathlib import Path
 import pytest
 
 from analytics.corpus import CorpusRecord
+from analytics.kafka_admin import create_single_partition_topics
 from analytics.replay import replay_corpus
-from analytics.tests.kafka_admin import (
-    create_single_partition_topics,
-    delete_topics,
-    seed_group_offsets,
-)
+from analytics.tests.kafka_admin import delete_topics, seed_group_offsets
 from common.kafka_io import bbo_topic, make_consumer, make_producer
 from common.models import BBO, decode
 

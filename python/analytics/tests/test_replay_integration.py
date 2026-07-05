@@ -17,8 +17,8 @@ from pathlib import Path
 import pytest
 
 from analytics.corpus import read_corpus
+from analytics.kafka_admin import create_single_partition_topics
 from analytics.replay import replay_corpus
-from analytics.tests.kafka_admin import create_single_partition_topics
 from common.kafka_io import make_consumer, make_producer
 
 pytestmark = pytest.mark.integration

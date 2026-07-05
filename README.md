@@ -1,6 +1,7 @@
 # crosstick
 
 [![CI](https://github.com/ryanp2718/crosstick/actions/workflows/ci.yml/badge.svg)](https://github.com/ryanp2718/crosstick/actions/workflows/ci.yml)
+[![determinism](https://github.com/ryanp2718/crosstick/actions/workflows/determinism.yml/badge.svg)](https://github.com/ryanp2718/crosstick/actions/workflows/determinism.yml)
 
 **Real-time, cross-exchange cryptocurrency market-data platform.** It reconstructs
 full L2 order books from Coinbase, Binance, and Kraken, derives a live
@@ -14,6 +15,33 @@ replayable log, and every downstream stream and table is a pure function of it.
 > stablecoin-basis mart and a per-venue data-quality scorecard. What's left is the
 > modelling surface: a feature store, a fee-aware backtest harness, and a cloud
 > cutover.
+
+## Offline demo
+
+The fastest way to see the system run: no API keys, no exchange connectivity,
+one command.
+
+```powershell
+docker compose -f demo/docker-compose.yml up --build
+# open http://localhost:8080   (override the port with DEMO_GATEWAY_PORT)
+docker compose -f demo/docker-compose.yml down
+```
+
+A one-shot replay service seeds an ephemeral Redpanda with the topics from
+`demo/corpus.jsonl.gz` (a ~5-minute verbatim capture of the live `md.*` feed,
+shipped as a short test fixture), waits for the gateway's warm-start plan, then
+replays the corpus at its original inter-arrival times. The same gateway image
+that serves production derives BBO and NBBO live off the replay, so the
+dashboard renders exactly like a live market; the captured window includes real
+cross-venue dislocations, which show up red in the spread column. When the
+corpus runs out the dashboard reports the feed stall, and `down` discards all
+broker state, so every `up` starts fresh. The demo project is fully isolated
+from the main `docker-compose.yml` stack (own project name, own broker, no
+shared volumes).
+
+The determinism badge at the top of this README is the same replay machinery
+under CI: a corpus replayed twice through fresh broker and gateway state must
+produce byte-identical `md.bbo.*` / `md.nbbo.*` streams.
 
 ## Architecture
 
@@ -55,10 +83,17 @@ flowchart TD
   that could win the NBBO and print a phantom crossed book. Venues now heartbeat
   liveness on `md.status.*`, and the gateway evicts a venue's legs on explicit
   shutdown or missed-heartbeat timeout. The trigger is connection state, not naive
-  quote-age gating.
+  quote-age gating. Crossed-NBBO alerting is floored by measurement, too: the spot
+  venues routinely lock or cross by well under a basis point (p99 ~1.5 bps,
+  measured 2026-07), so only a tens-of-bps inversion pages.
 - **Backpressure that protects the hot path.** Per-client WebSocket send buffers
   are bounded; a slow consumer is dropped rather than allowed to stall fan-out for
   everyone.
+- **A measured hot path.** Gateway performance work lands with before/after
+  numbers: serializing each derived message once cut GC time per million messages
+  ~3.8x (107.5k ms to 28.1k ms, measured 2026-07), and yielding the event loop
+  during bursty catch-up batches cut `/metrics` stalls from ~14s to sub-second.
+  Byte-identical replay gates every hot-path change.
 - **A hard size ceiling, enforced end to end.** An 8 MiB limit holds across
   producer, broker, and consumer. Coinbase's re-encoded L2 snapshot runs ~1.1 MiB
   at current depth (the raw full-depth frame is ~5 MiB), so an oversize message
@@ -84,7 +119,10 @@ flowchart TD
 - [x] Silver/gold batch transforms: data-quality facts, as-of-joined NBBO, the
       stablecoin-basis mart, and a per-venue data-quality scorecard
 - [x] Cross-process integration harness: corpus replay through the real gateway
-      over ephemeral Redpanda, including byte-identical NBBO determinism
+      over ephemeral Redpanda, including byte-identical NBBO determinism (the
+      determinism badge above tracks exactly that test on `main`)
+- [x] Offline demo: one-command paced corpus replay through an isolated compose
+      stack, lighting the dashboard with no exchange connectivity
 - [x] Perp capture (Binance USDⓈ-M): L2 book + aggTrade tape, liquidations,
       mark/funding, open-interest poll, on two routed WS connections; validated
       live end-to-end (book → NBBO `BTC-USDT-PERP` → bronze)
@@ -117,9 +155,10 @@ python/             ingesters + lake transforms (uv-managed)
   silver/           bronze → DQ facts + nbbo/quotes, batch per date (+ tests)
   gold/             silver → basis mart + data-quality scorecard, batch (+ tests)
   exporter/         lake/batch metrics for Prometheus (+ tests)
-  analytics/        capture + replay corpus for the integration harness
+  analytics/        capture + replay corpora for the integration harness and demo
 node/gateway/       kafkajs → ws gateway: BBO, NBBO, backpressure (src/, test/)
 dashboard/          static WS client, served by the gateway
+demo/               offline demo: isolated compose stack + captured corpus fixture
 ops/                instruments.yml, prometheus/ (config + alerts), grafana provisioning, smoke.py
 docker-compose.yml  redpanda, minio, ingesters, materializer, gateway, lake-exporter, prometheus, grafana
 docs/               architecture + design docs
@@ -151,15 +190,8 @@ $env:KAFKA_BROKERS="localhost:19092"; $env:METRICS_PORT="9103"
 Dev mode runs the gateway and ingesters on the host against Redpanda's external
 listener (`localhost:19092`); metrics ports per exchange are binance `9101`,
 coinbase `9102`, kraken `9103`. Full container mode is via `docker compose`.
-
-Prometheus and Grafana read their mounted config (`ops/prometheus/`,
-`ops/grafana/`) only at container creation. After editing it, recreate rather than
-restart, then smoke-check that it actually loaded:
-
-```powershell
-docker compose up -d --force-recreate prometheus grafana
-python ops/smoke.py   # asserts rules loaded + dashboards provisioned
-```
+Operational notes for the observability stack (config mounts, smoke checks) live
+in [`ops/README.md`](ops/README.md).
 
 ## Testing
 

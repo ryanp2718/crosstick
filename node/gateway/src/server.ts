@@ -23,6 +23,7 @@ import {
   nbboProduced,
   registry,
   venueUp,
+  warmstartPlanned,
   wsClients,
 } from "./metrics.js";
 import { crossBps, isFreshCross, NBBOAggregator } from "./nbbo.js";
@@ -416,6 +417,7 @@ async function main(): Promise<void> {
   // (D2a), but its offsets sit at/after the backlog targets and would open the
   // gate spuriously — so observe() must run only against the post-seek backlog.
   gate = new DrainGate(seeks);
+  warmstartPlanned.set(1);
   console.log(
     `[gateway] warm-start: planned ${seeks.length} seeks across ${warmTopics.length} topics ` +
       `(lookback ${WARMSTART_LOOKBACK_MS}ms)` +

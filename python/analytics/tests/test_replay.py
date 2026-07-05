@@ -1,13 +1,14 @@
 """Tests for corpus replay (fake producer, no Docker)."""
 from __future__ import annotations
 
+import asyncio
 from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
 
 from analytics.corpus import CorpusRecord, read_corpus, write_corpus
-from analytics.replay import replay_corpus
+from analytics.replay import pace_delay_sec, parse_args, replay_corpus
 
 
 def _records() -> list[CorpusRecord]:
@@ -87,3 +88,36 @@ async def test_capture_corpus_replay_preserves_bytes(tmp_path: Path) -> None:
 
     assert [s.value for s in producer.sent] == [r.value for r in records]
     assert [s.topic for s in producer.sent] == [r.topic for r in records]
+
+
+def test_pace_delay_scales_and_clamps() -> None:
+    assert pace_delay_sec(1000, 2000, 0.0, 1.0) == 1.0
+    assert pace_delay_sec(1000, 2000, 0.0, 2.0) == 0.5
+    assert pace_delay_sec(1000, 2000, 0.75, 1.0) == 0.25  # drift-corrected
+    assert pace_delay_sec(1000, 2000, 5.0, 1.0) == 0.0  # behind schedule
+    assert pace_delay_sec(1000, 900, 0.0, 1.0) == 0.0  # timestamp jitter
+
+
+@pytest.mark.asyncio
+async def test_paced_replay_sleeps_between_records(monkeypatch: pytest.MonkeyPatch) -> None:
+    delays: list[float] = []
+
+    async def fake_sleep(sec: float) -> None:
+        delays.append(sec)
+
+    monkeypatch.setattr(asyncio, "sleep", fake_sleep)
+    records = _records()  # 1ms apart; speed=0.001 schedules a ~1s gap
+    producer = FakeProducer()
+    n = await replay_corpus(producer, records, speed=0.001)
+
+    assert n == len(records)
+    assert len(delays) == 1
+    assert 0 < delays[0] <= 1.0
+    assert [s.topic for s in producer.sent] == [r.topic for r in records]
+
+
+def test_parse_args_speed() -> None:
+    assert parse_args(["c.jsonl.gz"]).speed is None
+    assert parse_args(["--speed", "2", "c.jsonl.gz"]).speed == 2.0
+    with pytest.raises(SystemExit):
+        parse_args(["--speed", "0", "c.jsonl.gz"])

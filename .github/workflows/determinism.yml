@@ -1,0 +1,49 @@
+name: determinism
+
+# Byte-identical replay determinism: the same corpus replayed twice through
+# the real Node gateway against fresh broker state must produce byte-identical
+# md.bbo.* / md.nbbo.* streams (no wall-clock leakage into the derived path).
+# This lives in its own workflow so the README badge tracks exactly that claim;
+# GitHub badges are per-workflow. PRs already run the same test inside ci.yml's
+# integration job, so this only needs to run where the badge reads from: main.
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: determinism-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  replay:
+    name: byte-identical replay
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          package_json_file: node/gateway/package.json
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: node/gateway/pnpm-lock.yaml
+      - run: pnpm install --frozen-lockfile
+        working-directory: node/gateway
+      - uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+          cache-dependency-glob: python/uv.lock
+          python-version: "3.12"
+      - run: uv sync --frozen
+        working-directory: python
+      # CLI -m overrides the default `-m 'not integration'` in addopts; -k
+      # selects the byte-identity test from the integration suite.
+      - run: uv run pytest -q -m integration -k byte_identical
+        working-directory: python

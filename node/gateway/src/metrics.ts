@@ -122,6 +122,15 @@ export const bookResnapshotHeal = new Counter({
   registers: [registry],
 });
 
+// Flips to 1 only after the warm-start seeks have been issued (server.ts).
+// Replay tooling (demo/) gates producing on this: a record produced before the
+// plan lands carries an old timestamp and would be seeked past.
+export const warmstartPlanned = new Gauge({
+  name: "gateway_warmstart_planned",
+  help: "1 once the warm-start seek plan has been applied (0 during startup)",
+  registers: [registry],
+});
+
 export const venueUp = new Gauge({
   name: "gateway_venue_up",
   help: "Venue health from md.status.* / liveness timeout (1 up, 0 down)",

@@ -1,0 +1,108 @@
+# Offline demo: replay a captured market-data corpus through the real gateway.
+#
+#   docker compose -f demo/docker-compose.yml up --build
+#   open http://localhost:8080        (override with DEMO_GATEWAY_PORT)
+#   docker compose -f demo/docker-compose.yml down
+#
+# No exchange connectivity, no API keys: demo-replay paces demo/corpus.jsonl.gz
+# (a ~5-minute capture of the live md.* topics, shipped as a test fixture) back
+# into an ephemeral Redpanda at the corpus's original inter-arrival times, and
+# the same gateway image that serves production derives BBO/NBBO live. When the
+# corpus runs out the dashboard reports the feed stall; `down` discards all
+# broker state (nothing here mounts a named volume), so every `up` is fresh.
+#
+# `name:` isolates this stack (containers, network, broker data) from the main
+# docker-compose.yml project, so the demo can never write into a real deployment's
+# topics. Startup ordering matters and is encoded in depends_on:
+#   redpanda healthy -> demo-init (cluster config) -> demo-topics -> gateway
+#   -> demo-replay. Topics must exist before the gateway starts because its
+# kafkajs regex subscription only sees topics that exist at subscribe time, and
+# demo-replay itself waits on the gateway's warm-start metric before producing
+# (see python/analytics/demo.py).
+
+name: crosstick-demo
+
+services:
+  redpanda:
+    image: redpandadata/redpanda:v26.1.9
+    command:
+      - redpanda
+      - start
+      - --kafka-addr=internal://0.0.0.0:9092
+      - --advertise-kafka-addr=internal://redpanda:9092
+      - --rpc-addr=redpanda:33145
+      - --advertise-rpc-addr=redpanda:33145
+      - --mode=dev-container
+      - --smp=1
+      - --memory=1024M
+      - --default-log-level=warn
+    healthcheck:
+      test: ["CMD-SHELL", "rpk cluster health | grep -q 'Healthy:.*true'"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+      start_period: 30s
+
+  # Cluster config the clients depend on (mirrors redpanda-init in the root
+  # compose): batch ceiling for the ~1 MiB book snapshots, the pre-v26 fetch
+  # strategy kafkajs is stable on, and single-partition auto-created topics so
+  # the gateway's derived md.bbo.*/md.nbbo.* outputs stay totally ordered.
+  demo-init:
+    image: redpandadata/redpanda:v26.1.9
+    depends_on:
+      redpanda:
+        condition: service_healthy
+    entrypoint: ["/bin/sh", "-ce"]
+    command:
+      - |
+        rpk -X admin.hosts=redpanda:9644 cluster config set kafka_batch_max_bytes 8388608
+        rpk -X admin.hosts=redpanda:9644 cluster config set fetch_read_strategy polling
+        rpk -X admin.hosts=redpanda:9644 cluster config set default_topic_partitions 1
+    restart: "no"
+
+  demo-topics:
+    build:
+      context: ../python
+      dockerfile: Dockerfile
+    command: ["python", "-m", "analytics.demo", "create-topics", "/demo/corpus.jsonl.gz"]
+    environment:
+      KAFKA_BROKERS: redpanda:9092
+    volumes:
+      - ./corpus.jsonl.gz:/demo/corpus.jsonl.gz:ro
+    depends_on:
+      demo-init:
+        condition: service_completed_successfully
+    restart: "no"
+
+  gateway:
+    build:
+      context: ..
+      dockerfile: node/gateway/Dockerfile
+    environment:
+      KAFKA_BROKERS: redpanda:9092
+      WS_PORT: "8080"
+    ports:
+      - "${DEMO_GATEWAY_PORT:-8080}:8080"
+    depends_on:
+      demo-topics:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD", "node", "-e", "require('http').get('http://localhost:8080/metrics',r=>process.exit(r.statusCode===200?0:1)).on('error',()=>process.exit(1))"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+      start_period: 10s
+
+  demo-replay:
+    build:
+      context: ../python
+      dockerfile: Dockerfile
+    command: ["python", "-m", "analytics.demo", "replay", "--speed", "1", "/demo/corpus.jsonl.gz"]
+    environment:
+      KAFKA_BROKERS: redpanda:9092
+    volumes:
+      - ./corpus.jsonl.gz:/demo/corpus.jsonl.gz:ro
+    depends_on:
+      gateway:
+        condition: service_healthy
+    restart: "no"
