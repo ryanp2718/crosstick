@@ -11,9 +11,17 @@ const state = new Map(); // key -> { bbo, rowEl, prevBid, prevAsk }
 const nbboState = new Map(); // canonical_id -> { nbbo, rowEl }
 let msgCount = 0;
 
-// Grey an NBBO leg whose winning quote is older than this — a consumer-side
-// staleness call (the gateway never drops a stale leg; see DESIGN_nbbo.md).
+// Grey an NBBO leg whose winning quote trails the stream clock by more than
+// this: a consumer-side staleness call (the gateway never drops a stale leg).
 const STALE_MS = 3000;
+// Flag the whole feed when no message arrives for this long. Wall clock on
+// purpose: a stalled feed freezes the stream clock, so stream ages can't see it.
+const STALL_MS = 3000;
+
+// Stream clock: max event time seen. Ages compare data to data, never
+// Date.now(), so a replayed corpus renders exactly like a live feed.
+let streamNowNs = 0;
+let lastMsgWallMs = 0;
 
 function key(b) { return `${b.exchange}|${b.symbol}`; }
 
@@ -23,10 +31,9 @@ function fmt(s, places = 2) {
   return n.toLocaleString(undefined, { minimumFractionDigits: places, maximumFractionDigits: places });
 }
 
-function ageMs(local_ts_ns) {
-  // local_ts_ns is JSON-parsed to a Number (rounded to ~200ns granularity past
-  // 2^53). Plenty precise for ms-scale UI.
-  return Math.max(0, Date.now() - local_ts_ns / 1e6);
+function ageMs(ts_ns) {
+  // ts fields are JSON-parsed Numbers (~200ns granularity past 2^53): fine for ms UI.
+  return Math.max(0, (streamNowNs - ts_ns) / 1e6);
 }
 
 function ensureRow(k, bbo) {
@@ -58,6 +65,7 @@ function ensureRow(k, bbo) {
 
 function applyBbo(bbo) {
   msgCount++;
+  if (bbo.local_ts_ns > streamNowNs) streamNowNs = bbo.local_ts_ns;
   const k = key(bbo);
   const st = ensureRow(k, bbo);
   const bid = Number(bbo.bid_px);
@@ -110,6 +118,7 @@ function ensureNbboRow(canonical_id) {
 
 function applyNbbo(nbbo) {
   msgCount++;
+  streamNowNs = Math.max(streamNowNs, nbbo.best_bid.leg_ts_ns, nbbo.best_ask.leg_ts_ns);
   const st = ensureNbboRow(nbbo.canonical_id);
   st.rowEl.children[1].textContent = fmt(nbbo.best_bid.px);
   st.rowEl.children[2].textContent = fmt(nbbo.best_bid.sz, 4);
@@ -145,7 +154,10 @@ setInterval(() => {
     setStale([c[1], c[2], c[3]], ageMs(st.nbbo.best_bid.leg_ts_ns) > STALE_MS);
     setStale([c[4], c[5], c[6]], ageMs(st.nbbo.best_ask.leg_ts_ns) > STALE_MS);
   }
-  meta.textContent = `${state.size} bbo · ${nbboState.size} nbbo · ${msgCount} msgs`;
+  const stallMs = lastMsgWallMs ? Date.now() - lastMsgWallMs : 0;
+  meta.textContent = `${state.size} bbo · ${nbboState.size} nbbo · ${msgCount} msgs`
+    + (stallMs > STALL_MS ? ` · feed stalled ${(stallMs / 1000).toFixed(0)}s` : "");
+  meta.classList.toggle("stalled", stallMs > STALL_MS);
 }, 100);
 
 function connect() {
@@ -161,6 +173,7 @@ function connect() {
     let msg;
     try { msg = JSON.parse(ev.data); } catch { return; }
     if (!msg) return;
+    lastMsgWallMs = Date.now();
     if (msg.t === "bbo") applyBbo(msg);
     else if (msg.t === "nbbo") applyNbbo(msg);
   };
