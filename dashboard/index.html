@@ -1,88 +1,408 @@
-<!DOCTYPE html>
+<!doctype html>
 <html lang="en">
-<head>
-  <meta charset="utf-8" />
-  <title>crosstick gateway</title>
-  <link rel="icon" href="data:," />
-  <style>
-    :root { color-scheme: dark; }
-    body {
-      margin: 0; padding: 1.5rem 2rem;
-      font: 13px/1.4 ui-monospace, "SF Mono", Menlo, Consolas, monospace;
-      background: #0e0f12; color: #e6e6e6;
-    }
-    header { display: flex; gap: 1rem; align-items: baseline; margin-bottom: 1rem; }
-    h1 { font-size: 1rem; font-weight: 600; margin: 0; }
-    #status { font-size: 0.85rem; padding: 2px 8px; border-radius: 3px; }
-    #status.up { background: #1b3b1b; color: #6fdc6f; }
-    #status.down { background: #3b1b1b; color: #ff7676; }
-    table { border-collapse: collapse; table-layout: fixed; }
-    th, td { padding: 6px 12px; text-align: right; }
-    th { font-weight: 500; color: #8a8a8a; border-bottom: 1px solid #2a2a2a; text-align: right; }
-    th:first-child, td:first-child, th:nth-child(2), td:nth-child(2) { text-align: left; }
-    tr.flash-up td.bid { background: #143b14; transition: background 0s; }
-    tr.flash-down td.ask { background: #3b1414; transition: background 0s; }
-    td.bid, td.ask { transition: background 1s; }
-    td.num { font-variant-numeric: tabular-nums; }
-    td.spread-neg { color: #ff7676; }
-    td.spread-pos { color: #6fdc6f; }
-    td.stale { opacity: 0.45; color: #6a6a6a; }
-    section { margin-bottom: 1.5rem; }
-    h2 { font-size: 0.85rem; font-weight: 500; color: #8a8a8a; margin: 0 0 0.5rem 0; text-transform: uppercase; letter-spacing: 0.05em; }
-    .muted { color: #6a6a6a; }
-    #meta.stalled { color: #ff7676; }
-  </style>
-</head>
-<body>
-  <header>
-    <h1>crosstick gateway</h1>
-    <span id="status" class="down">disconnected</span>
-    <span class="muted" id="meta"></span>
-  </header>
-  <section>
-    <h2>NBBO (cross-exchange)</h2>
-    <table>
-      <colgroup>
-        <col style="width: 8em" />
-        <col style="width: 8em" /><col style="width: 6em" /><col style="width: 7em" />
-        <col style="width: 8em" /><col style="width: 6em" /><col style="width: 7em" />
-        <col style="width: 6em" /><col style="width: 8em" />
-        <col style="width: 12em" />
-      </colgroup>
-      <thead>
-        <tr>
-          <th>canonical</th>
-          <th>bid</th><th>bid sz</th><th>bid venue</th>
-          <th>ask</th><th>ask sz</th><th>ask venue</th>
-          <th>spread</th><th>mid</th>
-          <th>constituents</th>
-        </tr>
-      </thead>
-      <tbody id="nbbo-rows"></tbody>
-    </table>
-  </section>
-  <section>
-    <h2>BBO (per exchange)</h2>
-    <table>
-      <colgroup>
-        <col style="width: 7em" /><col style="width: 7em" />
-        <col style="width: 8em" /><col style="width: 6em" />
-        <col style="width: 8em" /><col style="width: 6em" />
-        <col style="width: 6em" /><col style="width: 8em" />
-        <col style="width: 5em" />
-      </colgroup>
-      <thead>
-        <tr>
-          <th>exchange</th><th>symbol</th>
-          <th>bid</th><th>bid sz</th>
-          <th>ask</th><th>ask sz</th>
-          <th>spread</th><th>mid</th>
-          <th>age</th>
-        </tr>
-      </thead>
-      <tbody id="rows"></tbody>
-    </table>
-  </section>
-  <script type="module" src="/dashboard/app.js"></script>
-</body>
+    <head>
+        <meta charset="utf-8" />
+        <title>crosstick gateway</title>
+        <link rel="icon" href="data:," />
+        <style>
+            :root {
+                color-scheme: dark;
+            }
+            body {
+                margin: 0;
+                padding: 22px 34px 26px;
+                font:
+                    12.5px/1.45 Consolas,
+                    "Cascadia Mono",
+                    ui-monospace,
+                    monospace;
+                background: #16150f;
+                color: #d8d2c2;
+            }
+            .masthead {
+                display: flex;
+                align-items: baseline;
+                justify-content: space-between;
+            }
+            .masthead h1 {
+                margin: 0;
+                font:
+                    400 26px Georgia,
+                    serif;
+                color: #efe9d9;
+                letter-spacing: -0.01em;
+            }
+            .masthead h1 i {
+                font-style: italic;
+                color: #9a927c;
+            }
+            .dateline {
+                display: inline-flex;
+                align-items: baseline;
+                gap: 12px;
+                font:
+                    11px "Segoe UI",
+                    sans-serif;
+                color: #8a8370;
+                letter-spacing: 0.14em;
+                text-transform: uppercase;
+            }
+            .dateline .dot {
+                width: 7px;
+                height: 7px;
+                border-radius: 50%;
+                background: #d0604c;
+                align-self: center;
+            }
+            .dateline.up .dot {
+                background: #7fae7a;
+            }
+            #stall {
+                color: #d0604c;
+                font-weight: 600;
+            }
+            .rule {
+                border-top: 2px solid #d8d2c2;
+                margin: 10px 0 0;
+            }
+            .rule2 {
+                border-top: 1px solid #55503f;
+                margin: 3px 0 4px;
+            }
+            .band {
+                display: flex;
+                align-items: baseline;
+            }
+            .stats {
+                display: flex;
+                gap: 22px;
+                font-size: 11.5px;
+                color: #8a8370;
+                padding: 4px 0 14px;
+                letter-spacing: 0.03em;
+            }
+            .stats b {
+                color: #d8d2c2;
+                font-weight: 400;
+            }
+            .views {
+                margin-left: auto;
+                display: flex;
+                gap: 6px;
+            }
+            .views button {
+                font:
+                    600 10.5px "Segoe UI",
+                    sans-serif;
+                letter-spacing: 0.14em;
+                text-transform: uppercase;
+                background: none;
+                border: 1px solid #55503f;
+                color: #8a8370;
+                padding: 2px 10px;
+                cursor: pointer;
+            }
+            .views button.on {
+                color: #16150f;
+                background: #d8d2c2;
+                border-color: #d8d2c2;
+            }
+            h3 {
+                font:
+                    600 10.5px "Segoe UI",
+                    sans-serif;
+                letter-spacing: 0.18em;
+                text-transform: uppercase;
+                color: #8a8370;
+                margin: 18px 0 6px;
+            }
+            table {
+                border-collapse: collapse;
+                width: 100%;
+                table-layout: fixed;
+            }
+            th {
+                font:
+                    600 10px "Segoe UI",
+                    sans-serif;
+                letter-spacing: 0.1em;
+                text-transform: uppercase;
+                color: #6e685a;
+                text-align: right;
+                padding: 0 10px 5px;
+                border-bottom: 1px solid #d8d2c2;
+            }
+            td {
+                padding: 4px 10px;
+                text-align: right;
+                border-bottom: 1px solid #2e2c22;
+                font-variant-numeric: tabular-nums;
+                white-space: nowrap;
+                overflow: hidden;
+                text-overflow: ellipsis;
+            }
+            th.l,
+            td.l {
+                text-align: left;
+            }
+            td.name {
+                font:
+                    italic 13px Georgia,
+                    serif;
+                color: #efe9d9;
+            }
+            .venue {
+                color: #9a927c;
+            }
+            td.sp {
+                color: #7fae7a;
+            }
+            td.sp.x {
+                color: #d0604c;
+                font-weight: 700;
+            }
+            .stale {
+                color: #57523f !important;
+            }
+            tr.flash-up td.bid {
+                background: rgba(127, 174, 122, 0.22);
+                transition: background 0s;
+            }
+            tr.flash-down td.ask {
+                background: rgba(208, 96, 76, 0.2);
+                transition: background 0s;
+            }
+            td.bid,
+            td.ask {
+                transition: background 1s;
+            }
+            /* view switch: ledger tables vs the matrix pivot */
+            body.matrix #sec-nbbo,
+            body.matrix #sec-bbo {
+                display: none;
+            }
+            body:not(.matrix) #sec-matrix {
+                display: none;
+            }
+            .mx th {
+                text-align: center;
+            }
+            .mx td {
+                border: 1px solid #2e2c22;
+                text-align: center;
+                vertical-align: middle;
+            }
+            .mx td.l {
+                border-left: none;
+                text-align: left;
+            }
+            .mx .nb {
+                background: rgba(216, 210, 194, 0.045);
+            }
+            .mx .b {
+                color: #8fbc86;
+            }
+            .mx .a {
+                color: #cf9285;
+            }
+            .mx .age {
+                color: #6e685a;
+                font-size: 10.5px;
+            }
+            .mx td.stalecell .b,
+            .mx td.stalecell .a {
+                color: #57523f;
+            }
+            .mx td.stalecell .age {
+                color: #c99b3f;
+            }
+            .mx .dotcell {
+                color: #3a382c;
+            }
+            .legend {
+                margin-top: 8px;
+                font-size: 11px;
+                color: #6e685a;
+            }
+            .foot {
+                display: grid;
+                grid-template-columns: 1fr 1.3fr 1fr;
+                gap: 26px;
+                margin-top: 20px;
+                padding-top: 10px;
+                border-top: 1px solid #55503f;
+            }
+            .foot h4 {
+                font:
+                    600 10px "Segoe UI",
+                    sans-serif;
+                letter-spacing: 0.18em;
+                text-transform: uppercase;
+                color: #6e685a;
+                margin: 0 0 6px;
+            }
+            .foot td {
+                border-bottom: none;
+                padding: 2px 0 2px 12px;
+                font-size: 12px;
+            }
+            .foot td:first-child {
+                padding-left: 0;
+            }
+            .foot p {
+                margin: 0;
+                font:
+                    italic 12px Georgia,
+                    serif;
+                color: #8a8370;
+                line-height: 1.55;
+            }
+            .led {
+                color: #7fae7a;
+            }
+            .led.warn {
+                color: #c99b3f;
+            }
+            .buy {
+                color: #8fbc86;
+            }
+            .sell {
+                color: #cf9285;
+            }
+        </style>
+    </head>
+    <body>
+        <header class="masthead">
+            <h1>Crosstick <i>gateway</i></h1>
+            <span class="dateline" id="dateline">
+                <span class="dot"></span><span id="conn">Disconnected</span
+                ><span id="clock"></span><span id="stall"></span>
+            </span>
+        </header>
+        <div class="rule"></div>
+        <div class="rule2"></div>
+        <div class="band">
+            <div class="stats">
+                <span>messages <b id="stat-msgs">0</b></span>
+                <span>rate <b id="stat-rate">0/s</b></span>
+                <span
+                    >streams
+                    <b id="stat-streams">0 bbo &middot; 0 nbbo</b></span
+                >
+            </div>
+            <nav class="views">
+                <button id="view-ledger" class="on" type="button">
+                    Ledger
+                </button>
+                <button id="view-matrix" type="button">Matrix</button>
+            </nav>
+        </div>
+        <section id="sec-nbbo">
+            <h3>NBBO &middot; cross-exchange</h3>
+            <table>
+                <colgroup>
+                    <col style="width: 12%" />
+                    <col style="width: 9%" />
+                    <col style="width: 7%" />
+                    <col style="width: 11%" />
+                    <col style="width: 9%" />
+                    <col style="width: 7%" />
+                    <col style="width: 13%" />
+                    <col style="width: 7%" />
+                    <col style="width: 9%" />
+                    <col style="width: 16%" />
+                </colgroup>
+                <thead>
+                    <tr>
+                        <th class="l">Instrument</th>
+                        <th>Bid</th>
+                        <th>Size</th>
+                        <th class="l">Venue</th>
+                        <th>Ask</th>
+                        <th>Size</th>
+                        <th class="l">Venue</th>
+                        <th>Spread</th>
+                        <th>Mid</th>
+                        <th class="l">Constituents</th>
+                    </tr>
+                </thead>
+                <tbody id="nbbo-rows"></tbody>
+            </table>
+        </section>
+        <section id="sec-bbo">
+            <h3>Best bid &amp; offer by exchange</h3>
+            <table>
+                <colgroup>
+                    <col style="width: 14%" />
+                    <col style="width: 12%" />
+                    <col style="width: 12%" />
+                    <col style="width: 9%" />
+                    <col style="width: 12%" />
+                    <col style="width: 9%" />
+                    <col style="width: 8%" />
+                    <col style="width: 12%" />
+                    <col style="width: 12%" />
+                </colgroup>
+                <thead>
+                    <tr>
+                        <th class="l">Exchange</th>
+                        <th class="l">Symbol</th>
+                        <th>Bid</th>
+                        <th>Size</th>
+                        <th>Ask</th>
+                        <th>Size</th>
+                        <th>Spread</th>
+                        <th>Mid</th>
+                        <th>Age</th>
+                    </tr>
+                </thead>
+                <tbody id="rows"></tbody>
+            </table>
+        </section>
+        <section id="sec-matrix">
+            <h3>Matrix &middot; instrument by venue</h3>
+            <table id="matrix" class="mx"></table>
+            <div class="legend">
+                bid over ask in each venue cell &middot; a dot means the venue
+                does not quote that instrument (USD never merges with USDT)
+            </div>
+        </section>
+        <footer class="foot">
+            <div>
+                <h4>Venues</h4>
+                <table>
+                    <colgroup>
+                        <col style="width: 46%" />
+                        <col style="width: 27%" />
+                        <col style="width: 27%" />
+                    </colgroup>
+                    <tbody id="venue-rows"></tbody>
+                </table>
+            </div>
+            <div>
+                <h4>Tape</h4>
+                <table>
+                    <colgroup>
+                        <col style="width: 17%" />
+                        <col style="width: 27%" />
+                        <col style="width: 20%" />
+                        <col style="width: 21%" />
+                        <col style="width: 15%" />
+                    </colgroup>
+                    <tbody id="tape-rows"></tbody>
+                </table>
+            </div>
+            <div>
+                <h4>Notes</h4>
+                <p>
+                    Ages are stream time, data against data; a stalled feed is
+                    flagged in the dateline. Quotes trailing the stream clock by
+                    more than three seconds grey out; a red spread is a crossed
+                    book. The venue and tape panels are derived from the same WS
+                    feed.
+                </p>
+            </div>
+        </footer>
+        <script type="module" src="/dashboard/app.js"></script>
+    </body>
 </html>
