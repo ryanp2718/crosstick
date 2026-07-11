@@ -7,6 +7,7 @@ import { Kafka, logLevel } from "kafkajs";
 import { WebSocketServer } from "ws";
 
 import { Aggregator } from "./aggregator.js";
+import { EmitBatcher } from "./batcher.js";
 import { Broadcaster } from "./broadcaster.js";
 import { loadCanonicalMap } from "./canonical.js";
 import { bboTopic, decodeMsg, nbboTopic, statusTopic } from "./messages.js";
@@ -254,12 +255,23 @@ async function main(): Promise<void> {
   await consumer.subscribe({ topics: TOPIC_PATTERNS, fromBeginning: false });
   console.log(`[gateway] consuming md.book.* / md.trades.* from ${BROKERS.join(",")}`);
 
-  // In-flight send promises (post fix #1: fire-and-forget). Tracked so
-  // shutdown can drain them before producer.disconnect() — kafkajs's disconnect
-  // aborts pending sends rather than flushing (verified in
+  // Emit coalescing (G7, batcher.ts): derived messages accumulate per topic
+  // and flush as one sendBatch per event-loop tick. The settle callback maps
+  // batch outcomes back onto the per-message result counters; shutdown drains
+  // the batcher before producer.disconnect(), which aborts pending sends
+  // rather than flushing (verified in
   // node_modules/kafkajs/src/producer/index.js:230).
-  const inFlight = new Set<Promise<unknown>>();
   const SHUTDOWN_DRAIN_MS = 5000;
+  const batcher = new EmitBatcher(producer, (topic, messages, ok, err) => {
+    const result = ok ? "ok" : "error";
+    if (topic.startsWith("md.nbbo.")) {
+      for (const m of messages) nbboProduced.inc({ canonical_id: m.key, result });
+    } else {
+      bboProduced.inc({ result }, messages.length);
+    }
+    bboInflight.dec(messages.length);
+    if (!ok) console.error(`[gateway] kafka produce failed (${messages.length} msgs to ${topic}):`, err);
+  });
 
   // Last consumed offset per (topic, partition); used by the lag poll.
   const lastOffsets = new Map<string, Map<number, bigint>>();
@@ -277,21 +289,7 @@ async function main(): Promise<void> {
     }
     const data = JSON.stringify(nbbo); // once, shared by the Kafka value and WS send
     bboInflight.inc();
-    const p: Promise<unknown> = producer
-      .send({
-        topic: nbboTopic(nbbo.canonical_id),
-        messages: [{ key: nbbo.canonical_id, value: data }],
-      })
-      .then(() => nbboProduced.inc({ canonical_id: nbbo.canonical_id, result: "ok" }))
-      .catch((err) => {
-        nbboProduced.inc({ canonical_id: nbbo.canonical_id, result: "error" });
-        console.error("[gateway] kafka nbbo produce failed:", err);
-      })
-      .finally(() => {
-        inFlight.delete(p);
-        bboInflight.dec();
-      });
-    inFlight.add(p);
+    batcher.enqueue(nbboTopic(nbbo.canonical_id), nbbo.canonical_id, data);
     broadcaster.broadcast(data);
   };
 
@@ -362,25 +360,11 @@ async function main(): Promise<void> {
           const bbo = result.publish;
           const data = JSON.stringify(bbo); // once, shared by the Kafka value and WS send
           bboInflight.inc();
-          // Fire-and-forget: awaiting producer.send here would cap publish rate
-          // at 1/broker-RTT per partition (same antipattern the python ingester
-          // removed in a6d1fae). The gateway is stateless — a dropped md.bbo
-          // publish is recovered by the next L1 move; no resync needed.
-          const p: Promise<unknown> = producer
-            .send({
-              topic: bboTopic(bbo.exchange, bbo.symbol),
-              messages: [{ key: `${bbo.exchange}:${bbo.symbol}`, value: data }],
-            })
-            .then(() => bboProduced.inc({ result: "ok" }))
-            .catch((err) => {
-              bboProduced.inc({ result: "error" });
-              console.error("[gateway] kafka produce failed:", err);
-            })
-            .finally(() => {
-              inFlight.delete(p);
-              bboInflight.dec();
-            });
-          inFlight.add(p);
+          // Fire-and-forget via the batcher: awaiting the send would cap publish
+          // rate at 1/broker-RTT per partition (same antipattern the python
+          // ingester removed in a6d1fae). The gateway is stateless; a dropped
+          // md.bbo publish is recovered by the next L1 move, no resync needed.
+          batcher.enqueue(bboTopic(bbo.exchange, bbo.symbol), `${bbo.exchange}:${bbo.symbol}`, data);
           broadcaster.broadcast(data);
         } else if (result.broadcast && broadcaster.size > 0) {
           // Trade relay: forward the raw wire bytes (valid JSON, decoded above).
@@ -455,12 +439,11 @@ async function main(): Promise<void> {
       // any in-flight sends before disconnecting the producer — disconnect
       // aborts pending sends rather than flushing them.
       await consumer.disconnect();
-      if (inFlight.size > 0) {
-        console.log(`[gateway] draining ${inFlight.size} in-flight sends`);
-        await Promise.race([
-          Promise.allSettled([...inFlight]),
-          new Promise((r) => setTimeout(r, SHUTDOWN_DRAIN_MS)),
-        ]);
+      if (batcher.pending > 0 || batcher.inFlightCount > 0) {
+        console.log(
+          `[gateway] draining ${batcher.pending} queued + ${batcher.inFlightCount} in-flight sends`,
+        );
+        await Promise.race([batcher.drain(), new Promise((r) => setTimeout(r, SHUTDOWN_DRAIN_MS))]);
       }
       await producer.disconnect();
       await admin.disconnect();
