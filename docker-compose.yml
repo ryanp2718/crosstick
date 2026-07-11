@@ -60,6 +60,9 @@ services:
   # - default_topic_partitions: already Redpanda's default, pinned because
   #   single-partition topics are what makes per-topic total order — and
   #   byte-identical NBBO replay — hold for auto-created topics.
+  # - balancing modes: fresh clusters auto-enable these enterprise features under
+  #   the 30-day trial license, leaving a license violation (blocks upgrades)
+  #   when it lapses; both are no-ops on one node with one core anyway.
   redpanda-init:
     image: redpandadata/redpanda:v26.1.9
     container_name: redpanda-init
@@ -73,6 +76,8 @@ services:
         rpk -X admin.hosts=redpanda:9644 cluster config set log_retention_ms 2592000000
         rpk -X admin.hosts=redpanda:9644 cluster config set fetch_read_strategy polling
         rpk -X admin.hosts=redpanda:9644 cluster config set default_topic_partitions 1
+        rpk -X admin.hosts=redpanda:9644 cluster config set partition_autobalancing_mode node_add
+        rpk -X admin.hosts=redpanda:9644 cluster config set core_balancing_continuous false
     restart: "no"
 
   redpanda-console:
