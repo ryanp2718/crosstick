@@ -22,7 +22,13 @@ export const bboProduced = new Counter({
 
 export const bboInflight = new Gauge({
   name: "gateway_bbo_inflight_sends",
-  help: "In-flight md.bbo producer sends awaiting ack",
+  help: "Derived messages enqueued or awaiting producer ack",
+  registers: [registry],
+});
+
+export const produceFlushes = new Counter({
+  name: "gateway_produce_flushes_total",
+  help: "Producer sendBatch flushes; produced totals / flushes = realized batch factor",
   registers: [registry],
 });
 
