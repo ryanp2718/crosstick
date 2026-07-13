@@ -1,6 +1,10 @@
-// WS client for the gateway feed. One shared state renders two views: the
-// ledger tables (NBBO + per-exchange BBO) and a matrix pivot (instrument rows
-// by venue columns). Spread/mid are display-only - Number() is fine for
+// WS client for the gateway feed. Message handlers only update shared state
+// and mark it dirty; a requestAnimationFrame flush writes the ledger DOM once
+// per frame, so a catch-up burst (thousands of msgs/s) costs one batch of
+// cell writes per frame instead of per-message layout work. The matrix pivot
+// (instrument rows by venue columns) updates cells in place on the display
+// tick and rebuilds only when its row/column structure changes, so its text
+// stays selectable. Spread/mid are display-only - Number() is fine for
 // crypto-scale prices (<< 2^53).
 
 const dateline = document.getElementById("dateline");
@@ -16,7 +20,7 @@ const matrixTable = document.getElementById("matrix");
 const venueRows = document.getElementById("venue-rows");
 const tapeRows = document.getElementById("tape-rows");
 
-const state = new Map(); // "exchange|symbol" -> { bbo, rowEl, prevBid, prevAsk }
+const state = new Map(); // "exchange|symbol" -> { bbo, rowEl, prevBid, prevAsk } (prev* = last rendered)
 const pairIndex = new Map(); // "exchange|BASEQUOTE" -> state entry, for matrix cell lookup
 const nbboState = new Map(); // canonical_id -> { nbbo, rowEl, pair, venues: Set }
 const venueState = new Map(); // exchange -> { lastNs, msgs, rowEl, ledEl, ageEl, msgsEl }
@@ -36,6 +40,12 @@ const RATE_WINDOW_MS = 5000;
 let streamNowNs = 0;
 let lastMsgWallMs = 0;
 const rateSamples = []; // { t: wallMs, c: msgCount } over the last RATE_WINDOW_MS
+
+// Dirty state between animation frames.
+const dirtyBbo = new Set(); // state keys with unrendered updates
+const dirtyNbbo = new Set(); // canonical_ids with unrendered updates
+let pendingTrades = []; // newest last; only the last TAPE_MAX can survive a flush
+let flushScheduled = false;
 
 function key(b) { return `${b.exchange}|${b.symbol}`; }
 
@@ -62,6 +72,14 @@ function fmt(s, places = 2) {
 function clearEmpty(tbody) {
   const ph = tbody.querySelector(".empty");
   if (ph) ph.remove();
+}
+
+function setTxt(node, s) {
+  if (node.textContent !== s) node.textContent = s;
+}
+
+function setCls(node, cls) {
+  if (node.className !== cls) node.className = cls;
 }
 
 function ageMs(ts_ns) {
@@ -93,9 +111,38 @@ function markVenue(exchange, ts_ns) {
   v.msgs++;
 }
 
-function ensureRow(k, bbo) {
+function scheduleFlush() {
+  if (flushScheduled) return;
+  flushScheduled = true;
+  requestAnimationFrame(flushFrame);
+}
+
+function flushFrame() {
+  flushScheduled = false;
+  for (const k of dirtyBbo) flushBbo(k);
+  dirtyBbo.clear();
+  for (const id of dirtyNbbo) flushNbbo(id);
+  dirtyNbbo.clear();
+  flushTape();
+}
+
+function applyBbo(bbo) {
+  msgCount++;
+  if (bbo.local_ts_ns > streamNowNs) streamNowNs = bbo.local_ts_ns;
+  markVenue(bbo.exchange, bbo.local_ts_ns);
+  const k = key(bbo);
   let st = state.get(k);
-  if (st) return st;
+  if (!st) {
+    st = { bbo: null, rowEl: null, prevBid: null, prevAsk: null };
+    state.set(k, st);
+    pairIndex.set(`${bbo.exchange}|${pairOf(bbo.symbol)}`, st);
+  }
+  st.bbo = bbo;
+  dirtyBbo.add(k);
+  scheduleFlush();
+}
+
+function createRow(st, bbo) {
   clearEmpty(rows);
   const tr = document.createElement("tr");
   const classes = ["l venue", "l name", "bid", "", "ask", "", "sp", "", ""];
@@ -110,18 +157,13 @@ function ensureRow(k, bbo) {
     if (k2 < ek) { rows.insertBefore(tr, existing); inserted = true; break; }
   }
   if (!inserted) rows.appendChild(tr);
-  st = { bbo: null, rowEl: tr, prevBid: null, prevAsk: null };
-  state.set(k, st);
-  pairIndex.set(`${bbo.exchange}|${pairOf(bbo.symbol)}`, st);
-  return st;
+  st.rowEl = tr;
 }
 
-function applyBbo(bbo) {
-  msgCount++;
-  if (bbo.local_ts_ns > streamNowNs) streamNowNs = bbo.local_ts_ns;
-  markVenue(bbo.exchange, bbo.local_ts_ns);
-  const k = key(bbo);
-  const st = ensureRow(k, bbo);
+function flushBbo(k) {
+  const st = state.get(k);
+  const bbo = st.bbo;
+  if (!st.rowEl) createRow(st, bbo);
   const bid = Number(bbo.bid_px);
   const ask = Number(bbo.ask_px);
   const spread = ask - bid;
@@ -136,7 +178,7 @@ function applyBbo(bbo) {
   c[6].className = spread < 0 ? "sp x" : "sp"; // per-venue crossed book
   c[7].textContent = fmt(mid.toString());
 
-  // Flash cells when L1 moved.
+  // Flash cells when L1 moved since the last rendered frame.
   st.rowEl.classList.remove("flash-up", "flash-down");
   if (st.prevBid !== null && bid > st.prevBid) {
     void st.rowEl.offsetWidth;
@@ -147,12 +189,24 @@ function applyBbo(bbo) {
   }
   st.prevBid = bid;
   st.prevAsk = ask;
-  st.bbo = bbo;
 }
 
-function ensureNbboRow(canonical_id) {
-  let st = nbboState.get(canonical_id);
-  if (st) return st;
+function applyNbbo(nbbo) {
+  msgCount++;
+  streamNowNs = Math.max(streamNowNs, nbbo.best_bid.leg_ts_ns, nbbo.best_ask.leg_ts_ns);
+  let st = nbboState.get(nbbo.canonical_id);
+  if (!st) {
+    st = { nbbo: null, rowEl: null, pair: "", venues: new Set() };
+    nbboState.set(nbbo.canonical_id, st);
+  }
+  st.pair = `${nbbo.base}${nbbo.quote}`.toUpperCase();
+  for (const v of nbbo.constituents) st.venues.add(v);
+  st.nbbo = nbbo;
+  dirtyNbbo.add(nbbo.canonical_id);
+  scheduleFlush();
+}
+
+function createNbboRow(st, canonical_id) {
   clearEmpty(nbboRows);
   const tr = document.createElement("tr");
   const classes = ["l name", "", "", "l venue", "", "", "l venue", "sp", "", "l venue wrap"];
@@ -168,17 +222,13 @@ function ensureNbboRow(canonical_id) {
     }
   }
   if (!inserted) nbboRows.appendChild(tr);
-  st = { nbbo: null, rowEl: tr, pair: "", venues: new Set() };
-  nbboState.set(canonical_id, st);
-  return st;
+  st.rowEl = tr;
 }
 
-function applyNbbo(nbbo) {
-  msgCount++;
-  streamNowNs = Math.max(streamNowNs, nbbo.best_bid.leg_ts_ns, nbbo.best_ask.leg_ts_ns);
-  const st = ensureNbboRow(nbbo.canonical_id);
-  st.pair = `${nbbo.base}${nbbo.quote}`.toUpperCase();
-  for (const v of nbbo.constituents) st.venues.add(v);
+function flushNbbo(canonical_id) {
+  const st = nbboState.get(canonical_id);
+  const nbbo = st.nbbo;
+  if (!st.rowEl) createNbboRow(st, canonical_id);
   const c = st.rowEl.children;
   c[1].textContent = fmt(nbbo.best_bid.px);
   c[2].textContent = fmt(nbbo.best_bid.sz, 4);
@@ -191,24 +241,33 @@ function applyNbbo(nbbo) {
   c[7].title = nbbo.crossed ? "crossed: check leg age (possible stale venue)" : "";
   c[8].textContent = fmt(nbbo.mid.toString());
   c[9].textContent = nbbo.constituents.join(", ");
-  st.nbbo = nbbo;
 }
 
 function applyTrade(t) {
   msgCount++;
   if (t.local_ts_ns > streamNowNs) streamNowNs = t.local_ts_ns;
   markVenue(t.exchange, t.local_ts_ns);
-  const tr = el("tr");
-  const iso = new Date(t.local_ts_ns / 1e6).toISOString();
-  tr.appendChild(el("td", "l", iso.slice(11, 22)));
-  tr.appendChild(el("td", "l venue", t.exchange));
-  tr.appendChild(el("td", "l venue", t.symbol));
-  // Ingest convention: side bid = taker buy, side ask = taker sell.
-  const buy = t.side === "bid";
-  tr.appendChild(el("td", buy ? "buy" : "sell", buy ? "B" : "S"));
-  tr.appendChild(el("td", buy ? "buy" : "sell", fmt(t.price)));
-  tr.appendChild(el("td", "", fmt(t.size, 4)));
-  tapeRows.insertBefore(tr, tapeRows.firstChild);
+  pendingTrades.push(t);
+  if (pendingTrades.length > TAPE_MAX) pendingTrades.shift();
+  scheduleFlush();
+}
+
+function flushTape() {
+  if (pendingTrades.length === 0) return;
+  for (const t of pendingTrades) {
+    const tr = el("tr");
+    const iso = new Date(t.local_ts_ns / 1e6).toISOString();
+    tr.appendChild(el("td", "l", iso.slice(11, 22)));
+    tr.appendChild(el("td", "l venue", t.exchange));
+    tr.appendChild(el("td", "l venue", t.symbol));
+    // Ingest convention: side bid = taker buy, side ask = taker sell.
+    const buy = t.side === "bid";
+    tr.appendChild(el("td", buy ? "buy" : "sell", buy ? "B" : "S"));
+    tr.appendChild(el("td", buy ? "buy" : "sell", fmt(t.price)));
+    tr.appendChild(el("td", "", fmt(t.size, 4)));
+    tapeRows.insertBefore(tr, tapeRows.firstChild);
+  }
+  pendingTrades = [];
   while (tapeRows.children.length > TAPE_MAX) tapeRows.removeChild(tapeRows.lastChild);
 }
 
@@ -216,11 +275,14 @@ function applyTrade(t) {
 // venue cell for a canonical is the BBO stream whose (exchange, base+quote)
 // matches, gated on the exchange having ever appeared in the canonical's
 // constituents (disambiguates binance vs binance_futures, both "BTCUSDT").
-// Rebuilt wholesale each tick it is visible: the grid is tiny.
-function renderMatrix() {
-  const venues = [...venueState.keys()].sort();
-  const canonicals = [...nbboState.keys()].sort();
+// The table is rebuilt only when the venue or canonical set changes; ticks
+// in between update the cached cell nodes in place.
+let mxKey = "";
+const mxRows = new Map(); // canonical_id -> { bid, ask, spTd, cells: Map(venue -> cell) }
+
+function buildMatrix(venues, canonicals) {
   matrixTable.textContent = "";
+  mxRows.clear();
 
   const colgroup = el("colgroup");
   const fixed = [13, 12, 12, 7];
@@ -255,50 +317,100 @@ function renderMatrix() {
     tr.appendChild(td);
     tbody.appendChild(tr);
   }
+  // Price over venue in the NBBO leg cells, matching the venue cells' shape.
+  const mkLeg = (tr, cls) => {
+    const td = el("td", "nb");
+    const px = el("span", cls);
+    td.appendChild(px);
+    td.appendChild(el("br"));
+    const venue = el("span", "age");
+    td.appendChild(venue);
+    tr.appendChild(td);
+    return { td, px, venue };
+  };
   let prevBase = null;
   for (const id of canonicals) {
     const c = nbboState.get(id);
-    if (!c.nbbo) continue;
     // Rule off each base-asset block (BTC rows, then ETH rows, ...).
     const tr = el("tr", prevBase !== null && c.nbbo.base !== prevBase ? "grp" : "");
     prevBase = c.nbbo.base;
     tr.appendChild(el("td", "l name", id));
-
-    // Price over venue, matching the venue cells' two-line shape.
-    const bAge = ageMs(c.nbbo.best_bid.leg_ts_ns);
-    const bidTd = el("td", bAge > STALE_MS ? "nb stalecell" : "nb");
-    bidTd.appendChild(el("span", "b", fmt(c.nbbo.best_bid.px)));
-    bidTd.appendChild(el("br"));
-    bidTd.appendChild(el("span", "age", c.nbbo.best_bid.exchange));
-    tr.appendChild(bidTd);
-
-    const aAge = ageMs(c.nbbo.best_ask.leg_ts_ns);
-    const askTd = el("td", aAge > STALE_MS ? "nb stalecell" : "nb");
-    askTd.appendChild(el("span", "a", fmt(c.nbbo.best_ask.px)));
-    askTd.appendChild(el("br"));
-    askTd.appendChild(el("span", "age", c.nbbo.best_ask.exchange));
-    tr.appendChild(askTd);
-
-    tr.appendChild(el("td", c.nbbo.crossed ? "nb sp x" : "nb sp", (c.nbbo.crossed ? "× " : "") + fmt(c.nbbo.spread.toString(), 4)));
-
+    const bid = mkLeg(tr, "b");
+    const ask = mkLeg(tr, "a");
+    const spTd = el("td", "nb sp");
+    tr.appendChild(spTd);
+    const cells = new Map();
     for (const v of venues) {
-      const st = c.venues.has(v) ? pairIndex.get(`${v}|${c.pair}`) : undefined;
-      if (!st || !st.bbo) {
-        tr.appendChild(el("td", "dotcell", "·"));
-        continue;
-      }
-      const age = ageMs(st.bbo.local_ts_ns);
-      const td = el("td", age > STALE_MS ? "stalecell" : "");
-      td.appendChild(el("span", "b", fmt(st.bbo.bid_px)));
-      td.appendChild(el("br"));
-      td.appendChild(el("span", "a", fmt(st.bbo.ask_px)));
-      td.appendChild(document.createTextNode(" "));
-      td.appendChild(el("span", "age", `${age.toFixed(0)}ms`));
+      const td = el("td", "dotcell", "·");
       tr.appendChild(td);
+      cells.set(v, { td, mode: "dot", b: null, a: null, age: null });
     }
     tbody.appendChild(tr);
+    mxRows.set(id, { bid, ask, spTd, cells });
   }
   matrixTable.appendChild(tbody);
+}
+
+function updateMatrix(venues, canonicals) {
+  for (const id of canonicals) {
+    const c = nbboState.get(id);
+    const r = mxRows.get(id);
+
+    const bAge = ageMs(c.nbbo.best_bid.leg_ts_ns);
+    setCls(r.bid.td, bAge > STALE_MS ? "nb stalecell" : "nb");
+    setTxt(r.bid.px, fmt(c.nbbo.best_bid.px));
+    setTxt(r.bid.venue, c.nbbo.best_bid.exchange);
+
+    const aAge = ageMs(c.nbbo.best_ask.leg_ts_ns);
+    setCls(r.ask.td, aAge > STALE_MS ? "nb stalecell" : "nb");
+    setTxt(r.ask.px, fmt(c.nbbo.best_ask.px));
+    setTxt(r.ask.venue, c.nbbo.best_ask.exchange);
+
+    setCls(r.spTd, c.nbbo.crossed ? "nb sp x" : "nb sp");
+    setTxt(r.spTd, (c.nbbo.crossed ? "× " : "") + fmt(c.nbbo.spread.toString(), 4));
+
+    for (const v of venues) {
+      const cell = r.cells.get(v);
+      const st = c.venues.has(v) ? pairIndex.get(`${v}|${c.pair}`) : undefined;
+      if (!st || !st.bbo) {
+        if (cell.mode !== "dot") {
+          cell.td.textContent = "·";
+          cell.td.className = "dotcell";
+          cell.mode = "dot";
+          cell.b = cell.a = cell.age = null;
+        }
+        continue;
+      }
+      if (cell.mode !== "q") {
+        cell.td.textContent = "";
+        cell.b = el("span", "b");
+        cell.td.appendChild(cell.b);
+        cell.td.appendChild(el("br"));
+        cell.a = el("span", "a");
+        cell.td.appendChild(cell.a);
+        cell.td.appendChild(document.createTextNode(" "));
+        cell.age = el("span", "age");
+        cell.td.appendChild(cell.age);
+        cell.mode = "q";
+      }
+      const age = ageMs(st.bbo.local_ts_ns);
+      setCls(cell.td, age > STALE_MS ? "stalecell" : "");
+      setTxt(cell.b, fmt(st.bbo.bid_px));
+      setTxt(cell.a, fmt(st.bbo.ask_px));
+      setTxt(cell.age, `${age.toFixed(0)}ms`);
+    }
+  }
+}
+
+function renderMatrix() {
+  const venues = [...venueState.keys()].sort();
+  const canonicals = [...nbboState.keys()].sort();
+  const structKey = `${venues.join(",")}|${canonicals.join(",")}`;
+  if (structKey !== mxKey) {
+    buildMatrix(venues, canonicals);
+    mxKey = structKey;
+  }
+  updateMatrix(venues, canonicals);
 }
 
 const btnLedger = document.getElementById("view-ledger");
@@ -324,13 +436,13 @@ function setStale(cells, stale) {
 // upstream is actually slow.
 setInterval(() => {
   for (const st of state.values()) {
-    if (!st.bbo) continue;
+    if (!st.bbo || !st.rowEl) continue;
     st.rowEl.children[8].textContent = `${ageMs(st.bbo.local_ts_ns).toFixed(0)}ms`;
   }
   // Grey each NBBO leg live as its winning quote ages, even with no new NBBO;
   // the venue cell names the staleness so the grey is self-explanatory.
   for (const st of nbboState.values()) {
-    if (!st.nbbo) continue;
+    if (!st.nbbo || !st.rowEl) continue;
     const c = st.rowEl.children;
     const bAge = ageMs(st.nbbo.best_bid.leg_ts_ns);
     const bStale = bAge > STALE_MS;
@@ -347,10 +459,9 @@ setInterval(() => {
   }
   for (const v of venueState.values()) {
     if (!v.lastNs) continue;
-    const age = ageMs(v.lastNs);
-    v.ageEl.textContent = `${age.toFixed(0)}ms`;
+    v.ageEl.textContent = `${ageMs(v.lastNs).toFixed(0)}ms`;
     v.msgsEl.textContent = v.msgs.toLocaleString();
-    v.ledEl.classList.toggle("warn", age > STALE_MS);
+    v.ledEl.classList.toggle("warn", ageMs(v.lastNs) > STALE_MS);
   }
 
   const now = Date.now();
