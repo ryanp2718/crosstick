@@ -52,7 +52,16 @@ function el(tag, cls, text) {
 function fmt(s, places = 2) {
   const n = Number(s);
   if (!Number.isFinite(n)) return s;
+  // Nonzero dust that would round to 0.0000 shows significant digits instead.
+  if (n !== 0 && Math.abs(n) < 0.5 * 10 ** -places) {
+    return n.toLocaleString(undefined, { maximumSignificantDigits: 2 });
+  }
   return n.toLocaleString(undefined, { minimumFractionDigits: places, maximumFractionDigits: places });
+}
+
+function clearEmpty(tbody) {
+  const ph = tbody.querySelector(".empty");
+  if (ph) ph.remove();
 }
 
 function ageMs(ts_ns) {
@@ -87,6 +96,7 @@ function markVenue(exchange, ts_ns) {
 function ensureRow(k, bbo) {
   let st = state.get(k);
   if (st) return st;
+  clearEmpty(rows);
   const tr = document.createElement("tr");
   const classes = ["l venue", "l name", "bid", "", "ask", "", "sp", "", ""];
   for (const c of classes) tr.appendChild(el("td", c));
@@ -122,7 +132,7 @@ function applyBbo(bbo) {
   c[3].textContent = fmt(bbo.bid_sz, 4);
   c[4].textContent = fmt(bbo.ask_px);
   c[5].textContent = fmt(bbo.ask_sz, 4);
-  c[6].textContent = fmt(spread.toString(), 4);
+  c[6].textContent = (spread < 0 ? "× " : "") + fmt(spread.toString(), 4);
   c[6].className = spread < 0 ? "sp x" : "sp"; // per-venue crossed book
   c[7].textContent = fmt(mid.toString());
 
@@ -143,8 +153,9 @@ function applyBbo(bbo) {
 function ensureNbboRow(canonical_id) {
   let st = nbboState.get(canonical_id);
   if (st) return st;
+  clearEmpty(nbboRows);
   const tr = document.createElement("tr");
-  const classes = ["l name", "", "", "l venue", "", "", "l venue", "sp", "", "l venue"];
+  const classes = ["l name", "", "", "l venue", "", "", "l venue", "sp", "", "l venue wrap"];
   for (const c of classes) tr.appendChild(el("td", c));
   tr.children[0].textContent = canonical_id;
   // Insert sorted by canonical_id.
@@ -175,7 +186,7 @@ function applyNbbo(nbbo) {
   c[4].textContent = fmt(nbbo.best_ask.px);
   c[5].textContent = fmt(nbbo.best_ask.sz, 4);
   c[6].textContent = nbbo.best_ask.exchange;
-  c[7].textContent = fmt(nbbo.spread.toString(), 4);
+  c[7].textContent = (nbbo.crossed ? "× " : "") + fmt(nbbo.spread.toString(), 4);
   c[7].className = nbbo.crossed ? "sp x" : "sp";
   c[7].title = nbbo.crossed ? "crossed: check leg age (possible stale venue)" : "";
   c[8].textContent = fmt(nbbo.mid.toString());
@@ -193,7 +204,9 @@ function applyTrade(t) {
   tr.appendChild(el("td", "l venue", t.exchange));
   tr.appendChild(el("td", "l venue", t.symbol));
   // Ingest convention: side bid = taker buy, side ask = taker sell.
-  tr.appendChild(el("td", t.side === "bid" ? "buy" : "sell", fmt(t.price)));
+  const buy = t.side === "bid";
+  tr.appendChild(el("td", buy ? "buy" : "sell", buy ? "B" : "S"));
+  tr.appendChild(el("td", buy ? "buy" : "sell", fmt(t.price)));
   tr.appendChild(el("td", "", fmt(t.size, 4)));
   tapeRows.insertBefore(tr, tapeRows.firstChild);
   while (tapeRows.children.length > TAPE_MAX) tapeRows.removeChild(tapeRows.lastChild);
@@ -237,32 +250,36 @@ function renderMatrix() {
   const tbody = el("tbody");
   if (canonicals.length === 0) {
     const tr = el("tr");
-    const td = el("td", "dotcell", "waiting for data");
+    const td = el("td", "dotcell", "waiting for feed");
     td.colSpan = 4 + venues.length;
     tr.appendChild(td);
     tbody.appendChild(tr);
   }
+  let prevBase = null;
   for (const id of canonicals) {
     const c = nbboState.get(id);
     if (!c.nbbo) continue;
-    const tr = el("tr");
+    // Rule off each base-asset block (BTC rows, then ETH rows, ...).
+    const tr = el("tr", prevBase !== null && c.nbbo.base !== prevBase ? "grp" : "");
+    prevBase = c.nbbo.base;
     tr.appendChild(el("td", "l name", id));
 
+    // Price over venue, matching the venue cells' two-line shape.
     const bAge = ageMs(c.nbbo.best_bid.leg_ts_ns);
     const bidTd = el("td", bAge > STALE_MS ? "nb stalecell" : "nb");
     bidTd.appendChild(el("span", "b", fmt(c.nbbo.best_bid.px)));
-    bidTd.appendChild(document.createTextNode(" "));
+    bidTd.appendChild(el("br"));
     bidTd.appendChild(el("span", "age", c.nbbo.best_bid.exchange));
     tr.appendChild(bidTd);
 
     const aAge = ageMs(c.nbbo.best_ask.leg_ts_ns);
     const askTd = el("td", aAge > STALE_MS ? "nb stalecell" : "nb");
     askTd.appendChild(el("span", "a", fmt(c.nbbo.best_ask.px)));
-    askTd.appendChild(document.createTextNode(" "));
+    askTd.appendChild(el("br"));
     askTd.appendChild(el("span", "age", c.nbbo.best_ask.exchange));
     tr.appendChild(askTd);
 
-    tr.appendChild(el("td", c.nbbo.crossed ? "nb sp x" : "nb sp", fmt(c.nbbo.spread.toString(), 4)));
+    tr.appendChild(el("td", c.nbbo.crossed ? "nb sp x" : "nb sp", (c.nbbo.crossed ? "× " : "") + fmt(c.nbbo.spread.toString(), 4)));
 
     for (const v of venues) {
       const st = c.venues.has(v) ? pairIndex.get(`${v}|${c.pair}`) : undefined;

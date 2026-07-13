@@ -2,14 +2,18 @@
 <html lang="en">
     <head>
         <meta charset="utf-8" />
-        <title>crosstick gateway</title>
-        <link rel="icon" href="data:," />
+        <title>Crosstick gateway</title>
+        <link
+            rel="icon"
+            href="data:image/svg+xml,%3Csvg%20xmlns='http://www.w3.org/2000/svg'%20viewBox='0%200%2016%2016'%3E%3Crect%20width='16'%20height='16'%20fill='%2316150f'/%3E%3Cpath%20d='M4%204l8%208m0-8l-8%208'%20stroke='%23d8d2c2'%20stroke-width='1.8'%20stroke-linecap='round'/%3E%3C/svg%3E"
+        />
         <style>
             :root {
                 color-scheme: dark;
             }
             body {
-                margin: 0;
+                margin: 0 auto;
+                max-width: 1240px;
                 padding: 22px 34px 26px;
                 font:
                     12.5px/1.45 Consolas,
@@ -21,8 +25,10 @@
             }
             .masthead {
                 display: flex;
+                flex-wrap: wrap;
                 align-items: baseline;
                 justify-content: space-between;
+                gap: 4px 16px;
             }
             .masthead h1 {
                 margin: 0;
@@ -107,6 +113,10 @@
                 background: #d8d2c2;
                 border-color: #d8d2c2;
             }
+            .views button:focus-visible {
+                outline: 1px solid #d8d2c2;
+                outline-offset: 2px;
+            }
             h3 {
                 font:
                     600 10.5px "Segoe UI",
@@ -127,7 +137,7 @@
                     sans-serif;
                 letter-spacing: 0.1em;
                 text-transform: uppercase;
-                color: #6e685a;
+                color: #847d6b;
                 text-align: right;
                 padding: 0 10px 5px;
                 border-bottom: 1px solid #d8d2c2;
@@ -138,8 +148,24 @@
                 border-bottom: 1px solid #2e2c22;
                 font-variant-numeric: tabular-nums;
                 white-space: nowrap;
-                overflow: hidden;
-                text-overflow: ellipsis;
+            }
+            td.wrap {
+                white-space: normal;
+            }
+            /* numbers never truncate: the section scrolls instead */
+            .tblwrap {
+                overflow-x: auto;
+            }
+            .tblwrap table {
+                min-width: 1080px;
+            }
+            #sec-nbbo tbody tr:hover td,
+            #sec-bbo tbody tr:hover td {
+                background: rgba(216, 210, 194, 0.04);
+            }
+            tr.empty td {
+                color: #847d6b;
+                font-style: italic;
             }
             th.l,
             td.l {
@@ -206,7 +232,7 @@
                 color: #cf9285;
             }
             .mx .age {
-                color: #6e685a;
+                color: #847d6b;
                 font-size: 10.5px;
             }
             .mx td.stalecell .b,
@@ -219,10 +245,14 @@
             .mx .dotcell {
                 color: #3a382c;
             }
+            /* separator where the base asset changes (BTC block / ETH block) */
+            .mx tbody tr.grp td {
+                border-top: 1px solid #55503f;
+            }
             .legend {
                 margin-top: 8px;
                 font-size: 11px;
-                color: #6e685a;
+                color: #847d6b;
             }
             .foot {
                 display: grid;
@@ -238,7 +268,7 @@
                     sans-serif;
                 letter-spacing: 0.18em;
                 text-transform: uppercase;
-                color: #6e685a;
+                color: #847d6b;
                 margin: 0 0 6px;
             }
             .foot td {
@@ -268,6 +298,21 @@
             }
             .sell {
                 color: #cf9285;
+            }
+            @media (max-width: 1000px) {
+                .foot {
+                    grid-template-columns: 1fr;
+                }
+            }
+            @media (prefers-reduced-motion: reduce) {
+                tr.flash-up td.bid,
+                tr.flash-down td.ask {
+                    background: none;
+                }
+                td.bid,
+                td.ask {
+                    transition: none;
+                }
             }
         </style>
     </head>
@@ -299,69 +344,85 @@
         </div>
         <section id="sec-nbbo">
             <h3>NBBO &middot; cross-exchange</h3>
-            <table>
-                <colgroup>
-                    <col style="width: 12%" />
-                    <col style="width: 9%" />
-                    <col style="width: 7%" />
-                    <col style="width: 11%" />
-                    <col style="width: 9%" />
-                    <col style="width: 7%" />
-                    <col style="width: 13%" />
-                    <col style="width: 7%" />
-                    <col style="width: 9%" />
-                    <col style="width: 16%" />
-                </colgroup>
-                <thead>
-                    <tr>
-                        <th class="l">Instrument</th>
-                        <th>Bid</th>
-                        <th>Size</th>
-                        <th class="l">Venue</th>
-                        <th>Ask</th>
-                        <th>Size</th>
-                        <th class="l">Venue</th>
-                        <th>Spread</th>
-                        <th>Mid</th>
-                        <th class="l">Constituents</th>
-                    </tr>
-                </thead>
-                <tbody id="nbbo-rows"></tbody>
-            </table>
+            <!-- shared column grid with the BBO table below: the right edges of
+                 Bid/Size/Ask/Size/Spread/Mid land at 26/34/53/61/79/89% in both -->
+            <div class="tblwrap">
+                <table>
+                    <colgroup>
+                        <col style="width: 16%" />
+                        <col style="width: 10%" />
+                        <col style="width: 8%" />
+                        <col style="width: 9%" />
+                        <col style="width: 10%" />
+                        <col style="width: 8%" />
+                        <col style="width: 9%" />
+                        <col style="width: 9%" />
+                        <col style="width: 10%" />
+                        <col style="width: 11%" />
+                    </colgroup>
+                    <thead>
+                        <tr>
+                            <th class="l">Instrument</th>
+                            <th>Bid</th>
+                            <th>Size</th>
+                            <th class="l">Venue</th>
+                            <th>Ask</th>
+                            <th>Size</th>
+                            <th class="l">Venue</th>
+                            <th>Spread</th>
+                            <th>Mid</th>
+                            <th class="l">Constituents</th>
+                        </tr>
+                    </thead>
+                    <tbody id="nbbo-rows">
+                        <tr class="empty">
+                            <td class="l" colspan="10">waiting for feed</td>
+                        </tr>
+                    </tbody>
+                </table>
+            </div>
         </section>
         <section id="sec-bbo">
             <h3>Best bid &amp; offer by exchange</h3>
-            <table>
-                <colgroup>
-                    <col style="width: 14%" />
-                    <col style="width: 12%" />
-                    <col style="width: 12%" />
-                    <col style="width: 9%" />
-                    <col style="width: 12%" />
-                    <col style="width: 9%" />
-                    <col style="width: 8%" />
-                    <col style="width: 12%" />
-                    <col style="width: 12%" />
-                </colgroup>
-                <thead>
-                    <tr>
-                        <th class="l">Exchange</th>
-                        <th class="l">Symbol</th>
-                        <th>Bid</th>
-                        <th>Size</th>
-                        <th>Ask</th>
-                        <th>Size</th>
-                        <th>Spread</th>
-                        <th>Mid</th>
-                        <th>Age</th>
-                    </tr>
-                </thead>
-                <tbody id="rows"></tbody>
-            </table>
+            <div class="tblwrap">
+                <table>
+                    <colgroup>
+                        <col style="width: 11%" />
+                        <col style="width: 5%" />
+                        <col style="width: 10%" />
+                        <col style="width: 8%" />
+                        <col style="width: 19%" />
+                        <col style="width: 8%" />
+                        <col style="width: 18%" />
+                        <col style="width: 10%" />
+                        <col style="width: 11%" />
+                    </colgroup>
+                    <thead>
+                        <tr>
+                            <th class="l">Exchange</th>
+                            <th class="l">Symbol</th>
+                            <th>Bid</th>
+                            <th>Size</th>
+                            <th>Ask</th>
+                            <th>Size</th>
+                            <th>Spread</th>
+                            <th>Mid</th>
+                            <th>Age</th>
+                        </tr>
+                    </thead>
+                    <tbody id="rows">
+                        <tr class="empty">
+                            <td class="l" colspan="9">waiting for feed</td>
+                        </tr>
+                    </tbody>
+                </table>
+            </div>
         </section>
         <section id="sec-matrix">
             <h3>Matrix &middot; instrument by venue</h3>
-            <table id="matrix" class="mx"></table>
+            <div class="tblwrap">
+                <table id="matrix" class="mx"></table>
+            </div>
             <div class="legend">
                 bid over ask in each venue cell &middot; a dot means the venue
                 does not quote that instrument (USD never merges with USDT)
@@ -383,10 +444,11 @@
                 <h4>Tape</h4>
                 <table>
                     <colgroup>
+                        <col style="width: 16%" />
+                        <col style="width: 24%" />
                         <col style="width: 17%" />
-                        <col style="width: 27%" />
-                        <col style="width: 20%" />
-                        <col style="width: 21%" />
+                        <col style="width: 6%" />
+                        <col style="width: 22%" />
                         <col style="width: 15%" />
                     </colgroup>
                     <tbody id="tape-rows"></tbody>
@@ -397,9 +459,9 @@
                 <p>
                     Ages are stream time, data against data; a stalled feed is
                     flagged in the dateline. Quotes trailing the stream clock by
-                    more than three seconds grey out; a red spread is a crossed
-                    book. The venue and tape panels are derived from the same WS
-                    feed.
+                    more than three seconds grey out; a spread marked &times; is
+                    a crossed book. Tape rows carry B/S for taker buy or sell.
+                    The venue and tape panels are derived from the same WS feed.
                 </p>
             </div>
         </footer>
