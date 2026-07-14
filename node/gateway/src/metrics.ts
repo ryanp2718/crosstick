@@ -1,4 +1,4 @@
-import { Counter, Gauge, Registry, collectDefaultMetrics } from "prom-client";
+import { Counter, Gauge, Histogram, Registry, collectDefaultMetrics } from "prom-client";
 
 // Single process-wide registry. Modules increment named metrics directly;
 // /metrics scrapes via registry.metrics(). collectDefaultMetrics adds the
@@ -124,6 +124,29 @@ export const bookSnapshotStale = new Counter({
 export const bookResnapshotHeal = new Counter({
   name: "gateway_book_resnapshot_heal_total",
   help: "Crossed books healed by applying a same-epoch re-snapshot the guard would otherwise skip",
+  labelNames: ["exchange"] as const,
+  registers: [registry],
+});
+
+// Deltas replayed from the applied tail on top of a heal re-snapshot: the
+// depth of the rewind the heal performed. Depth 0-2 is the live cross-topic
+// race (snapshot consumed just behind a delta it predates); hundreds+ means
+// warm-start batch skew. See aggregator.ts MAX_APPLIED_TAIL.
+export const bookHealReplayDepth = new Histogram({
+  name: "gateway_book_heal_replay_depth",
+  help: "Applied deltas replayed over a heal re-snapshot (the tail its rewind would otherwise discard)",
+  labelNames: ["exchange"] as const,
+  buckets: [0, 1, 2, 5, 10, 25, 100, 500, 2500, 10000],
+  registers: [registry],
+});
+
+// Heals whose replay tail had lost entries to overflow eviction that the
+// snapshot's seq still needed (evicted seq > snapshot seq): the replay may be
+// incomplete and the book can carry a stale level until the next re-snapshot.
+// Nonzero here means MAX_APPLIED_TAIL is undersized for the observed rewinds.
+export const bookHealReplayUnderrun = new Counter({
+  name: "gateway_book_heal_replay_underrun_total",
+  help: "Heal replays that could not reach back to the snapshot seq (tail entries evicted)",
   labelNames: ["exchange"] as const,
   registers: [registry],
 });

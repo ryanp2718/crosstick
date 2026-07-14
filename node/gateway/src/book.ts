@@ -33,7 +33,9 @@ export class Book {
   // already crossed (corrupt), the authoritative uncrossed snapshot is taken as a
   // resync that heals it, bounding a cross to one re-snapshot interval instead of
   // persisting to epoch end (a warm-start buffer gap can strand a level; see
-  // aggregator MAX_PENDING_DELTAS). A genuine resync is otherwise a new epoch.
+  // aggregator MAX_PENDING_DELTAS). The aggregator replays its applied-delta tail
+  // over the accepted rewind (MAX_APPLIED_TAIL) so the heal cannot itself strand
+  // a level the rewound deltas had deleted. A genuine resync is otherwise a new epoch.
   applySnapshot(seq: number, epoch: number, bids: WireLevel[], asks: WireLevel[]): boolean {
     if (epoch === this.epoch && seq <= this.seq && !this.isCrossed()) return false;
     this.bids.clear();

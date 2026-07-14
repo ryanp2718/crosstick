@@ -1,7 +1,13 @@
 import { describe, expect, it } from "vitest";
 
-import { Aggregator, MAX_PENDING_DELTAS } from "../src/aggregator.js";
-import { bboCrossed, bookResnapshotHeal, bookSnapshotStale } from "../src/metrics.js";
+import { Aggregator, MAX_APPLIED_TAIL, MAX_PENDING_DELTAS } from "../src/aggregator.js";
+import {
+  bboCrossed,
+  bookHealReplayDepth,
+  bookHealReplayUnderrun,
+  bookResnapshotHeal,
+  bookSnapshotStale,
+} from "../src/metrics.js";
 import type { BookDeltaMsg, BookSnapshotMsg, WireLevel } from "../src/messages.js";
 
 function snap(
@@ -37,6 +43,23 @@ async function staleFor(exchange: string): Promise<number> {
 // Read the gateway_book_resnapshot_heal_total value for one exchange (0 if unseen).
 async function healFor(exchange: string): Promise<number> {
   const m = await bookResnapshotHeal.get();
+  return m.values.find((v) => v.labels.exchange === exchange)?.value ?? 0;
+}
+
+// Read the gateway_book_heal_replay_depth histogram's _count and _sum for one exchange.
+async function replayDepthFor(exchange: string): Promise<{ count: number; sum: number }> {
+  const m = await bookHealReplayDepth.get();
+  const pick = (suffix: string) =>
+    m.values.find(
+      (v) => v.metricName === `gateway_book_heal_replay_depth_${suffix}` &&
+        v.labels.exchange === exchange,
+    )?.value ?? 0;
+  return { count: pick("count"), sum: pick("sum") };
+}
+
+// Read the gateway_book_heal_replay_underrun_total value for one exchange (0 if unseen).
+async function underrunFor(exchange: string): Promise<number> {
+  const m = await bookHealReplayUnderrun.get();
   return m.values.find((v) => v.labels.exchange === exchange)?.value ?? 0;
 }
 
@@ -209,7 +232,7 @@ describe("Aggregator", () => {
       expect(await staleFor("kraken")).toBe(before + 1);
     });
 
-    it("applies a stale same-epoch re-snapshot to HEAL a crossed book", async () => {
+    it("accepts a stale re-snapshot on a crossed book without dropping newer deltas", async () => {
       const a = new Aggregator();
       a.applyBook(snap(5, [["100", "1"]], [["101", "1"]], 9));
       // A delta strands a bid above the ask → the book is crossed (corrupt).
@@ -220,9 +243,79 @@ describe("Aggregator", () => {
       const staleBefore = await staleFor("kraken");
       const healBefore = await healFor("kraken");
       const healed = a.applyBook(snap(6, [["100", "1"]], [["101", "1"]], 9));
-      expect(healed).toMatchObject({ bid_px: "100", ask_px: "101" }); // healed
+      // Delta 7 outranks the seq-6 snapshot and replays on top (a snapshot only
+      // attests state as of its own seq), so this cross persists faithfully:
+      // top-of-book is unchanged and the dedup emits nothing new.
+      expect(healed).toBeNull();
+      expect(a.snapshot()[0]).toMatchObject({ bid_px: "200", ask_px: "101" });
       expect(await healFor("kraken")).toBe(healBefore + 1);
       expect(await staleFor("kraken")).toBe(staleBefore); // not counted as a skip
+      // The next re-snapshot outranks delta 7 and fully heals the book.
+      const after = a.applyBook(snap(8, [["100", "1"]], [["101", "1"]], 9));
+      expect(after).toMatchObject({ bid_px: "100", ask_px: "101" });
+    });
+  });
+
+  describe("heal replay (applied-delta tail)", () => {
+    // The 2026-07-14 live episode shape: the venue stalls, the delete of its
+    // stale top bid exists only in an in-band recovery snapshot, and that
+    // snapshot is consumed BEHIND a delta it predates (separate topics, no
+    // cross-topic order). The heal must not resurrect what the delta deleted.
+    it("replays the tail over a heal instead of resurrecting a deleted level", async () => {
+      const a = new Aggregator();
+      a.applyBook(snap(5, [["100", "1"]], [["101", "1"]], 9));
+      // Falling ask crosses the stale bid 100 (its delete never arrives as a delta).
+      a.applyBook(delta(7, [], [["99", "1"]], 9));
+      // The venue deletes bid 98; consumed AHEAD of the snapshot that lists it.
+      a.applyBook({ ...delta(9, [["98", "0"]], [], 9), local_ts_ns: 99 });
+      const healBefore = await healFor("kraken");
+      const depthBefore = await replayDepthFor("kraken");
+      // In-band recovery snapshot: bid 100 gone (implicit delete), bid 98 present.
+      const healed = a.applyBook(snap(8, [["98", "1"], ["97", "1"]], [["99", "1"]], 9));
+      // Without replay this reads 98/99, resurrecting the deleted 98 for a full
+      // re-snapshot interval (the delta that removes it is behind the consumer).
+      expect(healed).toMatchObject({ bid_px: "97", ask_px: "99" });
+      expect(healed!.local_ts_ns).toBe(99); // stamped from the replayed delta
+      expect(await healFor("kraken")).toBe(healBefore + 1);
+      const depth = await replayDepthFor("kraken");
+      expect(depth.count).toBe(depthBefore.count + 1);
+      expect(depth.sum).toBe(depthBefore.sum + 1); // exactly the one rewound delta
+    });
+
+    it("forward snapshots ignore the tail (replay is a seq-guard no-op)", async () => {
+      const a = new Aggregator();
+      a.applyBook(snap(5, [["100", "1"]], [["101", "1"]], 9));
+      a.applyBook(delta(6, [["100.5", "1"]], [], 9));
+      const depthBefore = await replayDepthFor("kraken");
+      const bbo = a.applyBook(snap(10, [["102", "1"]], [["103", "1"]], 9));
+      // The superseded 100.5 bid must not replay over the newer snapshot.
+      expect(bbo).toMatchObject({ bid_px: "102", ask_px: "103" });
+      expect((await replayDepthFor("kraken")).count).toBe(depthBefore.count);
+    });
+
+    it("a new-epoch snapshot never replays the prior connection's tail", () => {
+      const a = new Aggregator();
+      a.applyBook(snap(5, [["100", "1"]], [["101", "1"]], 1));
+      // Prior connection's applied high-seq delta: its counter would out-rank
+      // the fresh epoch's reset seq if the epoch filter were missing.
+      a.applyBook(delta(5000, [["200", "1"]], [], 1));
+      const bbo = a.applyBook(snap(0, [["100", "1"]], [["101", "1"]], 2));
+      expect(bbo).toMatchObject({ bid_px: "100", ask_px: "101" });
+    });
+
+    it("counts an underrun when eviction lost part of the replay tail", async () => {
+      const a = new Aggregator();
+      a.applyBook(snap(0, [["100", "1"]], [["101", "1"]], 9));
+      // The crossing delta lands first, then a flood evicts it from the tail.
+      a.applyBook(delta(1, [["200", "1"]], [], 9));
+      for (let i = 2; i <= MAX_APPLIED_TAIL + 2; i++) {
+        a.applyBook(delta(i, [], [[`${1000 + i}`, "1"]], 9));
+      }
+      const before = await underrunFor("kraken");
+      const healed = a.applyBook(snap(0, [["100", "1"]], [["101", "1"]], 9));
+      // The evicted crossing delta cannot replay; the shortfall is counted.
+      expect(healed).toMatchObject({ bid_px: "100", ask_px: "101" });
+      expect(await underrunFor("kraken")).toBe(before + 1);
     });
   });
 
