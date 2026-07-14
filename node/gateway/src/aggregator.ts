@@ -1,12 +1,27 @@
 import { Book } from "./book.js";
 import { cmpDecimal } from "./decimal.js";
-import { bboCrossed, bookResnapshotHeal, bookSnapshotStale } from "./metrics.js";
+import {
+  bboCrossed,
+  bookHealReplayDepth,
+  bookHealReplayUnderrun,
+  bookResnapshotHeal,
+  bookSnapshotStale,
+} from "./metrics.js";
 import type { BBOMsg, BookDeltaMsg, BookSnapshotMsg } from "./messages.js";
 
 // Deltas retained per stream while waiting for its snapshot (drop-oldest on
 // overflow — the oldest buffered deltas are the lowest-seq ones a snapshot's
 // sequence supersedes, so shedding them never gaps the book above the snapshot).
 export const MAX_PENDING_DELTAS = 10_000;
+
+// Deltas retained per stream AFTER application, so an accepted rewind (the
+// crossed-book heal in book.ts applySnapshot) can replay the tail it rewinds
+// past instead of resurrecting since-deleted levels: the snapshot and its
+// superseding deltas ride separate topics with no cross-topic order, and Kafka
+// is already past a delta the rewind discards. Pruned to seq > the last
+// accepted snapshot, since the snapshot topic is consumed in order, so no
+// later heal can need entries an earlier accepted snapshot already covers.
+export const MAX_APPLIED_TAIL = 10_000;
 
 // Opt-in diagnostic: on an uncrossed->crossed transition, log the last N consumed
 // messages for that stream (kind, seq, epoch, disposition) to pin the exact
@@ -37,6 +52,11 @@ export class Aggregator {
   private readonly books = new Map<string, Book>();
   private readonly lastBbo = new Map<string, BBOMsg>();
   private readonly pending = new Map<string, BookDeltaMsg[]>();
+  // Applied-delta tail per stream (see MAX_APPLIED_TAIL) and the newest entry
+  // each stream has evicted to overflow: a heal snapshot older than that seq
+  // lost part of its replay tail (counted as underrun).
+  private readonly appliedTail = new Map<string, BookDeltaMsg[]>();
+  private readonly tailEvicted = new Map<string, { epoch: number; seq: number }>();
   // Onset diagnostics (only populated when CROSS_ONSET_LOG): per-stream ring of
   // recent consumed-message descriptors, and last-seen crossed state.
   private readonly recent = new Map<string, string[]>();
@@ -47,6 +67,19 @@ export class Aggregator {
     r.push(desc);
     if (r.length > ONSET_RING) r.shift();
     this.recent.set(key, r);
+  }
+
+  private recordApplied(key: string, msg: BookDeltaMsg): void {
+    const tail = this.appliedTail.get(key) ?? [];
+    if (tail.length >= MAX_APPLIED_TAIL) {
+      // Shed the oldest half in one splice: amortized O(1) per applied delta,
+      // unlike a per-push shift of a full tail on the hot path.
+      const dropped = tail.splice(0, MAX_APPLIED_TAIL >> 1);
+      const newest = dropped[dropped.length - 1];
+      this.tailEvicted.set(key, { epoch: newest.epoch ?? 0, seq: newest.sequence });
+    }
+    tail.push(msg);
+    this.appliedTail.set(key, tail);
   }
 
   applyBook(msg: BookSnapshotMsg | BookDeltaMsg): BBOMsg | null {
@@ -66,6 +99,7 @@ export class Aggregator {
         return null;
       }
       const applied = book.applyDelta(msg.sequence, msg.bids, msg.asks);
+      if (applied) this.recordApplied(key, msg);
       if (CROSS_ONSET_LOG) {
         if (applied) {
           const bb = book.bestBid();
@@ -99,16 +133,48 @@ export class Aggregator {
     }
     // Applied despite being stale ⇒ the guard let it through to heal a crossed book.
     if (staleReSnapshot) bookResnapshotHeal.inc({ exchange: msg.exchange });
+    let last: BookSnapshotMsg | BookDeltaMsg = msg;
+    // Replay the applied tail over the snapshot. Only a heal rewind has tail
+    // entries above the snapshot's seq; for a forward snapshot the seq guard
+    // rejects every entry (and the epoch filter drops prior-connection tails,
+    // whose reset counters could out-rank a fresh snapshot's low seq). Level
+    // ops are absolute set/delete, so replay converges to snapshot + tail
+    // regardless of what the snapshot already reflected.
+    const tail = this.appliedTail.get(key) ?? [];
+    let replayed = 0;
+    for (const d of tail) {
+      if ((d.epoch ?? 0) !== epoch) continue;
+      if (book.applyDelta(d.sequence, d.bids, d.asks)) {
+        last = d;
+        replayed++;
+      }
+    }
+    if (CROSS_ONSET_LOG && replayed > 0) this.rec(key, `replay:${replayed}`);
+    const kept = tail.filter((d) => (d.epoch ?? 0) === epoch && d.sequence > msg.sequence);
+    if (kept.length > 0) this.appliedTail.set(key, kept);
+    else this.appliedTail.delete(key);
+    const evicted = this.tailEvicted.get(key);
+    if (evicted && (evicted.epoch !== epoch || evicted.seq <= msg.sequence)) {
+      this.tailEvicted.delete(key);
+    }
+    if (staleReSnapshot) {
+      bookHealReplayDepth.observe({ exchange: msg.exchange }, replayed);
+      if (evicted && evicted.epoch === epoch && evicted.seq > msg.sequence) {
+        bookHealReplayUnderrun.inc({ exchange: msg.exchange });
+      }
+    }
     // Drain only this snapshot's own epoch (seq guard drops what it supersedes);
     // retain other epochs for their own snapshot. ts from the last applied msg.
-    let last: BookSnapshotMsg | BookDeltaMsg = msg;
     const retained: BookDeltaMsg[] = [];
     for (const delta of this.pending.get(key) ?? []) {
       if ((delta.epoch ?? 0) !== epoch) {
         retained.push(delta);
         continue;
       }
-      if (book.applyDelta(delta.sequence, delta.bids, delta.asks)) last = delta;
+      if (book.applyDelta(delta.sequence, delta.bids, delta.asks)) {
+        last = delta;
+        this.recordApplied(key, delta);
+      }
     }
     if (retained.length > 0) this.pending.set(key, retained);
     else this.pending.delete(key);
