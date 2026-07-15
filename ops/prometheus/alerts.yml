@@ -98,19 +98,21 @@ groups:
       # gold_dq_clock_* the scorecard derives from silver). NTP slew never steps
       # backward, so any backward step between consecutive WS frames is a fault.
       # Floored on magnitude (the worst step since process start), mirroring the
-      # batch ClockStepBeyondReorderWindow: the WSL2 guest has a sub-10ms residual
-      # (06-28 worst 5.3ms) that the raw count fires on continuously and benignly,
-      # while a genuine regression steps far past 100ms. The worst-step gauge is a
-      # since-start high-water mark, so this latches until the process restarts
-      # re-zeros it (a healthy host then never re-crosses) — a real fault stays
-      # surfaced rather than silently clearing. Predicted to read 0 on cloud+chrony.
+      # batch ClockStepBeyondReorderWindow. 1000ms, not 100: beyond the sub-10ms
+      # WSL2 steady residual (06-28 worst 5.3ms), the 07-01 shakedown recorded a
+      # single host-level event (VM pause or one NTP step) landing ~300ms on all
+      # four feeds at once, and since the gauge is a since-start high-water mark
+      # a 100ms floor latches on that benign event until the next restart. 1000ms
+      # clears both regimes yet still fires 60x before silver's W=60s reorder
+      # window actually breaks; a real fault stays surfaced rather than silently
+      # clearing. Predicted to read 0 on cloud+chrony.
       - alert: RecvClockBackwardStep
-        expr: max by (exchange) (md_recv_clock_worst_step_ms) > 100
+        expr: max by (exchange) (md_recv_clock_worst_step_ms) > 1000
         for: 5m
         labels: { severity: warning }
         annotations:
           summary: "Host capture clock stepped backward ({{ $labels.exchange }})"
-          description: "md_recv_clock_worst_step_ms is {{ $value }}ms for {{ $labels.exchange }} (>100ms floor, well past the WSL2 residual) — the capture host's wall clock went backward between consecutive WS frames. See host-clock-skew."
+          description: "md_recv_clock_worst_step_ms is {{ $value }}ms for {{ $labels.exchange }} (>1000ms floor, past the WSL2 residual and host-level pause steps): the capture host's wall clock went backward between consecutive WS frames. See host-clock-skew."
 
       # Process restart marker. Info-severity; also the empirical close-out
       # signal for the epoch fix (watch bbo_crossed across a restart).
