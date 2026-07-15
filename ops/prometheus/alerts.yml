@@ -4,7 +4,7 @@
 groups:
   - name: crosstick-data-quality
     rules:
-      # Per-venue internal crossed book (ask < bid within one exchange) — the
+      # Per-venue internal crossed book (ask < bid within one exchange): the
       # 06-12/13 warm-start failure that was entirely unobserved. Should read 0
       # post epoch-fix; any non-zero rate is a reconstruction regression.
       - alert: GatewayBBOCrossed
@@ -13,7 +13,7 @@ groups:
         labels: { severity: critical }
         annotations:
           summary: "Crossed BBO reconstructed for {{ $labels.exchange }}"
-          description: "gateway_bbo_crossed_total is rising — the gateway is emitting a crossed within-venue book for {{ $labels.exchange }}."
+          description: "gateway_bbo_crossed_total is rising: the gateway is emitting a crossed within-venue book for {{ $labels.exchange }}."
 
       # Cross-venue NBBO inversion (best_bid >= best_ask across exchanges) deep
       # enough to matter. Fresh cross-venue locks/crosses of 1-2 bps are normal
@@ -30,7 +30,7 @@ groups:
         labels: { severity: warning }
         annotations:
           summary: "Material crossed NBBO for {{ $labels.canonical_id }}"
-          description: "Cross-venue spread on {{ $labels.canonical_id }} inverted by >= NBBO_CROSS_MIN_BPS with both winning legs fresh — beyond benign microstructure: a corrupt venue book, canonical mismap, or sustained dislocation."
+          description: "Cross-venue spread on {{ $labels.canonical_id }} inverted by >= NBBO_CROSS_MIN_BPS with both winning legs fresh, beyond benign microstructure: a corrupt venue book, canonical mismap, or sustained dislocation."
 
       # Ingester book-invariant violations (snapshot_crossed / non_monotonic_seq
       # / crossed_after_delta). Source-side corruption caught before publish.
@@ -50,7 +50,7 @@ groups:
         labels: { severity: warning }
         annotations:
           summary: "Book resync storm on {{ $labels.exchange }}"
-          description: "{{ $labels.exchange }} is resyncing its order book repeatedly (>0.2/s for 10m) — likely a reconnect storm or a flapping feed."
+          description: "{{ $labels.exchange }} is resyncing its order book repeatedly (>0.2/s for 10m), likely a reconnect storm or a flapping feed."
 
   - name: crosstick-liveness
     rules:
@@ -61,7 +61,7 @@ groups:
         labels: { severity: critical }
         annotations:
           summary: "Venue {{ $labels.exchange }} is down"
-          description: "The gateway has not seen a fresh md.status heartbeat for {{ $labels.exchange }} — the ingester is likely down or disconnected."
+          description: "The gateway has not seen a fresh md.status heartbeat for {{ $labels.exchange }}: the ingester is likely down or disconnected."
 
       # Gateway falling behind the durable log.
       - alert: GatewayConsumerLagHigh
@@ -70,7 +70,7 @@ groups:
         labels: { severity: warning }
         annotations:
           summary: "Gateway consumer lag high ({{ $labels.topic }} p{{ $labels.partition }})"
-          description: "gateway_consumer_lag_messages > 50000 for 5m on {{ $labels.topic }} p{{ $labels.partition }} — the gateway is not keeping up with ingest."
+          description: "gateway_consumer_lag_messages > 50000 for 5m on {{ $labels.topic }} p{{ $labels.partition }}: the gateway is not keeping up with ingest."
 
       # Materializer falling behind ingest (bronze projection). 10m (vs the gateway's
       # 5m) rides out the consume pauses during a 16MB zstd PUT, so only a sustained
@@ -82,7 +82,7 @@ groups:
         labels: { severity: warning }
         annotations:
           summary: "Materializer consumer lag high ({{ $labels.topic }} p{{ $labels.partition }})"
-          description: "bronze_consumer_lag_messages > 50000 for 10m on {{ $labels.topic }} p{{ $labels.partition }} — the materializer is not keeping up with ingest; bronze will fall behind."
+          description: "bronze_consumer_lag_messages > 50000 for 10m on {{ $labels.topic }} p{{ $labels.partition }}: the materializer is not keeping up with ingest; bronze will fall behind."
 
       # Any scrape target unreachable (crashed service, bad target). The safety
       # net that keeps a misconfigured scrape from being silent.
@@ -121,7 +121,7 @@ groups:
         labels: { severity: info }
         annotations:
           summary: "Gateway restarted"
-          description: "The gateway process restarted in the last 15m — expect a warm-start; gateway_bbo_crossed_total should stay ~0 across it."
+          description: "The gateway process restarted in the last 15m: expect a warm-start; gateway_bbo_crossed_total should stay ~0 across it."
 
   # Batch/analytics tier, surfaced by the lake-exporter (reads gold + the lake).
   - name: crosstick-lakehouse
@@ -135,7 +135,7 @@ groups:
         labels: { severity: warning }
         annotations:
           summary: "Bronze lake stale (>30m, no dataset written)"
-          description: "No new bronze object across any dataset for >30m — the materializer is likely stuck (up but not flushing) or the ingest feeds are down."
+          description: "No new bronze object across any dataset for >30m: the materializer is likely stuck (up but not flushing) or the ingest feeds are down."
 
       # A capture-clock backward step larger than the silver reorder window (W=60s)
       # would trip LatenessError and fail the NBBO build loud. Clean days peak ~10-16s,
@@ -145,7 +145,7 @@ groups:
         labels: { severity: critical }
         annotations:
           summary: "Capture-clock step > 60s reorder window ({{ $labels.exchange }}/{{ $labels.symbol }})"
-          description: "Worst intra-epoch backward recv step {{ $value }}ms exceeds silver's W=60s — the NBBO build would fail loud. Investigate host/WSL2 clock (see host-clock-skew)."
+          description: "Worst intra-epoch backward recv step {{ $value }}ms exceeds silver's W=60s: the NBBO build would fail loud. Investigate host/WSL2 clock (see host-clock-skew)."
 
       # Elevated step COUNT vs the clean baseline (~150/venue/day). ~7000 was the
       # w32time-stopped signature; >1000 flags a clock regression while staying well
@@ -156,9 +156,9 @@ groups:
         labels: { severity: warning }
         annotations:
           summary: "Elevated capture-clock backward steps ({{ $labels.exchange }}/{{ $labels.symbol }})"
-          description: "{{ $value }} intra-epoch backward recv steps in the latest gold build (clean baseline ~150) — suspect a stopped/again-drifting host clock."
+          description: "{{ $value }} intra-epoch backward recv steps in the latest gold build (clean baseline ~150): suspect a stopped/again-drifting host clock."
 
-      # The exporter itself stopped refreshing — gold DQ/basis/freshness gauges are
+      # The exporter itself stopped refreshing: gold DQ/basis/freshness gauges are
       # stale even though the scrape target is up. Distinct from TargetDown.
       - alert: LakeExporterStale
         expr: time() - lake_exporter_last_success_seconds > 600
@@ -166,4 +166,4 @@ groups:
         labels: { severity: warning }
         annotations:
           summary: "Lake-exporter refresh stale (>10m)"
-          description: "The lake-exporter has not completed a successful lake snapshot refresh in >10m (lake_exporter_refresh_errors_total rising?) — its gold/basis/freshness gauges are stale."
+          description: "The lake-exporter has not completed a successful lake snapshot refresh in >10m (lake_exporter_refresh_errors_total rising?): its gold/basis/freshness gauges are stale."
