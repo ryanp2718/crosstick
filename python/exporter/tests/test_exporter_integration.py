@@ -66,14 +66,14 @@ def test_exporter_over_s3(fs: pafs.S3FileSystem) -> None:
                  pa.Table.from_pylist(BASIS_ROWS, schema=BASIS_SUMMARY_SCHEMA))
 
     import time
-    idx = _index(build_families(fs, lake, silver, gold, now_s=time.time()))
+    idx = _index(build_families(fs, fs, lake, silver, gold, now_s=time.time()))
     assert idx[("gold_dq_violations", (("check", "clock_monotonic"), ("exchange", "kraken"),
                                        ("symbol", "BTC-USD")))] == 5
     assert idx[("gold_basis_bps", (("base", "BTC"), ("stat", "mean")))] == -4.1
     assert idx[("lake_freshness_seconds", (("dataset", "book_deltas"), ("layer", "bronze")))] > 0
 
     # full serve path: register the collector, refresh, render like a scrape.
-    collector = LakeCollector(lambda: build_families(fs, lake, silver, gold, time.time()))
+    collector = LakeCollector(lambda: build_families(fs, fs, lake, silver, gold, time.time()))
     registry = CollectorRegistry()
     registry.register(collector)
     collector.refresh()
