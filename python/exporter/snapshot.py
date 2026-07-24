@@ -170,12 +170,18 @@ def _gold_rows(
 
 
 def build_families(
-    fs: pafs.FileSystem, lake_bucket: str, silver_bucket: str, gold_bucket: str, now_s: float
+    bronze_fs: pafs.FileSystem, derived_fs: pafs.FileSystem,
+    lake_bucket: str, silver_bucket: str, gold_bucket: str, now_s: float
 ) -> list[GaugeMetricFamily]:
-    layers = ((lake_bucket, "bronze"), (silver_bucket, "silver"), (gold_bucket, "gold"))
-    by_layer = {layer: _newest_per_dataset(fs, bucket) for bucket, layer in layers}
-    sc_rows, sc_date = _gold_rows(fs, gold_bucket, "scorecard")
-    basis_rows, _ = _gold_rows(fs, gold_bucket, "basis_summary")
+    # Bronze lives on its own endpoint (bronze_fs); silver/gold and the gold rollups
+    # are the derived layers (derived_fs). Equal filesystems when unsplit.
+    by_layer = {
+        "bronze": _newest_per_dataset(bronze_fs, lake_bucket),
+        "silver": _newest_per_dataset(derived_fs, silver_bucket),
+        "gold": _newest_per_dataset(derived_fs, gold_bucket),
+    }
+    sc_rows, sc_date = _gold_rows(derived_fs, gold_bucket, "scorecard")
+    basis_rows, _ = _gold_rows(derived_fs, gold_bucket, "basis_summary")
     return [
         *freshness_families(by_layer, now_s),
         *scorecard_families(sc_rows, sc_date),

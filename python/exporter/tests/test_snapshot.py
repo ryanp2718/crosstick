@@ -153,7 +153,7 @@ def test_build_families_over_local_fs(tmp_path) -> None:
     write_object(fs, gold, partition_key("basis_summary", date=DATE),
                  pa.Table.from_pylist(BASIS_ROWS, schema=BASIS_SUMMARY_SCHEMA))
 
-    idx = _index(build_families(fs, lake, silver, gold, now_s=2_000_000_000.0))
+    idx = _index(build_families(fs, fs, lake, silver, gold, now_s=2_000_000_000.0))
     assert idx[("gold_dq_violations", (("check", "sequence_gap"), ("exchange", "kraken"),
                                        ("symbol", "BTC-USD")))] == 2
     assert ("gold_basis_bps", (("base", "BTC"), ("stat", "mean"))) in idx
