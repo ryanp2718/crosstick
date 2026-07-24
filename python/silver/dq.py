@@ -35,6 +35,7 @@ One exception is folded in `_fold`: a periodic re-snapshot is stamped at an
 existing delta's sequence, so that delta sorts right after it (snap-first) and is
 already incorporated -> skipped as redundant, not flagged as a regression.
 """
+
 from __future__ import annotations
 
 import heapq
@@ -125,8 +126,14 @@ def build_silver(records: Iterable[CorpusRecord], canonical: CanonicalMap) -> Si
         recv = _recv_ns(rec)
 
         lat = _latency_dict(
-            exchange, canon, date, meta.dataset, rec.offset,
-            msg.exchange_ts_ns, msg.local_ts_ns, recv,
+            exchange,
+            canon,
+            date,
+            meta.dataset,
+            rec.offset,
+            msg.exchange_ts_ns,
+            msg.local_ts_ns,
+            recv,
         )
         if lat is not None:
             facts.latency.append(lat)
@@ -272,8 +279,14 @@ def book_latency_row(r: _BookRec) -> dict | None:
     the fold, since the fold already holds the decoded record)."""
     dataset = "book_snapshots" if r.kind == "snap" else "book_deltas"
     return _latency_dict(
-        r.exchange, r.canonical, r.date, dataset, r.offset,
-        r.exchange_ts_ns, r.local_ts_ns, r.local_recv_ts_ns,
+        r.exchange,
+        r.canonical,
+        r.date,
+        dataset,
+        r.offset,
+        r.exchange_ts_ns,
+        r.local_ts_ns,
+        r.local_recv_ts_ns,
     )
 
 
@@ -285,16 +298,28 @@ def latency_rows(records: Iterable[CorpusRecord], canonical: CanonicalMap) -> It
         msg = decode(rec.value)
         exchange = meta.exchange or ""
         lat = _latency_dict(
-            exchange, canonical.resolve(exchange, msg.symbol), record_date(rec.timestamp_ms),
-            meta.dataset, rec.offset, msg.exchange_ts_ns, msg.local_ts_ns, _recv_ns(rec),
+            exchange,
+            canonical.resolve(exchange, msg.symbol),
+            record_date(rec.timestamp_ms),
+            meta.dataset,
+            rec.offset,
+            msg.exchange_ts_ns,
+            msg.local_ts_ns,
+            _recv_ns(rec),
         )
         if lat is not None:
             yield lat
 
 
 def _latency_dict(
-    exchange: str, canon: str, date: str, dataset: str, offset: int,
-    exchange_ts_ns: int, local_ts_ns: int, recv: int | None,
+    exchange: str,
+    canon: str,
+    date: str,
+    dataset: str,
+    offset: int,
+    exchange_ts_ns: int,
+    local_ts_ns: int,
+    recv: int | None,
 ) -> dict | None:
     # Locally-generated records have no exchange clock (exchange_ts_ns == 0:
     # re-emitted snapshots, binance(-futures) snapshots) - skip their latency.

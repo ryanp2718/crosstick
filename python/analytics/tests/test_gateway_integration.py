@@ -44,6 +44,7 @@ installed (`pnpm -C node/gateway install`); skips otherwise. Run with:
 
     uv run python -m pytest -m integration
 """
+
 from __future__ import annotations
 
 import asyncio

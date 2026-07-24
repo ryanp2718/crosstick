@@ -6,6 +6,7 @@ this pins it row-for-row against build_basis over the whole day. Seeds the golde
 corpus as bronze on a LocalFileSystem and runs the real silver streaming driver -
 no Docker.
 """
+
 from __future__ import annotations
 
 from collections import defaultdict

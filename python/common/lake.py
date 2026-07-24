@@ -10,6 +10,7 @@ this module is the read/write plumbing the layers above bronze share:
     recompute rewrites the identical object (the same idempotency discipline as
     bronze's start-offset keys; see materializer/bronze.object_key).
 """
+
 from __future__ import annotations
 
 import os
@@ -106,9 +107,7 @@ def partition_key(
     return "/".join(parts)
 
 
-def _list_date_files(
-    fs: pafs.FileSystem, bucket: str, dataset: str, date: str
-) -> list[str]:
+def _list_date_files(fs: pafs.FileSystem, bucket: str, dataset: str, date: str) -> list[str]:
     """Sorted parquet object paths for one dataset+date (sorted == offset order:
     objects are named `{partition:03d}-{start_offset:012d}.parquet`, contiguous
     per partition). Paths are returned verbatim (a local FS on Windows may use
@@ -132,9 +131,7 @@ def _read_file(fs: pafs.FileSystem, path: str) -> pa.Table:
         return pq.read_table(handle)
 
 
-def read_dataset(
-    fs: pafs.FileSystem, bucket: str, dataset: str, date: str
-) -> pa.Table | None:
+def read_dataset(fs: pafs.FileSystem, bucket: str, dataset: str, date: str) -> pa.Table | None:
     """Read every Parquet object for one dataset+date into a single table.
 
     Lists `{bucket}/{dataset}` recursively and keeps the `date={date}` leaves;
@@ -161,9 +158,9 @@ def list_partitions(
         part: dict[str, str] = {}
         for seg in path.replace("\\", "/").split("/"):
             if seg.startswith("exchange="):
-                part["exchange"] = seg[len("exchange="):]
+                part["exchange"] = seg[len("exchange=") :]
             elif seg.startswith("symbol="):
-                part["symbol"] = seg[len("symbol="):]
+                part["symbol"] = seg[len("symbol=") :]
         seen.setdefault(tuple(sorted(part.items())), part)
     return list(seen.values())
 
@@ -181,8 +178,8 @@ def latest_date(fs: pafs.FileSystem, bucket: str, dataset: str) -> str | None:
         if info.type != pafs.FileType.File or not info.path.endswith(".parquet"):
             continue
         for seg in info.path.replace("\\", "/").split("/"):
-            if seg.startswith("date=") and (latest is None or seg[len("date="):] > latest):
-                latest = seg[len("date="):]
+            if seg.startswith("date=") and (latest is None or seg[len("date=") :] > latest):
+                latest = seg[len("date=") :]
     return latest
 
 
@@ -201,7 +198,11 @@ def iter_partition_tables(
 
 
 def iter_partition_batches(
-    fs: pafs.FileSystem, bucket: str, dataset: str, date: str, part: dict[str, str],
+    fs: pafs.FileSystem,
+    bucket: str,
+    dataset: str,
+    date: str,
+    part: dict[str, str],
     batch_rows: int = 50_000,
 ) -> Iterator[pa.RecordBatch]:
     """Yield RecordBatches of a single partition, reading row groups lazily so the
@@ -244,17 +245,24 @@ def write_object(fs: pafs.FileSystem, bucket: str, key: str, table: pa.Table) ->
 # R2). A once-daily audit still walks the layer to cross-check the markers.
 FRESHNESS_PREFIX = "_freshness"
 
-_FRESHNESS_SCHEMA = pa.schema([
-    ("dataset", pa.string()),
-    ("date", pa.string()),
-    ("written_at_epoch", pa.float64()),
-    ("row_count", pa.int64()),
-])
+_FRESHNESS_SCHEMA = pa.schema(
+    [
+        ("dataset", pa.string()),
+        ("date", pa.string()),
+        ("written_at_epoch", pa.float64()),
+        ("row_count", pa.int64()),
+    ]
+)
 
 
 def write_freshness_marker(
-    fs: pafs.FileSystem, bucket: str, dataset: str, *,
-    date: str, row_count: int, written_at_epoch: float | None = None,
+    fs: pafs.FileSystem,
+    bucket: str,
+    dataset: str,
+    *,
+    date: str,
+    row_count: int,
+    written_at_epoch: float | None = None,
 ) -> str:
     """Write the freshness marker for one dataset at `_freshness/<dataset>.parquet`,
     overwriting in place. Records the date built, the wall-clock write time, and how
@@ -274,7 +282,10 @@ def write_freshness_marker(
 
 
 def write_freshness_markers(
-    fs: pafs.FileSystem, bucket: str, date: str, counts: dict[str, int],
+    fs: pafs.FileSystem,
+    bucket: str,
+    date: str,
+    counts: dict[str, int],
     written_at_epoch: float | None = None,
 ) -> None:
     """Write a marker for every dataset that produced rows, sharing one timestamp.

@@ -10,6 +10,7 @@ therefore re-reads exactly the in-flight chunk, starting at the committed
 offset, and rewrites the *identical* start-offset-keyed object (see
 bronze.object_key). No downstream dedup needed.
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -204,16 +205,12 @@ class Materializer:
     async def _flush(self, tp: TopicPartition) -> None:
         buf = self._buffers.pop(tp)
         meta = parse_topic(tp.topic)
-        key = object_key(
-            meta, self.canonical_map, tp.partition, buf.records[0].offset, buf.date
-        )
+        key = object_key(meta, self.canonical_map, tp.partition, buf.records[0].offset, buf.date)
         table = records_to_table(buf.records)
         path = f"{self.bucket}/{key}"
         # write_table is blocking (S3 PUT); keep the event loop responsive.
         # zstd: smaller than snappy at similar decode speed; DuckDB/ClickHouse-native.
-        await asyncio.to_thread(
-            pq.write_table, table, path, filesystem=self.fs, compression="zstd"
-        )
+        await asyncio.to_thread(pq.write_table, table, path, filesystem=self.fs, compression="zstd")
         # Commit only after the PUT landed; a failure here is fatal by design -
         # the restart re-reads this chunk and overwrites the same key.
         await self.consumer.commit({tp: buf.records[-1].offset + 1})

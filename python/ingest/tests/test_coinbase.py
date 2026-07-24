@@ -6,6 +6,7 @@ labels `bid`/`offer`; `market_trades` with BUY/SELL; `heartbeats`/`subscriptions
 control frames. Unit tests drive parse_message/process_event directly; the two
 integration tests drive the full WS loop via FakeExchangeServer.
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -55,41 +56,52 @@ class RecordingProducer(FakeProducer):
 def _l2_frame(seq, *, etype, product="BTC-USD", bids=(), offers=(), ts=TS):
     updates = [{"side": "bid", "price_level": p, "new_quantity": q} for p, q in bids]
     updates += [{"side": "offer", "price_level": p, "new_quantity": q} for p, q in offers]
-    return json.dumps({
-        "channel": "l2_data",
-        "client_id": "",
-        "timestamp": ts,
-        "sequence_num": seq,
-        "events": [{"type": etype, "product_id": product, "updates": updates}],
-    }).encode()
+    return json.dumps(
+        {
+            "channel": "l2_data",
+            "client_id": "",
+            "timestamp": ts,
+            "sequence_num": seq,
+            "events": [{"type": etype, "product_id": product, "updates": updates}],
+        }
+    ).encode()
 
 
 def _trades_frame(seq, *, product="BTC-USD", trades=(), ts=TS):
     items = [
-        {"trade_id": tid, "product_id": product, "price": px,
-         "size": sz, "side": sd, "time": ts}
+        {"trade_id": tid, "product_id": product, "price": px, "size": sz, "side": sd, "time": ts}
         for tid, px, sz, sd in trades
     ]
-    return json.dumps({
-        "channel": "market_trades",
-        "timestamp": ts,
-        "sequence_num": seq,
-        "events": [{"type": "update", "trades": items}],
-    }).encode()
+    return json.dumps(
+        {
+            "channel": "market_trades",
+            "timestamp": ts,
+            "sequence_num": seq,
+            "events": [{"type": "update", "trades": items}],
+        }
+    ).encode()
 
 
 def _heartbeat_frame(seq, ts=TS):
-    return json.dumps({
-        "channel": "heartbeats", "timestamp": ts, "sequence_num": seq,
-        "events": [{"current_time": ts, "heartbeat_counter": "1"}],
-    }).encode()
+    return json.dumps(
+        {
+            "channel": "heartbeats",
+            "timestamp": ts,
+            "sequence_num": seq,
+            "events": [{"current_time": ts, "heartbeat_counter": "1"}],
+        }
+    ).encode()
 
 
 def _subs_frame(seq, ts=TS):
-    return json.dumps({
-        "channel": "subscriptions", "timestamp": ts, "sequence_num": seq,
-        "events": [{"subscriptions": {"level2": ["BTC-USD"]}}],
-    }).encode()
+    return json.dumps(
+        {
+            "channel": "subscriptions",
+            "timestamp": ts,
+            "sequence_num": seq,
+            "events": [{"subscriptions": {"level2": ["BTC-USD"]}}],
+        }
+    ).encode()
 
 
 def _ing(symbols=("BTC-USD",)):
@@ -103,14 +115,20 @@ def _ing(symbols=("BTC-USD",)):
 
 def _msg_count(exchange, channel):
     from common.metrics import messages_received
+
     return messages_received.labels(exchange=exchange, channel=channel)._value.get()
 
 
 def make_coinbase(server, symbols=("BTC-USD",), **over):
     kw = dict(
-        subscribe_rate=100.0, subscribe_capacity=100.0, queue_maxsize=200,
-        backoff_base=0.001, backoff_cap=0.01,
-        ping_interval=None, ping_timeout=None, stale_timeout=None,
+        subscribe_rate=100.0,
+        subscribe_capacity=100.0,
+        queue_maxsize=200,
+        backoff_base=0.001,
+        backoff_cap=0.01,
+        ping_interval=None,
+        ping_timeout=None,
+        stale_timeout=None,
     )
     kw.update(over)
     return CoinbaseIngester(
@@ -123,6 +141,7 @@ def make_coinbase(server, symbols=("BTC-USD",), **over):
 
 def test_rfc3339_to_ns():
     from datetime import datetime
+
     base = int(datetime(2023, 2, 9, 20, 32, 50, tzinfo=UTC).timestamp()) * 1_000_000_000
     assert _rfc3339_to_ns("2023-02-09T20:32:50.714964855Z") == base + 714964855
     assert _rfc3339_to_ns("2023-02-09T20:32:50.714964Z") == base + 714964000
@@ -187,7 +206,7 @@ def test_parse_update_preserves_zero_and_offer():
     assert evs[0].kind == "delta"
     updates = evs[0].payload.updates
     quantities = {(u.side, u.price_level): u.new_quantity for u in updates}
-    assert quantities[("bid", "100")] == "0"      # removal preserved
+    assert quantities[("bid", "100")] == "0"  # removal preserved
     assert quantities[("offer", "101")] == "5"
 
 

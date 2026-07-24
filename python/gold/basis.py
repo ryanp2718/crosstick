@@ -13,6 +13,7 @@ The basis is the first signal driven through the full spine (`RESEARCH_thesis.md
 §5/§7.3); it is deliberately a near-trivial transform so the engineering effort
 lands on the reusable spine (as-of join, mart conventions, PIT), not the signal.
 """
+
 from __future__ import annotations
 
 from collections import defaultdict
@@ -64,9 +65,7 @@ BASIS_SUMMARY_SCHEMA = pa.schema(
 def _by_canonical(nbbo_rows: Iterable[dict]) -> dict[str, list[tuple[int, tuple]]]:
     out: dict[str, list[tuple[int, tuple]]] = defaultdict(list)
     for r in nbbo_rows:
-        out[r["canonical_symbol"]].append(
-            (r["ts_ns"], (r["ts_ns"], r["best_bid"], r["best_ask"]))
-        )
+        out[r["canonical_symbol"]].append((r["ts_ns"], (r["ts_ns"], r["best_bid"], r["best_ask"])))
     for series in out.values():
         series.sort(key=lambda e: e[0])
     return out

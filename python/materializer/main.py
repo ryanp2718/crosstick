@@ -11,6 +11,7 @@ The consumer group is the durable "how far has bronze got" cursor:
 log still retains (the 30-day retention window is the data-loss horizon -
 see docs/data-contracts.md "Retention").
 """
+
 from __future__ import annotations
 
 import asyncio

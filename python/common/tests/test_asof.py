@@ -1,5 +1,6 @@
 """merge_latest: running-latest as-of merge, backward-only (no lookahead).
 reorder: bounded watermark re-sort of a nearly-sorted stream, fail-loud past W."""
+
 from __future__ import annotations
 
 import pytest
@@ -47,9 +48,7 @@ def test_no_lookahead_property() -> None:
     streams = {"a": [(1, "a1"), (4, "a2"), (7, "a3")], "b": [(2, "b1"), (6, "b2")]}
     full = list(merge_latest(streams))
     for cutoff in (1, 2, 4, 5, 6, 7):
-        truncated = {
-            k: [(ts, v) for ts, v in seq if ts <= cutoff] for k, seq in streams.items()
-        }
+        truncated = {k: [(ts, v) for ts, v in seq if ts <= cutoff] for k, seq in streams.items()}
         expected = [(ts, snap) for ts, snap in full if ts <= cutoff]
         assert list(merge_latest(truncated)) == expected, f"lookahead leaked at {cutoff}"
 

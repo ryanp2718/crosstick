@@ -3,6 +3,7 @@
 Lives outside `tests/` because the demo entrypoint (`analytics.demo`) needs it
 at runtime; test-only helpers (delete/seed) stay in `tests/kafka_admin.py`.
 """
+
 from __future__ import annotations
 
 from aiokafka.admin import AIOKafkaAdminClient, NewTopic

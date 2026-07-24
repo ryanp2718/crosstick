@@ -1,4 +1,5 @@
 """Unit tests for the shared lake I/O helpers (LocalFileSystem, no infra)."""
+
 from __future__ import annotations
 
 import pyarrow as pa
@@ -71,9 +72,10 @@ def _file_key(dataset: str, *, exchange: str, symbol: str, date: str, name: str)
 
 
 def test_partition_key_layouts() -> None:
-    assert partition_key(
-        "book_quality", exchange="binance", symbol="BTC-USDT", date="2026-06-12"
-    ) == "book_quality/exchange=binance/symbol=BTC-USDT/date=2026-06-12/part.parquet"
+    assert (
+        partition_key("book_quality", exchange="binance", symbol="BTC-USDT", date="2026-06-12")
+        == "book_quality/exchange=binance/symbol=BTC-USDT/date=2026-06-12/part.parquet"
+    )
     assert partition_key("status_events", exchange="kraken", date="2026-06-12") == (
         "status_events/exchange=kraken/date=2026-06-12/part.parquet"
     )
@@ -133,7 +135,9 @@ def test_list_partitions_distinct(tmp_path) -> None:
 
     parts = list_partitions(fs, bucket, "book_deltas", D)
     assert sorted((p["exchange"], p["symbol"]) for p in parts) == [
-        ("binance", "BTC-USDT"), ("coinbase", "BTC-USD"), ("kraken", "BTC-USD"),
+        ("binance", "BTC-USDT"),
+        ("coinbase", "BTC-USD"),
+        ("kraken", "BTC-USD"),
     ]
     # status-style partition (exchange only, no symbol)
     _put_o(fs, bucket, partition_key("status", exchange="kraken", date=D), 1)
@@ -168,7 +172,7 @@ def test_partition_writer_round_trip(tmp_path) -> None:
     key = partition_key("book_quality", exchange="binance", symbol="BTC-USDT", date="2026-06-12")
     with PartitionWriter(fs, bucket, key, schema) as w:
         w.write_rows([{"a": 1, "b": "x"}, {"a": 2, "b": "y"}])  # batch 1 -> row group 1
-        w.write_rows([{"a": 3, "b": "z"}])                       # batch 2 -> row group 2
+        w.write_rows([{"a": 3, "b": "z"}])  # batch 2 -> row group 2
     got = read_dataset(fs, bucket, "book_quality", "2026-06-12")
     assert got is not None
     assert got.sort_by("a").to_pydict() == {"a": [1, 2, 3], "b": ["x", "y", "z"]}

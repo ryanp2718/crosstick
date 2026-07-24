@@ -4,6 +4,7 @@ Kept separate from conftest fixtures so both replay and gateway integration
 tests can reuse them. Topic creation lives in `analytics.kafka_admin` (shared
 with the offline demo).
 """
+
 from __future__ import annotations
 
 import asyncio

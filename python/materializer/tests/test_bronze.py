@@ -1,4 +1,5 @@
 """Unit tests for the bronze projection logic (pure, no infrastructure)."""
+
 from __future__ import annotations
 
 from pathlib import Path
@@ -81,8 +82,7 @@ def test_object_key_layouts() -> None:
     cmap = CanonicalMap.from_yaml(INSTRUMENTS_FILE)
     deltas = parse_topic("md.book.binance.BTCUSDT.deltas")
     assert object_key(deltas, cmap, 0, 42, "2023-11-14") == (
-        "book_deltas/exchange=binance/symbol=BTC-USDT/date=2023-11-14/"
-        "000-000000000042.parquet"
+        "book_deltas/exchange=binance/symbol=BTC-USDT/date=2023-11-14/000-000000000042.parquet"
     )
     status = parse_topic("md.status.kraken")
     assert object_key(status, cmap, 0, 0, "2023-11-14") == (

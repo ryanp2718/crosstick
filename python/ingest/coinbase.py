@@ -18,6 +18,7 @@ Because the counter is per-connection (not per-symbol), gap detection lives on t
 ingester, not in SymbolContext.last_seq. parse_message runs in the single applier
 task in strict frame order, so tracking _expected_seq there is safe.
 """
+
 from __future__ import annotations
 
 import json
@@ -178,22 +179,31 @@ class CoinbaseIngester(BaseIngester):
             return []
         else:
             log.warning("connection seq gap: got %d expected %d", seq, self._expected_seq)
-            return [ParsedEvent(
-                symbol=self.symbols[0], kind="error", sequence=seq,
-                local_recv_ts_ns=local_recv_ts_ns,
-            )]
+            return [
+                ParsedEvent(
+                    symbol=self.symbols[0],
+                    kind="error",
+                    sequence=seq,
+                    local_recv_ts_ns=local_recv_ts_ns,
+                )
+            ]
 
         if env.channel == "l2_data":
             ts_ns = _rfc3339_to_ns(env.timestamp)
             out: list[ParsedEvent] = []
             for raw_ev in env.events:
                 ev = _L2_DEC.decode(raw_ev)
-                out.append(ParsedEvent(
-                    symbol=ev.product_id,
-                    kind="snapshot" if ev.type == "snapshot" else "delta",
-                    sequence=seq, payload=ev, raw_bytes=len(raw),
-                    exchange_ts_ns=ts_ns, local_recv_ts_ns=local_recv_ts_ns,
-                ))
+                out.append(
+                    ParsedEvent(
+                        symbol=ev.product_id,
+                        kind="snapshot" if ev.type == "snapshot" else "delta",
+                        sequence=seq,
+                        payload=ev,
+                        raw_bytes=len(raw),
+                        exchange_ts_ns=ts_ns,
+                        local_recv_ts_ns=local_recv_ts_ns,
+                    )
+                )
             return out
 
         if env.channel == "market_trades":
@@ -201,11 +211,17 @@ class CoinbaseIngester(BaseIngester):
             for raw_ev in env.events:
                 ev = _TRADE_DEC.decode(raw_ev)
                 for t in ev.trades:
-                    out.append(ParsedEvent(
-                        symbol=t.product_id, kind="trade", sequence=seq, payload=t,
-                        raw_bytes=len(raw), exchange_ts_ns=_rfc3339_to_ns(t.time),
-                        local_recv_ts_ns=local_recv_ts_ns,
-                    ))
+                    out.append(
+                        ParsedEvent(
+                            symbol=t.product_id,
+                            kind="trade",
+                            sequence=seq,
+                            payload=t,
+                            raw_bytes=len(raw),
+                            exchange_ts_ns=_rfc3339_to_ns(t.time),
+                            local_recv_ts_ns=local_recv_ts_ns,
+                        )
+                    )
             return out
 
         return []  # heartbeats, subscriptions, unknown control frames
@@ -221,12 +237,17 @@ class CoinbaseIngester(BaseIngester):
             await self._emit(
                 book_snapshot_topic(self.exchange, ctx.symbol),
                 BookSnapshot(
-                    exchange=self.exchange, symbol=ctx.symbol, sequence=event.sequence,
-                    bids=wbids, asks=wasks,
-                    exchange_ts_ns=event.exchange_ts_ns, local_ts_ns=event.local_recv_ts_ns,
+                    exchange=self.exchange,
+                    symbol=ctx.symbol,
+                    sequence=event.sequence,
+                    bids=wbids,
+                    asks=wasks,
+                    exchange_ts_ns=event.exchange_ts_ns,
+                    local_ts_ns=event.local_recv_ts_ns,
                     epoch=self._epoch,
                 ),
-                ctx.symbol, event,
+                ctx.symbol,
+                event,
             )
             return
 
@@ -238,12 +259,17 @@ class CoinbaseIngester(BaseIngester):
             await self._emit(
                 book_delta_topic(self.exchange, ctx.symbol),
                 BookDelta(
-                    exchange=self.exchange, symbol=ctx.symbol, sequence=event.sequence,
-                    bids=wbids, asks=wasks,
-                    exchange_ts_ns=event.exchange_ts_ns, local_ts_ns=event.local_recv_ts_ns,
+                    exchange=self.exchange,
+                    symbol=ctx.symbol,
+                    sequence=event.sequence,
+                    bids=wbids,
+                    asks=wasks,
+                    exchange_ts_ns=event.exchange_ts_ns,
+                    local_ts_ns=event.local_recv_ts_ns,
                     epoch=self._epoch,
                 ),
-                ctx.symbol, event,
+                ctx.symbol,
+                event,
             )
             return
 
@@ -252,11 +278,17 @@ class CoinbaseIngester(BaseIngester):
             await self._emit(
                 trade_topic(self.exchange, ctx.symbol),
                 Trade(
-                    exchange=self.exchange, symbol=ctx.symbol, trade_id=t.trade_id,
-                    price=t.price, size=t.size, side=_trade_side(t.side),
-                    exchange_ts_ns=event.exchange_ts_ns, local_ts_ns=event.local_recv_ts_ns,
+                    exchange=self.exchange,
+                    symbol=ctx.symbol,
+                    trade_id=t.trade_id,
+                    price=t.price,
+                    size=t.size,
+                    side=_trade_side(t.side),
+                    exchange_ts_ns=event.exchange_ts_ns,
+                    local_ts_ns=event.local_recv_ts_ns,
                 ),
-                ctx.symbol, event,
+                ctx.symbol,
+                event,
             )
 
     # ─── internals ─────────────────────────────────────────────────────────
@@ -265,10 +297,12 @@ class CoinbaseIngester(BaseIngester):
         super()._reset_contexts()
         self._expected_seq = None
 
+
 def _split_levels(
     updates: list[_Update],
-) -> tuple[list[tuple[Decimal, Decimal]], list[tuple[Decimal, Decimal]],
-           list[BookLevel], list[BookLevel]]:
+) -> tuple[
+    list[tuple[Decimal, Decimal]], list[tuple[Decimal, Decimal]], list[BookLevel], list[BookLevel]
+]:
     """One pass over updates → (decimal bids, decimal asks, wire bids, wire asks).
 
     Decimal tuples feed OrderBook; BookLevel wire rows feed the Kafka payload.

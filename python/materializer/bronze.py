@@ -10,6 +10,7 @@ Layout and schema are the contract documented in docs/data-contracts.md
 the capture/replay harness uses - so any bronze slice is also a replayable
 corpus.
 """
+
 from __future__ import annotations
 
 import logging

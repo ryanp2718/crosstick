@@ -7,6 +7,7 @@ sets, the failure mode of mutating shared Gauges in place). A failed refresh
 (transient MinIO blip) keeps the last good snapshot and is itself observable via
 `lake_exporter_refresh_errors_total`.
 """
+
 from __future__ import annotations
 
 import logging
@@ -26,7 +27,8 @@ class LakeCollector:
     merged into every scrape, so a scrape never blocks on the full LIST walk."""
 
     def __init__(
-        self, build: Callable[[], list[Metric]],
+        self,
+        build: Callable[[], list[Metric]],
         audit: Callable[[], list[Metric]] | None = None,
     ) -> None:
         self._build = build

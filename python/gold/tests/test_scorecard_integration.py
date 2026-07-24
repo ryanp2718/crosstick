@@ -11,6 +11,7 @@ Requires Docker; excluded from the default suite. Run with:
 
     uv run python -m pytest -m integration
 """
+
 from __future__ import annotations
 
 import json

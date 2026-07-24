@@ -12,6 +12,7 @@ Backward-only **by construction**: a snapshot at time T reflects only events wit
 ts <= T, never a future one - so point-in-time correctness is structural, not a
 runtime guard. (A no-lookahead property test pins this.)
 """
+
 from __future__ import annotations
 
 import heapq
@@ -36,9 +37,7 @@ class LatenessError(Exception):
     (e.g. a host-clock regression past the reconnect-overlap window)."""
 
 
-def _tag(
-    key: Hashable, seq: Iterable[tuple[int, Any]]
-) -> Iterator[tuple[int, Hashable, Any]]:
+def _tag(key: Hashable, seq: Iterable[tuple[int, Any]]) -> Iterator[tuple[int, Hashable, Any]]:
     """Tag a stream's events with their key (bound at call time, so the per-stream
     iterators don't all close over the loop's final key)."""
     for ts, val in seq:

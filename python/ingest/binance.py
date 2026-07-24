@@ -27,6 +27,7 @@ The REST fetch runs off the applier but the snapshot is *applied* on the applier
 (single writer to the book). A per-connection generation guards against a fetch
 from a torn-down connection writing into the next one.
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -65,6 +66,7 @@ _FETCH_FAILED = object()
 
 class _Disc(msgspec.Struct):
     """Discriminator: every market frame carries `e`; control acks do not."""
+
     e: str = ""
 
 
@@ -162,18 +164,29 @@ class BinanceIngester(BaseIngester):
         kind = _DISC_DEC.decode(raw).e
         if kind == "depthUpdate":
             ev = _DEPTH_DEC.decode(raw)
-            return [ParsedEvent(
-                symbol=ev.s, kind="delta", sequence=ev.u, payload=ev,
-                raw_bytes=len(raw), exchange_ts_ns=ev.E * 1_000_000,
-                local_recv_ts_ns=local_recv_ts_ns,
-            )]
+            return [
+                ParsedEvent(
+                    symbol=ev.s,
+                    kind="delta",
+                    sequence=ev.u,
+                    payload=ev,
+                    raw_bytes=len(raw),
+                    exchange_ts_ns=ev.E * 1_000_000,
+                    local_recv_ts_ns=local_recv_ts_ns,
+                )
+            ]
         if kind == "trade":
             t = _TRADE_DEC.decode(raw)
-            return [ParsedEvent(
-                symbol=t.s, kind="trade", payload=t,
-                raw_bytes=len(raw), exchange_ts_ns=t.T * 1_000_000,
-                local_recv_ts_ns=local_recv_ts_ns,
-            )]
+            return [
+                ParsedEvent(
+                    symbol=t.s,
+                    kind="trade",
+                    payload=t,
+                    raw_bytes=len(raw),
+                    exchange_ts_ns=t.T * 1_000_000,
+                    local_recv_ts_ns=local_recv_ts_ns,
+                )
+            ]
         return []  # subscribe ack / unknown control frame
 
     async def process_event(self, ctx: SymbolContext, event: ParsedEvent) -> None:
@@ -182,11 +195,17 @@ class BinanceIngester(BaseIngester):
             await self._emit(
                 trade_topic(self.exchange, ctx.symbol),
                 Trade(
-                    exchange=self.exchange, symbol=ctx.symbol, trade_id=str(t.t),
-                    price=t.p, size=t.q, side=Side.ASK if t.m else Side.BID,
-                    exchange_ts_ns=event.exchange_ts_ns, local_ts_ns=event.local_recv_ts_ns,
+                    exchange=self.exchange,
+                    symbol=ctx.symbol,
+                    trade_id=str(t.t),
+                    price=t.p,
+                    size=t.q,
+                    side=Side.ASK if t.m else Side.BID,
+                    exchange_ts_ns=event.exchange_ts_ns,
+                    local_ts_ns=event.local_recv_ts_ns,
                 ),
-                ctx.symbol, event,
+                ctx.symbol,
+                event,
             )
             return
 
@@ -220,12 +239,17 @@ class BinanceIngester(BaseIngester):
         await self._emit(
             book_snapshot_topic(self.exchange, ctx.symbol),
             BookSnapshot(
-                exchange=self.exchange, symbol=ctx.symbol, sequence=last_id,
-                bids=wbids, asks=wasks,
-                exchange_ts_ns=0, local_ts_ns=event.local_recv_ts_ns,
+                exchange=self.exchange,
+                symbol=ctx.symbol,
+                sequence=last_id,
+                bids=wbids,
+                asks=wasks,
+                exchange_ts_ns=0,
+                local_ts_ns=event.local_recv_ts_ns,
                 epoch=self._epoch,
             ),
-            ctx.symbol, event,
+            ctx.symbol,
+            event,
         )
         # Replay everything buffered while the snapshot was in flight, then the
         # delta that triggered the snapshot application.
@@ -253,12 +277,17 @@ class BinanceIngester(BaseIngester):
         await self._emit(
             book_delta_topic(self.exchange, ctx.symbol),
             BookDelta(
-                exchange=self.exchange, symbol=ctx.symbol, sequence=ev.u,
-                bids=ev.b, asks=ev.a,
-                exchange_ts_ns=event.exchange_ts_ns, local_ts_ns=event.local_recv_ts_ns,
+                exchange=self.exchange,
+                symbol=ctx.symbol,
+                sequence=ev.u,
+                bids=ev.b,
+                asks=ev.a,
+                exchange_ts_ns=event.exchange_ts_ns,
+                local_ts_ns=event.local_recv_ts_ns,
                 epoch=self._epoch,
             ),
-            ctx.symbol, event,
+            ctx.symbol,
+            event,
         )
         ctx.last_seq = ev.u
 
@@ -276,9 +305,7 @@ class BinanceIngester(BaseIngester):
         if gen == self._generation:
             self._snapshots[symbol] = value
 
-    async def _rest_snapshot(
-        self, symbol: str
-    ) -> tuple[int, list[BookLevel], list[BookLevel]]:
+    async def _rest_snapshot(self, symbol: str) -> tuple[int, list[BookLevel], list[BookLevel]]:
         client = await self._get_client()
         resp = await client.get(
             f"{self._rest_base}/api/v3/depth",

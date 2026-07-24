@@ -1,4 +1,5 @@
 """Gold basis mart: cross-quote spread math, pairing, and the daily rollup."""
+
 from __future__ import annotations
 
 from decimal import Decimal
@@ -85,8 +86,7 @@ def test_basis_summary_robust_to_outliers() -> None:
     # stats must stay pinned at -4 while raw min/max still flag the extremes.
     bps = [-4.0] * 99 + [-129.0, 491.0]
     series = [
-        {"base": "BTC", "date": "2026-06-12", "ts_ns": i, "basis_bps": v}
-        for i, v in enumerate(bps)
+        {"base": "BTC", "date": "2026-06-12", "ts_ns": i, "basis_bps": v} for i, v in enumerate(bps)
     ]
     s = build_basis_summary(series)[0]
     assert s["n_obs"] == 101

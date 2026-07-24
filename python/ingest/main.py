@@ -6,6 +6,7 @@ starts the Prometheus sidecar, and runs until SIGINT/SIGTERM. Symbols come from
 ``$KAFKA_BROKERS`` (see common.kafka_io). This is the process docker-compose
 launches for ingest-binance / ingest-coinbase / ingest-kraken.
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -66,9 +67,7 @@ def build_ingesters(
 async def amain() -> None:
     exchange = os.environ.get("EXCHANGE", "").strip().lower()
     if not exchange:
-        raise SystemExit(
-            "EXCHANGE env var is required (coinbase|binance|binance-futures|kraken)"
-        )
+        raise SystemExit("EXCHANGE env var is required (coinbase|binance|binance-futures|kraken)")
     symbols = parse_symbols(os.environ.get("SYMBOLS"))
 
     serve_metrics_in_background()  # port from $METRICS_PORT
@@ -83,9 +82,7 @@ async def amain() -> None:
         shutdown_futs: list[asyncio.Future[None]] = []  # keep refs (RUF006)
 
         def _request_shutdown() -> None:
-            shutdown_futs.extend(
-                asyncio.ensure_future(ing.shutdown()) for ing in ingesters
-            )
+            shutdown_futs.extend(asyncio.ensure_future(ing.shutdown()) for ing in ingesters)
 
         loop = asyncio.get_running_loop()
         for sig in (signal.SIGINT, signal.SIGTERM):

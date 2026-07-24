@@ -7,6 +7,7 @@ asks). Unit tests drive parse_message / process_event / the U/u sync directly;
 integration tests drive the full WS loop via FakeExchangeServer with an injected
 (no-network) REST snapshot.
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -45,16 +46,32 @@ class RecordingProducer(FakeProducer):
 
 
 def _depth_frame(s, U, u, *, bids=(), asks=(), E=1):
-    return json.dumps({
-        "e": "depthUpdate", "E": E, "s": s, "U": U, "u": u,
-        "b": [[p, q] for p, q in bids], "a": [[p, q] for p, q in asks],
-    }).encode()
+    return json.dumps(
+        {
+            "e": "depthUpdate",
+            "E": E,
+            "s": s,
+            "U": U,
+            "u": u,
+            "b": [[p, q] for p, q in bids],
+            "a": [[p, q] for p, q in asks],
+        }
+    ).encode()
 
 
 def _trade_frame(s, *, tid, p, q, m, T=1):
-    return json.dumps({
-        "e": "trade", "E": T, "s": s, "t": tid, "p": p, "q": q, "T": T, "m": m,
-    }).encode()
+    return json.dumps(
+        {
+            "e": "trade",
+            "E": T,
+            "s": s,
+            "t": tid,
+            "p": p,
+            "q": q,
+            "T": T,
+            "m": m,
+        }
+    ).encode()
 
 
 def _ack_frame(i=1):
@@ -63,8 +80,10 @@ def _ack_frame(i=1):
 
 def _ing(symbols=("BTCUSDT",)):
     return BinanceIngester(
-        producer=RecordingProducer(), symbols=list(symbols),
-        ws_url="ws://unused", stale_timeout=None,
+        producer=RecordingProducer(),
+        symbols=list(symbols),
+        ws_url="ws://unused",
+        stale_timeout=None,
     )
 
 
@@ -91,9 +110,14 @@ def make_binance(server, symbols=("BTCUSDT",), snapshots=None, fail=False, delay
             return last_id, _wire(bids), _wire(asks)
 
     kw = dict(
-        subscribe_rate=100.0, subscribe_capacity=100.0, queue_maxsize=500,
-        backoff_base=0.001, backoff_cap=0.01,
-        ping_interval=None, ping_timeout=None, stale_timeout=None,
+        subscribe_rate=100.0,
+        subscribe_capacity=100.0,
+        queue_maxsize=500,
+        backoff_base=0.001,
+        backoff_cap=0.01,
+        ping_interval=None,
+        ping_timeout=None,
+        stale_timeout=None,
     )
     kw.update(over)
     return _Fake(producer=RecordingProducer(), symbols=list(symbols), ws_url=server.url, **kw)
@@ -108,8 +132,10 @@ def test_build_subscribe_messages():
     d = json.loads(msgs[0])
     assert d["method"] == "SUBSCRIBE"
     assert d["params"] == [
-        "btcusdt@depth@100ms", "btcusdt@trade",
-        "ethusdt@depth@100ms", "ethusdt@trade",
+        "btcusdt@depth@100ms",
+        "btcusdt@trade",
+        "ethusdt@depth@100ms",
+        "ethusdt@trade",
     ]
 
 
@@ -165,9 +191,9 @@ async def test_snapshot_applies_buffer_drains_and_goes_live():
 
     # Two deltas that arrived before the snapshot landed.
     d1 = ing.parse_message(_depth_frame("BTCUSDT", 101, 102, bids=[("101", "1")]), 1)[0]
-    d2 = ing.parse_message(
-        _depth_frame("BTCUSDT", 103, 104, asks=[("110", "0"), ("109", "2")]), 1
-    )[0]
+    d2 = ing.parse_message(_depth_frame("BTCUSDT", 103, 104, asks=[("110", "0"), ("109", "2")]), 1)[
+        0
+    ]
     ctx.buffer_append(d1)
     ctx.buffer_append(d2)
 
@@ -312,8 +338,8 @@ async def test_integration_snapshot_deltas_trade(fake_server):  # noqa: F811
     assert "md.book.binance.BTCUSDT.snapshots" in topics
     assert "md.book.binance.BTCUSDT.deltas" in topics
     assert "md.trades.binance.BTCUSDT" in topics
-    assert best_bid == (Decimal("100"), Decimal("9"))   # qty updated by seq 101-102
-    assert best_ask == (Decimal("109"), Decimal("2"))   # 110 removed, 109 added by seq 103-104
+    assert best_bid == (Decimal("100"), Decimal("9"))  # qty updated by seq 101-102
+    assert best_ask == (Decimal("109"), Decimal("2"))  # 110 removed, 109 added by seq 103-104
 
 
 @pytest.mark.asyncio
@@ -344,9 +370,7 @@ async def test_integration_update_id_gap_reconnects(fake_server):  # noqa: F811
         # First (and only) delta starts far past lastUpdateId+1 -> snapshot stale.
         _depth_frame("BTCUSDT", 500, 510, bids=[("100", "1")]).decode(),
     ]
-    ing = make_binance(
-        fake_server, snapshots={"BTCUSDT": (100, [("100", "5")], [("110", "5")])}
-    )
+    ing = make_binance(fake_server, snapshots={"BTCUSDT": (100, [("100", "5")], [("110", "5")])})
     run_task = asyncio.create_task(ing.run())
     for _ in range(300):
         if fake_server.connections >= 2:

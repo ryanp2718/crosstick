@@ -49,6 +49,7 @@ jobs:
           python-version: "3.12"
       - run: uv sync --frozen
       - run: uv run ruff check .
+      - run: uv run ruff format --check .
       - run: uv run pytest -q
 
   # Replay harness: testcontainers Redpanda + the real Node gateway in the loop.

@@ -11,6 +11,7 @@ This module is deliberately transport-agnostic (no aiokafka import): `capture`
 maps `ConsumerRecord`s into `CorpusRecord`s and `replay` maps them back to
 producer sends. Keeping it pure makes the format unit-testable without Docker.
 """
+
 from __future__ import annotations
 
 import gzip

@@ -9,6 +9,7 @@ exits non-zero if any scorecard check has violations (ops/CI use).
 Env: ``S3_ENDPOINT`` / keys; ``INSTRUMENTS_FILE``; ``SILVER_BUCKET`` (default
 ``silver``) and ``GOLD_BUCKET`` (default ``gold``).
 """
+
 from __future__ import annotations
 
 import argparse
@@ -124,7 +125,9 @@ def write_basis_for_date(
         writer.close()
     if summaries:
         path = write_object(
-            fs, gold_bucket, partition_key("basis_summary", date=date),
+            fs,
+            gold_bucket,
+            partition_key("basis_summary", date=date),
             basis_summary_table(summaries),
         )
         log.info("gold PUT %s (%d basis obs, %d base(s))", path, n, len(summaries))
@@ -157,7 +160,9 @@ def main() -> None:
         scorecard = build_for_date(fs, silver_bucket, date)
         if scorecard:
             path = write_object(
-                fs, gold_bucket, partition_key("scorecard", date=date),
+                fs,
+                gold_bucket,
+                partition_key("scorecard", date=date),
                 scorecard_table(scorecard),
             )
             counts["scorecard"] = len(scorecard)
@@ -168,8 +173,11 @@ def main() -> None:
                 if r["n_violations"]:
                     log.warning(
                         "  %s %s/%s: %d violations %s",
-                        r["check"], r["exchange"], r["canonical_symbol"] or "-",
-                        r["n_violations"], r["detail"] or "",
+                        r["check"],
+                        r["exchange"],
+                        r["canonical_symbol"] or "-",
+                        r["n_violations"],
+                        r["detail"] or "",
                     )
 
         counts.update(write_basis_for_date(fs, silver_bucket, gold_bucket, date, canonical))

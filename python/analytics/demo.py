@@ -16,6 +16,7 @@ together by demo/docker-compose.yml):
                  head of the corpus (the book snapshots that light the
                  dashboard up).
 """
+
 from __future__ import annotations
 
 import argparse

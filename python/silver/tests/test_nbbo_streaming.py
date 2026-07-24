@@ -2,6 +2,7 @@
 on disk within the lateness window and produce the SAME NBBO as the `_build_nbbo`
 oracle, fail loud past the window, and honor down-sentinel eviction. These pin the
 adversarial cases the order-clean golden corpus never exercises (test_streaming)."""
+
 from __future__ import annotations
 
 from collections import defaultdict
@@ -21,9 +22,14 @@ S = 1_000_000_000  # 1s in ns (WINDOW_NS is 60s)
 
 def _q(exchange: str, symbol: str, ts: int, bid: str, ask: str) -> dict:
     return {
-        "exchange": exchange, "canonical_symbol": symbol, "date": DATE, "ts_ns": ts,
-        "best_bid": Decimal(bid), "best_ask": Decimal(ask),
-        "bid_sz": Decimal("1"), "ask_sz": Decimal("1"),
+        "exchange": exchange,
+        "canonical_symbol": symbol,
+        "date": DATE,
+        "ts_ns": ts,
+        "best_bid": Decimal(bid),
+        "best_ask": Decimal(ask),
+        "bid_sz": Decimal("1"),
+        "ask_sz": Decimal("1"),
     }
 
 
@@ -42,8 +48,15 @@ def _seed_quotes(fs: pafs.FileSystem, bucket: str, rows: list[dict]) -> None:
 def _norm(rows: list[dict]) -> list[tuple]:
     # compare on values, scale/order-insensitive (the disk round-trip rescales Decimals)
     return sorted(
-        (r["canonical_symbol"], r["ts_ns"], float(r["best_bid"]), float(r["best_ask"]),
-         r["bid_venue"], r["ask_venue"], r["n_venues"])
+        (
+            r["canonical_symbol"],
+            r["ts_ns"],
+            float(r["best_bid"]),
+            float(r["best_ask"]),
+            r["bid_venue"],
+            r["ask_venue"],
+            r["n_venues"],
+        )
         for r in rows
     )
 
@@ -64,7 +77,7 @@ def test_seam_straggler_within_window_matches_oracle(tmp_path) -> None:
     rows = [
         _q("coinbase", "BTC-USD", 1 * S, "100", "101"),
         _q("coinbase", "BTC-USD", 10 * S, "102", "103"),
-        _q("coinbase", "BTC-USD", 5 * S, "99", "100"),   # straggler, 5s behind (< window)
+        _q("coinbase", "BTC-USD", 5 * S, "99", "100"),  # straggler, 5s behind (< window)
         _q("kraken", "BTC-USD", 2 * S, "100", "102"),
         _q("kraken", "BTC-USD", 8 * S, "101", "103"),
     ]
@@ -101,13 +114,20 @@ def test_down_sentinel_evicts_under_streaming(tmp_path) -> None:
     bucket = (tmp_path / "silver").as_posix()
     rows = [
         _q("coinbase", "BTC-USD", 1 * S, "100", "101"),
-        _q("kraken", "BTC-USD", 2 * S, "120", "121"),    # kraken is best, then goes down
+        _q("kraken", "BTC-USD", 2 * S, "120", "121"),  # kraken is best, then goes down
         _q("coinbase", "BTC-USD", 5 * S, "100", "101"),
     ]
-    status = [{
-        "exchange": "kraken", "date": DATE, "ts_ns": 3 * S, "state": "down",
-        "prev_state": "up", "is_transition": True, "downtime_ns": None,
-    }]
+    status = [
+        {
+            "exchange": "kraken",
+            "date": DATE,
+            "ts_ns": 3 * S,
+            "state": "down",
+            "prev_state": "up",
+            "is_transition": True,
+            "downtime_ns": None,
+        }
+    ]
     streamed = _run(fs, bucket, rows, status)
     assert _norm(streamed) == _norm(_build_nbbo(rows, status))
     # after kraken's down at ts=3, the ts=5 nbbo must fall back to coinbase, not a

@@ -1,4 +1,5 @@
 """Tests for corpus replay (fake producer, no Docker)."""
+
 from __future__ import annotations
 
 import asyncio

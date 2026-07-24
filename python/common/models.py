@@ -3,6 +3,7 @@
 Prices and sizes are strings on the wire (no float drift, no Decimal-in-JSON pain).
 Convert to Decimal at the boundary where math is needed.
 """
+
 from __future__ import annotations
 
 import enum
@@ -169,7 +170,14 @@ def encode(msg: msgspec.Struct) -> bytes:
 # Streaming decoder: covers only the types that ingesters and the gateway
 # actually produce.  VWAP is excluded - it is never on a live topic.
 _STREAMING_TYPES = (
-    BookSnapshot | BookDelta | Trade | BBO | Spread | Status | Liquidation | MarkPrice
+    BookSnapshot
+    | BookDelta
+    | Trade
+    | BBO
+    | Spread
+    | Status
+    | Liquidation
+    | MarkPrice
     | OpenInterest
 )
 _DECODER = msgspec.json.Decoder(_STREAMING_TYPES)

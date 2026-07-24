@@ -1,4 +1,5 @@
 """Tests for OrderBook. Written first (TDD)."""
+
 from __future__ import annotations
 
 from decimal import Decimal

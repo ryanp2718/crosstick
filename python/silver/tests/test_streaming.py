@@ -6,6 +6,7 @@ The golden corpus is order-clean, so the streaming 2-way merge of snapshots and
 deltas is identical to build_silver's per-partition sort - this pins that
 equivalence unconditionally.
 """
+
 from __future__ import annotations
 
 from collections import defaultdict

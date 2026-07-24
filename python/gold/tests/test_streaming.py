@@ -5,6 +5,7 @@ it row-for-row against build_scorecard over the whole day (the simple oracle).
 Seeds the golden corpus as bronze on a LocalFileSystem and runs the real silver
 streaming driver to produce the silver it reads - no Docker.
 """
+
 from __future__ import annotations
 
 import json
@@ -82,7 +83,8 @@ def test_book_accumulator_merges_across_tables(tmp_path) -> None:
     fs, silver, date = _silver(tmp_path)
     parts = list_partitions(fs, silver, "book_quality", date)
     part = next(
-        p for p in parts
+        p
+        for p in parts
         if sum(t.num_rows for t in iter_partition_tables(fs, silver, "book_quality", date, p)) > 1
     )
     table = pa.concat_tables(list(iter_partition_tables(fs, silver, "book_quality", date, part)))
@@ -98,10 +100,20 @@ def test_book_accumulator_merges_across_tables(tmp_path) -> None:
 
 def _bq(epoch: int, recv: int, kind: str = "delta") -> dict:
     return {
-        "exchange": "kraken", "canonical_symbol": "BTC-USD", "date": "2026-06-16",
-        "kind": kind, "offset": 0, "sequence": 0, "epoch": epoch,
-        "exchange_ts_ns": 0, "local_ts_ns": recv, "local_recv_ts_ns": recv,
-        "best_bid": None, "best_ask": None, "seq_gap": 0, "crossed": False,
+        "exchange": "kraken",
+        "canonical_symbol": "BTC-USD",
+        "date": "2026-06-16",
+        "kind": kind,
+        "offset": 0,
+        "sequence": 0,
+        "epoch": epoch,
+        "exchange_ts_ns": 0,
+        "local_ts_ns": recv,
+        "local_recv_ts_ns": recv,
+        "best_bid": None,
+        "best_ask": None,
+        "seq_gap": 0,
+        "crossed": False,
         "invariant_kind": None,
     }
 

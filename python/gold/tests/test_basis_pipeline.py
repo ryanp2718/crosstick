@@ -4,6 +4,7 @@ The corpus carries coinbase+kraken BTC-USD and binance BTC-USDT, so the first
 research signal (the stablecoin basis) is reconstructable from it. Binance's
 planted crossed book ends its leg, producing a realistic basis gap.
 """
+
 from __future__ import annotations
 
 from decimal import Decimal

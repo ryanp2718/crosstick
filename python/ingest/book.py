@@ -13,6 +13,7 @@ State ownership: BookState was removed.  All lifecycle state lives in
 SymbolContext.state (SymbolState enum in base_ingester.py) - a single
 source of truth that prevents the two state machines from diverging.
 """
+
 from __future__ import annotations
 
 import zlib
@@ -154,7 +155,7 @@ class OrderBook:
         evicted_bids: list[Decimal] = []
         evicted_asks: list[Decimal] = []
         while len(self._bids) > depth:
-            evicted_bids.append(self._bids.popitem(0)[0])   # lowest bid = worst
+            evicted_bids.append(self._bids.popitem(0)[0])  # lowest bid = worst
         while len(self._asks) > depth:
             evicted_asks.append(self._asks.popitem(-1)[0])  # highest ask = worst
         return evicted_bids, evicted_asks

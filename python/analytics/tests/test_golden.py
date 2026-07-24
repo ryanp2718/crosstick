@@ -1,4 +1,5 @@
 """Verify the golden corpus is deterministic and its planted events are real."""
+
 from __future__ import annotations
 
 from decimal import Decimal
@@ -42,9 +43,7 @@ def test_all_values_decode(golden_records: list[CorpusRecord]) -> None:
         decode(r.value)  # raises on any malformed value
 
 
-def test_corpus_roundtrips_through_file(
-    golden_records: list[CorpusRecord], tmp_path: Path
-) -> None:
+def test_corpus_roundtrips_through_file(golden_records: list[CorpusRecord], tmp_path: Path) -> None:
     path = tmp_path / "golden.jsonl.gz"
     write_corpus(path, golden_records)
     assert list(read_corpus(path)) == golden_records

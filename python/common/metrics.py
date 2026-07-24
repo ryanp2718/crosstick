@@ -1,4 +1,5 @@
 """Prometheus metrics + a tiny aiohttp-free HTTP server exposing /metrics."""
+
 from __future__ import annotations
 
 import asyncio

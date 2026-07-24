@@ -18,6 +18,7 @@ The base class owns:
 On `asyncio.QueueFull` we close the WS and let the connect-loop resync - see
 `docs/anti-patterns.md`: dropping deltas corrupts the book permanently.
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -55,8 +56,16 @@ from ingest.book import BookInvariantError, OrderBook
 log = logging.getLogger(__name__)
 
 EventKind = Literal[
-    "trade", "snapshot", "delta", "liquidation", "mark_price", "open_interest",
-    "heartbeat", "subscribed", "error", "other",
+    "trade",
+    "snapshot",
+    "delta",
+    "liquidation",
+    "mark_price",
+    "open_interest",
+    "heartbeat",
+    "subscribed",
+    "error",
+    "other",
 ]
 
 # Maximum number of WS deltas to buffer while a REST snapshot is in-flight
@@ -69,8 +78,8 @@ MAX_BUFFER_DELTAS: int = 500
 class SymbolState(enum.StrEnum):
     BOOTSTRAP = "bootstrap"  # initial; awaiting snapshot (REST or in-band)
     BUFFERING = "buffering"  # WS up; deltas buffered while REST snapshot in flight (Binance)
-    LIVE = "live"            # snapshot applied; deltas applying normally
-    STALE = "stale"          # gap/CRC mismatch detected; awaiting resync
+    LIVE = "live"  # snapshot applied; deltas applying normally
+    STALE = "stale"  # gap/CRC mismatch detected; awaiting resync
 
 
 _STATE_TO_METRIC = {
@@ -95,12 +104,11 @@ class SymbolContext:
     def set_state(self, new: SymbolState, *, reason: str = "") -> None:
         if new is self.state:
             return
-        log.info("symbol_state %s/%s: %s -> %s (%s)",
-                 self.exchange, self.symbol, self.state, new, reason)
-        self.state = new
-        book_state.labels(exchange=self.exchange, symbol=self.symbol).set(
-            _STATE_TO_METRIC[new]
+        log.info(
+            "symbol_state %s/%s: %s -> %s (%s)", self.exchange, self.symbol, self.state, new, reason
         )
+        self.state = new
+        book_state.labels(exchange=self.exchange, symbol=self.symbol).set(_STATE_TO_METRIC[new])
 
     def buffer_append(self, event: ParsedEvent) -> None:
         """Append a delta to the pre-snapshot buffer.
@@ -119,10 +127,11 @@ class SymbolContext:
 @dataclass
 class ParsedEvent:
     """Normalized exchange event after parsing the raw WS frame."""
+
     symbol: str
     kind: EventKind
-    sequence: int | None = None             # for sequence-validated kinds
-    payload: object | None = None           # exchange-specific structured payload
+    sequence: int | None = None  # for sequence-validated kinds
+    payload: object | None = None  # exchange-specific structured payload
     raw_bytes: int = 0
     exchange_ts_ns: int = 0
     local_recv_ts_ns: int = 0
@@ -384,12 +393,12 @@ class BaseIngester(ABC):
             epoch=self._epoch,
         )
         event = ParsedEvent(
-            symbol=ctx.symbol, kind="snapshot",
-            exchange_ts_ns=0, local_recv_ts_ns=now_ns,
+            symbol=ctx.symbol,
+            kind="snapshot",
+            exchange_ts_ns=0,
+            local_recv_ts_ns=now_ns,
         )
-        await self._emit(
-            book_snapshot_topic(self.exchange, ctx.symbol), snap, ctx.symbol, event
-        )
+        await self._emit(book_snapshot_topic(self.exchange, ctx.symbol), snap, ctx.symbol, event)
 
     def _mark_all_stale(self, reason: str) -> None:
         counter = book_resyncs.labels(exchange=self.exchange, reason=reason)
@@ -415,9 +424,7 @@ class BaseIngester(ABC):
             ctx.book.clear()
             ctx.set_state(SymbolState.BOOTSTRAP, reason="reconnect")
 
-    async def _emit(
-        self, topic: str, msg: object, symbol: str, event: ParsedEvent
-    ) -> None:
+    async def _emit(self, topic: str, msg: object, symbol: str, event: ParsedEvent) -> None:
         """Produce a market-data message via pipelined send().
 
         ``send_and_wait`` would await the broker ack per message, capping
@@ -433,7 +440,8 @@ class BaseIngester(ABC):
         no-silent-gap invariant.
         """
         fut = await self.producer.send(
-            topic, encode(msg),
+            topic,
+            encode(msg),
             key=f"{self.exchange}:{symbol}".encode(),
             headers=latency_headers(event.local_recv_ts_ns, event.exchange_ts_ns),
         )
@@ -443,13 +451,9 @@ class BaseIngester(ABC):
         # torn-down connection could trip the *new* connection's event and
         # cause a spurious reconnect+resync.
         produce_failed = self._produce_failed
-        fut.add_done_callback(
-            lambda f: self._on_produce_done(f, produce_failed)
-        )
+        fut.add_done_callback(lambda f: self._on_produce_done(f, produce_failed))
 
-    def _on_produce_done(
-        self, fut: asyncio.Future, produce_failed: asyncio.Event | None
-    ) -> None:
+    def _on_produce_done(self, fut: asyncio.Future, produce_failed: asyncio.Event | None) -> None:
         """Trip the bound-at-attach-time ``produce_failed`` event on delivery
         failure so the connection resyncs instead of advancing past a gap.
         Calling ``fut.exception()`` also marks the exception as retrieved,
@@ -499,9 +503,7 @@ class BaseIngester(ABC):
 
             reader_task = asyncio.create_task(self._reader(ws), name="ingest-reader")
             applier_task = asyncio.create_task(self._applier(), name="ingest-applier")
-            shutdown_task = asyncio.create_task(
-                self._shutdown.wait(), name="ingest-shutdown-watch"
-            )
+            shutdown_task = asyncio.create_task(self._shutdown.wait(), name="ingest-shutdown-watch")
             produce_failed_task = asyncio.create_task(
                 self._produce_failed.wait(), name="ingest-produce-failed"
             )
@@ -510,11 +512,7 @@ class BaseIngester(ABC):
                 # Seed the clock now so the watchdog doesn't fire before any frame
                 # has had a chance to arrive on a fresh connection.
                 self._last_msg_monotonic = time.monotonic()
-                tasks.add(
-                    asyncio.create_task(
-                        self._staleness_watchdog(), name="ingest-watchdog"
-                    )
-                )
+                tasks.add(asyncio.create_task(self._staleness_watchdog(), name="ingest-watchdog"))
             try:
                 # Wait until any of: reader/applier exits (normal or resync),
                 # OR the shutdown event fires. Whichever happens, we cancel
@@ -544,9 +542,7 @@ class BaseIngester(ABC):
                 for t in tasks | {shutdown_task}:
                     if not t.done():
                         t.cancel()
-                await asyncio.gather(
-                    *(tasks | {shutdown_task}), return_exceptions=True
-                )
+                await asyncio.gather(*(tasks | {shutdown_task}), return_exceptions=True)
 
     async def _bootstrap_safe(self, symbol: str) -> None:
         try:
@@ -580,7 +576,8 @@ class BaseIngester(ABC):
             if idle > self.stale_timeout:
                 log.warning(
                     "no WS frame for %.2fs (> %.2fs stale_timeout); reconnecting",
-                    idle, self.stale_timeout,
+                    idle,
+                    self.stale_timeout,
                 )
                 ws_reconnects.labels(exchange=self.exchange, reason="stale").inc()
                 return
@@ -617,18 +614,12 @@ class BaseIngester(ABC):
                 if isinstance(raw, str):
                     raw = raw.encode("utf-8")
                 bytes_received.labels(exchange=self.exchange).inc(len(raw))
-                queue_depth.labels(component="ingest", name=self.exchange).set(
-                    self._queue.qsize()
-                )
+                queue_depth.labels(component="ingest", name=self.exchange).set(self._queue.qsize())
                 try:
                     self._queue.put_nowait((raw, local_recv_ts_ns))
                 except asyncio.QueueFull:
-                    log.error(
-                        "queue full (applier behind); aborting connection to force resync"
-                    )
-                    book_resyncs.labels(
-                        exchange=self.exchange, reason="queue_full"
-                    ).inc()
+                    log.error("queue full (applier behind); aborting connection to force resync")
+                    book_resyncs.labels(exchange=self.exchange, reason="queue_full").inc()
                     # Don't await ws.close() here - it would block on the
                     # server's close response. The `async with ws:` exit
                     # will close with our configured close_timeout. Return
@@ -655,15 +646,11 @@ class BaseIngester(ABC):
                 events = self.parse_message(raw, ts)
             except Exception as e:
                 log.exception("parse error: %s", e)
-                messages_received.labels(
-                    exchange=self.exchange, channel="parse_error"
-                ).inc()
+                messages_received.labels(exchange=self.exchange, channel="parse_error").inc()
                 continue
 
             for ev in events:
-                messages_received.labels(
-                    exchange=self.exchange, channel=ev.kind
-                ).inc()
+                messages_received.labels(exchange=self.exchange, channel=ev.kind).inc()
                 if ev.exchange_ts_ns > 0:
                     exchange_latency.labels(exchange=self.exchange).observe(
                         max(0.0, (ts - ev.exchange_ts_ns) / 1e9)
@@ -677,25 +664,25 @@ class BaseIngester(ABC):
                 except ResyncRequired as r:
                     log.warning(
                         "resync required for %s/%s: %s",
-                        self.exchange, ev.symbol, r,
+                        self.exchange,
+                        ev.symbol,
+                        r,
                     )
                     ctx.set_state(SymbolState.STALE, reason=str(r))
-                    book_resyncs.labels(
-                        exchange=self.exchange, reason="event_handler"
-                    ).inc()
+                    book_resyncs.labels(exchange=self.exchange, reason="event_handler").inc()
                     # Abort the whole connection - simplest correct behaviour.
                     raise
                 except BookInvariantError as e:
                     log.error(
                         "invariant violation %s/%s: %s",
-                        self.exchange, ev.symbol, e,
+                        self.exchange,
+                        ev.symbol,
+                        e,
                     )
                     book_invariant_violations.labels(
                         exchange=self.exchange, symbol=ev.symbol, kind=e.kind
                     ).inc()
                     ctx.book.clear()  # book is partially-applied; clear before marking STALE
                     ctx.set_state(SymbolState.STALE, reason="invariant_violation")
-                    book_resyncs.labels(
-                        exchange=self.exchange, reason="invariant"
-                    ).inc()
+                    book_resyncs.labels(exchange=self.exchange, reason="invariant").inc()
                     raise ResyncRequired(str(e)) from e

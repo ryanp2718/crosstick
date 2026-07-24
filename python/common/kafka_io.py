@@ -13,6 +13,7 @@ Symbols are normalized: '/' is replaced with '-' (Kafka disallows '/' in topic
 names). The native exchange symbol form is preserved in the message body (the
 `symbol` field) for downstream consumers that need to round-trip it.
 """
+
 from __future__ import annotations
 
 import os

@@ -48,6 +48,7 @@ Wire notes:
   - markPrice@1s ticks every second per symbol, which makes the staleness
     watchdog meaningful even when no liquidations occur.
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -109,9 +110,15 @@ _FETCH_FAILED = object()
 def stream_names(symbols: list[str], mode: Mode) -> list[str]:
     if mode == "depth":
         return [f"{sym.lower()}@depth@100ms" for sym in symbols]
-    return [name for sym in symbols for name in
-            (f"{sym.lower()}@forceOrder", f"{sym.lower()}@markPrice@1s",
-             f"{sym.lower()}@aggTrade")]
+    return [
+        name
+        for sym in symbols
+        for name in (
+            f"{sym.lower()}@forceOrder",
+            f"{sym.lower()}@markPrice@1s",
+            f"{sym.lower()}@aggTrade",
+        )
+    ]
 
 
 # ─── wire structs (msgspec) ──────────────────────────────────────────────────
@@ -119,6 +126,7 @@ def stream_names(symbols: list[str], mode: Mode) -> list[str]:
 
 class _Envelope(msgspec.Struct):
     """Combined-stream frame; `data` stays raw until discriminated by `e`."""
+
     stream: str = ""
     data: msgspec.Raw = msgspec.Raw(b"")
 
@@ -129,6 +137,7 @@ class _Disc(msgspec.Struct):
 
 class _ForceOrder(msgspec.Struct):
     """Inner `o` object of a forceOrder event."""
+
     s: str
     S: str
     q: str
@@ -226,8 +235,10 @@ class BinanceFuturesIngester(BaseIngester):
         super().__init__(
             exchange="binance-futures",
             symbols=symbols,
-            ws_url=(f"{ws_host}/{_MODE_PATH[mode]}/stream"
-                    f"?streams={'/'.join(stream_names(symbols, mode))}"),
+            ws_url=(
+                f"{ws_host}/{_MODE_PATH[mode]}/stream"
+                f"?streams={'/'.join(stream_names(symbols, mode))}"
+            ),
             producer=producer,
             stale_timeout=stale_timeout,
             **kw,
@@ -288,32 +299,53 @@ class BinanceFuturesIngester(BaseIngester):
         kind = _DISC_DEC.decode(data).e
         if kind == "depthUpdate":
             d = _DEPTH_DEC.decode(data)
-            return [ParsedEvent(
-                symbol=d.s, kind="delta", sequence=d.u, payload=d,
-                raw_bytes=len(raw), exchange_ts_ns=d.E * 1_000_000,
-                local_recv_ts_ns=local_recv_ts_ns,
-            )]
+            return [
+                ParsedEvent(
+                    symbol=d.s,
+                    kind="delta",
+                    sequence=d.u,
+                    payload=d,
+                    raw_bytes=len(raw),
+                    exchange_ts_ns=d.E * 1_000_000,
+                    local_recv_ts_ns=local_recv_ts_ns,
+                )
+            ]
         if kind == "aggTrade":
             t = _AGG_DEC.decode(data)
-            return [ParsedEvent(
-                symbol=t.s, kind="trade", payload=t,
-                raw_bytes=len(raw), exchange_ts_ns=t.T * 1_000_000,
-                local_recv_ts_ns=local_recv_ts_ns,
-            )]
+            return [
+                ParsedEvent(
+                    symbol=t.s,
+                    kind="trade",
+                    payload=t,
+                    raw_bytes=len(raw),
+                    exchange_ts_ns=t.T * 1_000_000,
+                    local_recv_ts_ns=local_recv_ts_ns,
+                )
+            ]
         if kind == "forceOrder":
             ev = _FORCE_DEC.decode(data)
-            return [ParsedEvent(
-                symbol=ev.o.s, kind="liquidation", payload=ev.o,
-                raw_bytes=len(raw), exchange_ts_ns=ev.o.T * 1_000_000,
-                local_recv_ts_ns=local_recv_ts_ns,
-            )]
+            return [
+                ParsedEvent(
+                    symbol=ev.o.s,
+                    kind="liquidation",
+                    payload=ev.o,
+                    raw_bytes=len(raw),
+                    exchange_ts_ns=ev.o.T * 1_000_000,
+                    local_recv_ts_ns=local_recv_ts_ns,
+                )
+            ]
         if kind == "markPriceUpdate":
             m = _MARK_DEC.decode(data)
-            return [ParsedEvent(
-                symbol=m.s, kind="mark_price", payload=m,
-                raw_bytes=len(raw), exchange_ts_ns=m.E * 1_000_000,
-                local_recv_ts_ns=local_recv_ts_ns,
-            )]
+            return [
+                ParsedEvent(
+                    symbol=m.s,
+                    kind="mark_price",
+                    payload=m,
+                    raw_bytes=len(raw),
+                    exchange_ts_ns=m.E * 1_000_000,
+                    local_recv_ts_ns=local_recv_ts_ns,
+                )
+            ]
         return []
 
     async def process_event(self, ctx: SymbolContext, event: ParsedEvent) -> None:
@@ -322,14 +354,19 @@ class BinanceFuturesIngester(BaseIngester):
             await self._emit(
                 liquidation_topic(self.exchange, ctx.symbol),
                 Liquidation(
-                    exchange=self.exchange, symbol=ctx.symbol,
+                    exchange=self.exchange,
+                    symbol=ctx.symbol,
                     side=Side.ASK if o.S == "SELL" else Side.BID,
-                    price=o.p, avg_price=o.ap, orig_size=o.q, filled_size=o.z,
+                    price=o.p,
+                    avg_price=o.ap,
+                    orig_size=o.q,
+                    filled_size=o.z,
                     status=o.X,
                     exchange_ts_ns=event.exchange_ts_ns,
                     local_ts_ns=event.local_recv_ts_ns,
                 ),
-                ctx.symbol, event,
+                ctx.symbol,
+                event,
             )
             return
         if event.kind == "mark_price":
@@ -337,13 +374,18 @@ class BinanceFuturesIngester(BaseIngester):
             await self._emit(
                 markprice_topic(self.exchange, ctx.symbol),
                 MarkPrice(
-                    exchange=self.exchange, symbol=ctx.symbol,
-                    mark_price=m.p, index_price=m.i, est_settle_price=m.P,
-                    funding_rate=m.r, next_funding_ts_ns=m.T * 1_000_000,
+                    exchange=self.exchange,
+                    symbol=ctx.symbol,
+                    mark_price=m.p,
+                    index_price=m.i,
+                    est_settle_price=m.P,
+                    funding_rate=m.r,
+                    next_funding_ts_ns=m.T * 1_000_000,
                     exchange_ts_ns=event.exchange_ts_ns,
                     local_ts_ns=event.local_recv_ts_ns,
                 ),
-                ctx.symbol, event,
+                ctx.symbol,
+                event,
             )
             return
         if event.kind == "trade":
@@ -351,11 +393,17 @@ class BinanceFuturesIngester(BaseIngester):
             await self._emit(
                 trade_topic(self.exchange, ctx.symbol),
                 Trade(
-                    exchange=self.exchange, symbol=ctx.symbol, trade_id=str(t.a),
-                    price=t.p, size=t.q, side=Side.ASK if t.m else Side.BID,
-                    exchange_ts_ns=event.exchange_ts_ns, local_ts_ns=event.local_recv_ts_ns,
+                    exchange=self.exchange,
+                    symbol=ctx.symbol,
+                    trade_id=str(t.a),
+                    price=t.p,
+                    size=t.q,
+                    side=Side.ASK if t.m else Side.BID,
+                    exchange_ts_ns=event.exchange_ts_ns,
+                    local_ts_ns=event.local_recv_ts_ns,
                 ),
-                ctx.symbol, event,
+                ctx.symbol,
+                event,
             )
             return
 
@@ -388,12 +436,17 @@ class BinanceFuturesIngester(BaseIngester):
         await self._emit(
             book_snapshot_topic(self.exchange, ctx.symbol),
             BookSnapshot(
-                exchange=self.exchange, symbol=ctx.symbol, sequence=last_id,
-                bids=wbids, asks=wasks,
-                exchange_ts_ns=0, local_ts_ns=event.local_recv_ts_ns,
+                exchange=self.exchange,
+                symbol=ctx.symbol,
+                sequence=last_id,
+                bids=wbids,
+                asks=wasks,
+                exchange_ts_ns=0,
+                local_ts_ns=event.local_recv_ts_ns,
                 epoch=self._epoch,
             ),
-            ctx.symbol, event,
+            ctx.symbol,
+            event,
         )
         # Replay everything buffered while the snapshot was in flight, then the
         # delta that triggered the snapshot application.
@@ -429,12 +482,17 @@ class BinanceFuturesIngester(BaseIngester):
         await self._emit(
             book_delta_topic(self.exchange, ctx.symbol),
             BookDelta(
-                exchange=self.exchange, symbol=ctx.symbol, sequence=ev.u,
-                bids=ev.b, asks=ev.a,
-                exchange_ts_ns=event.exchange_ts_ns, local_ts_ns=event.local_recv_ts_ns,
+                exchange=self.exchange,
+                symbol=ctx.symbol,
+                sequence=ev.u,
+                bids=ev.b,
+                asks=ev.a,
+                exchange_ts_ns=event.exchange_ts_ns,
+                local_ts_ns=event.local_recv_ts_ns,
                 epoch=self._epoch,
             ),
-            ctx.symbol, event,
+            ctx.symbol,
+            event,
         )
         ctx.last_seq = ev.u
 
@@ -452,9 +510,7 @@ class BinanceFuturesIngester(BaseIngester):
         if gen == self._generation:
             self._snapshots[symbol] = value
 
-    async def _rest_snapshot(
-        self, symbol: str
-    ) -> tuple[int, list[BookLevel], list[BookLevel]]:
+    async def _rest_snapshot(self, symbol: str) -> tuple[int, list[BookLevel], list[BookLevel]]:
         client = await self._get_client()
         resp = await client.get(
             f"{self._rest_base}/fapi/v1/depth",
@@ -484,23 +540,25 @@ class BinanceFuturesIngester(BaseIngester):
                 resp = await self._fetch_open_interest(symbol)
                 local_ts_ns = time.time_ns()
                 event = ParsedEvent(
-                    symbol=symbol, kind="open_interest",
+                    symbol=symbol,
+                    kind="open_interest",
                     exchange_ts_ns=resp.time * 1_000_000,
                     local_recv_ts_ns=local_ts_ns,
                 )
                 await self._emit(
                     openinterest_topic(self.exchange, symbol),
                     OpenInterest(
-                        exchange=self.exchange, symbol=symbol,
+                        exchange=self.exchange,
+                        symbol=symbol,
                         open_interest=resp.openInterest,
                         exchange_ts_ns=event.exchange_ts_ns,
                         local_ts_ns=local_ts_ns,
                     ),
-                    symbol, event,
+                    symbol,
+                    event,
                 )
             except Exception as e:
-                log.warning("open-interest poll failed for %s/%s: %s",
-                            self.exchange, symbol, e)
+                log.warning("open-interest poll failed for %s/%s: %s", self.exchange, symbol, e)
 
     async def _fetch_open_interest(self, symbol: str) -> _OpenInterestResp:
         client = await self._get_client()

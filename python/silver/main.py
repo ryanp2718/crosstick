@@ -11,6 +11,7 @@ a single-endpoint run is unchanged (see common.lake.bronze_filesystem_from_env).
 Plus ``INSTRUMENTS_FILE``, ``LAKE_BUCKET`` (bronze source, default ``lake``) and
 ``SILVER_BUCKET`` (default ``silver``).
 """
+
 from __future__ import annotations
 
 import argparse
@@ -79,9 +80,7 @@ BATCH_ROWS = 50_000
 WINDOW_NS = 60_000_000_000  # 60s
 
 
-def read_bronze_records(
-    fs: pafs.FileSystem, bucket: str, date: str
-) -> list[CorpusRecord]:
+def read_bronze_records(fs: pafs.FileSystem, bucket: str, date: str) -> list[CorpusRecord]:
     """Read a whole day of bronze into memory (the in-memory reference path used
     by build_silver in tests). The batch entrypoint uses build_silver_streaming,
     which never holds a whole day; this stays for small inputs and equivalence."""
@@ -116,24 +115,44 @@ def _write_grouped(
 
 def write_silver(fs: pafs.FileSystem, bucket: str, facts: SilverFacts) -> None:
     _write_grouped(
-        fs, bucket, "book_quality", facts.book_quality, BOOK_QUALITY_SCHEMA,
+        fs,
+        bucket,
+        "book_quality",
+        facts.book_quality,
+        BOOK_QUALITY_SCHEMA,
         lambda r: {"exchange": r["exchange"], "symbol": r["canonical_symbol"], "date": r["date"]},
     )
     _write_grouped(
-        fs, bucket, "latency", facts.latency, LATENCY_SCHEMA,
+        fs,
+        bucket,
+        "latency",
+        facts.latency,
+        LATENCY_SCHEMA,
         lambda r: {"exchange": r["exchange"], "symbol": r["canonical_symbol"], "date": r["date"]},
     )
     _write_grouped(
-        fs, bucket, "status_events", facts.status_events, STATUS_SCHEMA,
+        fs,
+        bucket,
+        "status_events",
+        facts.status_events,
+        STATUS_SCHEMA,
         lambda r: {"exchange": r["exchange"], "date": r["date"]},
     )
     _write_grouped(
-        fs, bucket, "quotes", facts.quotes, QUOTES_SCHEMA,
+        fs,
+        bucket,
+        "quotes",
+        facts.quotes,
+        QUOTES_SCHEMA,
         lambda r: {"exchange": r["exchange"], "symbol": r["canonical_symbol"], "date": r["date"]},
     )
     # nbbo is cross-venue: partitioned by canonical symbol only (no exchange).
     _write_grouped(
-        fs, bucket, "nbbo", facts.nbbo, NBBO_SCHEMA,
+        fs,
+        bucket,
+        "nbbo",
+        facts.nbbo,
+        NBBO_SCHEMA,
         lambda r: {"symbol": r["canonical_symbol"], "date": r["date"]},
     )
 
@@ -156,9 +175,7 @@ class _Batch:
         self._buf = []
 
 
-def _iter_records(
-    fs: pafs.FileSystem, bucket: str, dataset: str, date: str, part: dict
-):
+def _iter_records(fs: pafs.FileSystem, bucket: str, dataset: str, date: str, part: dict):
     """Stream a partition's records file-by-file (the whole partition is never
     resident - one file's records at a time)."""
     for table in iter_partition_tables(fs, bucket, dataset, date, part):
@@ -180,9 +197,15 @@ def _venue_quote_stream(
 
 
 def _process_partition(
-    bronze_fs: pafs.FileSystem, derived_fs: pafs.FileSystem,
-    lake_bucket: str, silver_bucket: str, date: str,
-    canonical: CanonicalMap, exchange: str, symbol: str, present: set[str],
+    bronze_fs: pafs.FileSystem,
+    derived_fs: pafs.FileSystem,
+    lake_bucket: str,
+    silver_bucket: str,
+    date: str,
+    canonical: CanonicalMap,
+    exchange: str,
+    symbol: str,
+    present: set[str],
     counts: dict[str, int],
 ) -> None:
     """Fold one bronze (exchange, symbol) partition into book_quality + quotes +
@@ -238,11 +261,14 @@ def _write_rows(
         return
     with PartitionWriter(fs, bucket, key, schema) as w:
         for i in range(0, len(rows), BATCH_ROWS):
-            w.write_rows(rows[i:i + BATCH_ROWS])
+            w.write_rows(rows[i : i + BATCH_ROWS])
 
 
 def _build_nbbo_streaming(
-    derived_fs: pafs.FileSystem, silver_bucket: str, date: str, status_events: list[dict],
+    derived_fs: pafs.FileSystem,
+    silver_bucket: str,
+    date: str,
+    status_events: list[dict],
     counts: dict[str, int],
 ) -> None:
     """Per-canonical NBBO from the persisted quotes, streamed: each venue's quotes go
@@ -278,8 +304,12 @@ def _build_nbbo_streaming(
 
 
 def build_silver_streaming(
-    bronze_fs: pafs.FileSystem, derived_fs: pafs.FileSystem,
-    lake_bucket: str, silver_bucket: str, date: str, canonical: CanonicalMap
+    bronze_fs: pafs.FileSystem,
+    derived_fs: pafs.FileSystem,
+    lake_bucket: str,
+    silver_bucket: str,
+    date: str,
+    canonical: CanonicalMap,
 ) -> dict[str, int]:
     """Memory-bounded silver build: one bronze (exchange, symbol) partition at a
     time (book fold + latency), then NBBO per canonical from the persisted quotes.
@@ -295,8 +325,18 @@ def build_silver_streaming(
         for part in list_partitions(bronze_fs, lake_bucket, dataset, date):
             datasets_by_part[(part["exchange"], part["symbol"])].add(dataset)
     for (exchange, symbol), present in datasets_by_part.items():
-        _process_partition(bronze_fs, derived_fs, lake_bucket, silver_bucket, date,
-                           canonical, exchange, symbol, present, counts)
+        _process_partition(
+            bronze_fs,
+            derived_fs,
+            lake_bucket,
+            silver_bucket,
+            date,
+            canonical,
+            exchange,
+            symbol,
+            present,
+            counts,
+        )
 
     # Phase 1c: status per exchange (small), retained for NBBO eviction.
     status_events: list[dict] = []
@@ -339,8 +379,12 @@ def main() -> None:
         write_freshness_markers(derived_fs, silver_bucket, date, counts)
         log.info(
             "silver %s: %d book_quality, %d latency, %d status_events, %d quotes, %d nbbo",
-            date, counts["book_quality"], counts["latency"], counts["status_events"],
-            counts["quotes"], counts["nbbo"],
+            date,
+            counts["book_quality"],
+            counts["latency"],
+            counts["status_events"],
+            counts["quotes"],
+            counts["nbbo"],
         )
 
 

@@ -8,6 +8,7 @@ type across TWO connections (depth on /public/stream, the rest on
 query (no live SUBSCRIBE), futures diff-depth (U/u/pu, snapshot overlap
 sync), aggTrade-only tape, REST openInterest.
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -42,48 +43,110 @@ from ingest.tests.test_binance import RecordingProducer
 
 def _ing(symbols=("BTCUSDT",), mode="depth"):
     return BinanceFuturesIngester(
-        producer=RecordingProducer(), symbols=list(symbols), mode=mode,
-        stale_timeout=None, oi_poll_interval_s=None,
+        producer=RecordingProducer(),
+        symbols=list(symbols),
+        mode=mode,
+        stale_timeout=None,
+        oi_poll_interval_s=None,
     )
 
 
-def _force_order_frame(s, *, S="SELL", q="0.014", p="9910", ap="9910",
-                       X="FILLED", z="0.014", T=1568014460893, E=1568014460893):
-    return json.dumps({
-        "stream": f"{s.lower()}@forceOrder",
-        "data": {
-            "e": "forceOrder", "E": E,
-            "o": {"s": s, "S": S, "o": "LIMIT", "f": "IOC", "q": q, "p": p,
-                  "ap": ap, "X": X, "l": z, "z": z, "T": T},
-        },
-    }).encode()
+def _force_order_frame(
+    s,
+    *,
+    S="SELL",
+    q="0.014",
+    p="9910",
+    ap="9910",
+    X="FILLED",
+    z="0.014",
+    T=1568014460893,
+    E=1568014460893,
+):
+    return json.dumps(
+        {
+            "stream": f"{s.lower()}@forceOrder",
+            "data": {
+                "e": "forceOrder",
+                "E": E,
+                "o": {
+                    "s": s,
+                    "S": S,
+                    "o": "LIMIT",
+                    "f": "IOC",
+                    "q": q,
+                    "p": p,
+                    "ap": ap,
+                    "X": X,
+                    "l": z,
+                    "z": z,
+                    "T": T,
+                },
+            },
+        }
+    ).encode()
 
 
-def _mark_price_frame(s, *, p="11794.15", i="11784.62", P="11784.25",
-                      r="0.00038167", T=1562306400000, E=1562305380000):
-    return json.dumps({
-        "stream": f"{s.lower()}@markPrice@1s",
-        "data": {"e": "markPriceUpdate", "E": E, "s": s, "p": p, "i": i,
-                 "P": P, "r": r, "T": T, "st": 1},
-    }).encode()
+def _mark_price_frame(
+    s, *, p="11794.15", i="11784.62", P="11784.25", r="0.00038167", T=1562306400000, E=1562305380000
+):
+    return json.dumps(
+        {
+            "stream": f"{s.lower()}@markPrice@1s",
+            "data": {
+                "e": "markPriceUpdate",
+                "E": E,
+                "s": s,
+                "p": p,
+                "i": i,
+                "P": P,
+                "r": r,
+                "T": T,
+                "st": 1,
+            },
+        }
+    ).encode()
 
 
 def _depth_frame(s, U, u, pu, *, bids=(), asks=(), E=1):
-    return json.dumps({
-        "stream": f"{s.lower()}@depth@100ms",
-        "data": {"e": "depthUpdate", "E": E, "T": E, "s": s,
-                 "U": U, "u": u, "pu": pu,
-                 "b": [[p, q] for p, q in bids], "a": [[p, q] for p, q in asks]},
-    }).encode()
+    return json.dumps(
+        {
+            "stream": f"{s.lower()}@depth@100ms",
+            "data": {
+                "e": "depthUpdate",
+                "E": E,
+                "T": E,
+                "s": s,
+                "U": U,
+                "u": u,
+                "pu": pu,
+                "b": [[p, q] for p, q in bids],
+                "a": [[p, q] for p, q in asks],
+            },
+        }
+    ).encode()
 
 
-def _agg_trade_frame(s, *, a=26129, p="0.01633102", q="4.70443515", m=True,
-                     T=123456785, E=123456789):
-    return json.dumps({
-        "stream": f"{s.lower()}@aggTrade",
-        "data": {"e": "aggTrade", "E": E, "s": s, "a": a, "p": p, "q": q,
-                 "f": 27781, "l": 27781, "T": T, "m": m},
-    }).encode()
+def _agg_trade_frame(
+    s, *, a=26129, p="0.01633102", q="4.70443515", m=True, T=123456785, E=123456789
+):
+    return json.dumps(
+        {
+            "stream": f"{s.lower()}@aggTrade",
+            "data": {
+                "e": "aggTrade",
+                "E": E,
+                "s": s,
+                "a": a,
+                "p": p,
+                "q": q,
+                "f": 27781,
+                "l": 27781,
+                "T": T,
+                "m": m,
+            },
+        }
+    ).encode()
 
 
 def _wire(levels):
@@ -118,15 +181,16 @@ def test_depth_mode_url_routes_to_public():
     silently never delivers it (root cause of the 2026-06 silent book outage)."""
     ing = _ing(symbols=("BTCUSDT", "ETHUSDT"), mode="depth")
     assert ing.ws_url == (
-        "wss://fstream.binance.com/public/stream?streams="
-        "btcusdt@depth@100ms/ethusdt@depth@100ms"
+        "wss://fstream.binance.com/public/stream?streams=btcusdt@depth@100ms/ethusdt@depth@100ms"
     )
     assert ing.build_subscribe_messages() == []
 
 
 def test_stream_names_split_by_mode():
     assert stream_names(["BTCUSDT"], "market") == [
-        "btcusdt@forceOrder", "btcusdt@markPrice@1s", "btcusdt@aggTrade",
+        "btcusdt@forceOrder",
+        "btcusdt@markPrice@1s",
+        "btcusdt@aggTrade",
     ]
     assert stream_names(["BTCUSDT"], "depth") == ["btcusdt@depth@100ms"]
 
@@ -163,8 +227,13 @@ async def test_bootstrap_flips_buffering_and_fetches():
         async def _rest_snapshot(self, symbol):
             return 100, _wire([("100", "5")]), _wire([("110", "5")])
 
-    ing = _Fake(producer=RecordingProducer(), symbols=["BTCUSDT"], mode="depth",
-                stale_timeout=None, oi_poll_interval_s=None)
+    ing = _Fake(
+        producer=RecordingProducer(),
+        symbols=["BTCUSDT"],
+        mode="depth",
+        stale_timeout=None,
+        oi_poll_interval_s=None,
+    )
     await ing.bootstrap("BTCUSDT")
     assert ing.contexts["BTCUSDT"].state is SymbolState.BUFFERING
     await ing._snapshot_tasks["BTCUSDT"]
@@ -218,9 +287,7 @@ def test_parse_agg_trade():
 def test_parse_ignores_non_envelope_and_unknown_events():
     ing = _ing()
     assert ing.parse_message(b'{"result":null,"id":1}', 1) == []
-    unknown = json.dumps(
-        {"stream": "btcusdt@bookTicker", "data": {"e": "bookTicker"}}
-    ).encode()
+    unknown = json.dumps({"stream": "btcusdt@bookTicker", "data": {"e": "bookTicker"}}).encode()
     assert ing.parse_message(unknown, 1) == []
 
 
@@ -460,17 +527,24 @@ def _oi_ing(responses):
                 raise value
             return value
 
-    return _Fake(producer=RecordingProducer(), symbols=list(responses), mode="market",
-                 stale_timeout=None, oi_poll_interval_s=None)
+    return _Fake(
+        producer=RecordingProducer(),
+        symbols=list(responses),
+        mode="market",
+        stale_timeout=None,
+        oi_poll_interval_s=None,
+    )
 
 
 @pytest.mark.asyncio
 async def test_open_interest_emitted_with_conventions():
-    ing = _oi_ing({
-        "BTCUSDT": _OpenInterestResp(
-            openInterest="10659.509", symbol="BTCUSDT", time=1589437530011
-        )
-    })
+    ing = _oi_ing(
+        {
+            "BTCUSDT": _OpenInterestResp(
+                openInterest="10659.509", symbol="BTCUSDT", time=1589437530011
+            )
+        }
+    )
     await ing._poll_open_interest()
 
     [(topic, value, kw)] = ing.producer.calls
@@ -490,10 +564,12 @@ async def test_open_interest_emitted_with_conventions():
 
 @pytest.mark.asyncio
 async def test_open_interest_poll_survives_per_symbol_failure():
-    ing = _oi_ing({
-        "BTCUSDT": RuntimeError("rest down"),
-        "ETHUSDT": _OpenInterestResp(openInterest="7", symbol="ETHUSDT", time=5),
-    })
+    ing = _oi_ing(
+        {
+            "BTCUSDT": RuntimeError("rest down"),
+            "ETHUSDT": _OpenInterestResp(openInterest="7", symbol="ETHUSDT", time=5),
+        }
+    )
     await ing._poll_open_interest()  # must not raise
     [(topic, _, _)] = ing.producer.calls
     assert topic == "md.openinterest.binance-futures.ETHUSDT"

@@ -4,6 +4,7 @@ The golden corpus (analytics/tests/golden.py) plants three hard events and one
 false-positive trap. This asserts the scorecard catches the incidents and does
 NOT trip on the trap - the Phase 2 "CI against the planted gap" contract.
 """
+
 from __future__ import annotations
 
 import json
