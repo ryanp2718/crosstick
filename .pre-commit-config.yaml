@@ -1,0 +1,36 @@
+# Local fast-feedback mirror of the CI gates. One-time setup:
+#   uv tool install pre-commit   (or: pipx install pre-commit)
+#   pre-commit install
+repos:
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.15.13
+    hooks:
+      - id: ruff-check
+        args: [--fix]
+        files: ^python/
+      - id: ruff-format
+        files: ^python/
+
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v5.0.0
+    hooks:
+      - id: check-yaml
+      - id: check-json
+        exclude: ^node/gateway/tsconfig\.json$
+      - id: check-merge-conflict
+      - id: check-added-large-files
+
+  - repo: local
+    hooks:
+      - id: no-em-dash
+        name: no em-dash (U+2014)
+        entry: python scripts/check_no_em_dash.py
+        language: python
+        types: [text]
+
+      - id: prettier-gateway
+        name: prettier (gateway)
+        entry: pnpm --dir node/gateway run format:check
+        language: system
+        pass_filenames: false
+        files: ^node/gateway/

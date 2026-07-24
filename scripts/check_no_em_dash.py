@@ -5,6 +5,7 @@ House style is zero em-dashes; use a hyphen, comma, or parentheses instead.
 Runs in CI over all tracked files, and as a pre-commit hook over the staged
 files (pre-commit passes them as arguments).
 """
+
 import subprocess
 import sys
 
@@ -27,7 +28,12 @@ def main(argv):
                 for lineno, line in enumerate(f, 1):
                     if EM_DASH in line:
                         hits.append(f"{path}:{lineno}: {line.rstrip()}")
-        except (UnicodeDecodeError, FileNotFoundError, IsADirectoryError, PermissionError):
+        except (
+            UnicodeDecodeError,
+            FileNotFoundError,
+            IsADirectoryError,
+            PermissionError,
+        ):
             continue
     if hits:
         print("em-dash (U+2014) found; use a hyphen, comma, or parentheses:\n")
