@@ -32,6 +32,7 @@ jobs:
           cache-dependency-path: node/gateway/pnpm-lock.yaml
       - run: pnpm install --frozen-lockfile
       - run: pnpm exec tsc --noEmit
+      - run: pnpm run format:check
       - run: pnpm test
 
   python:

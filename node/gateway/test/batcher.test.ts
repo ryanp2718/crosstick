@@ -51,7 +51,12 @@ describe("EmitBatcher", () => {
     await tick();
     expect(settles).toHaveLength(2);
     expect(settles.every((s) => s.ok)).toBe(true);
-    expect(settles.map((s) => s.keys).flat().sort()).toEqual(["BTC-USD", "BTC-USDT"]);
+    expect(
+      settles
+        .map((s) => s.keys)
+        .flat()
+        .sort(),
+    ).toEqual(["BTC-USD", "BTC-USDT"]);
   });
 
   it("settles every topic of a failed flush with ok=false", async () => {

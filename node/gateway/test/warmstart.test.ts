@@ -12,11 +12,8 @@ function stubAdmin(data: {
 }): AdminLike {
   return {
     fetchTopicOffsets: (topic) =>
-      Promise.resolve(
-        data[topic].partitions.map((p) => ({ ...p, offset: p.high })),
-      ),
-    fetchTopicOffsetsByTimestamp: (topic) =>
-      Promise.resolve(data[topic].atCutoff ?? []),
+      Promise.resolve(data[topic].partitions.map((p) => ({ ...p, offset: p.high }))),
+    fetchTopicOffsetsByTimestamp: (topic) => Promise.resolve(data[topic].atCutoff ?? []),
   };
 }
 
@@ -103,7 +100,10 @@ describe("planWarmStart", () => {
       },
     });
     const seeks = await planWarmStart(
-      admin, ["md.trades.kraken.BTC-USD", "md.status.kraken"], NOW, LOOKBACK,
+      admin,
+      ["md.trades.kraken.BTC-USD", "md.status.kraken"],
+      NOW,
+      LOOKBACK,
     );
     expect(seeks).toEqual([
       { topic: "md.trades.kraken.BTC-USD", partition: 0, offset: "900" },
@@ -169,7 +169,10 @@ describe("planWarmStart", () => {
       },
     });
     const [backlogged] = await planWarmStart(
-      admin, ["md.book.kraken.BTC-USD.deltas"], NOW, LOOKBACK,
+      admin,
+      ["md.book.kraken.BTC-USD.deltas"],
+      NOW,
+      LOOKBACK,
     );
     expect(backlogged.drainTo).toBe("4999"); // hwm - 1
 
@@ -179,7 +182,12 @@ describe("planWarmStart", () => {
         atCutoff: [{ partition: 0, offset: "-1" }], // nothing recent → seek to edge
       },
     });
-    const [atEdge] = await planWarmStart(liveEdge, ["md.book.kraken.BTC-USD.deltas"], NOW, LOOKBACK);
+    const [atEdge] = await planWarmStart(
+      liveEdge,
+      ["md.book.kraken.BTC-USD.deltas"],
+      NOW,
+      LOOKBACK,
+    );
     expect(atEdge.drainTo).toBeUndefined();
   });
 
@@ -189,7 +197,10 @@ describe("planWarmStart", () => {
       "md.status.kraken": { partitions: [{ partition: 0, high: "40", low: "3" }] },
     });
     const seeks = await planWarmStart(
-      admin, ["md.trades.kraken.BTC-USD", "md.status.kraken"], NOW, LOOKBACK,
+      admin,
+      ["md.trades.kraken.BTC-USD", "md.status.kraken"],
+      NOW,
+      LOOKBACK,
     );
     expect(seeks.every((s) => s.drainTo === undefined)).toBe(true);
   });

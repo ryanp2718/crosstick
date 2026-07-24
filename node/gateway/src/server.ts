@@ -270,7 +270,8 @@ async function main(): Promise<void> {
       bboProduced.inc({ result }, messages.length);
     }
     bboInflight.dec(messages.length);
-    if (!ok) console.error(`[gateway] kafka produce failed (${messages.length} msgs to ${topic}):`, err);
+    if (!ok)
+      console.error(`[gateway] kafka produce failed (${messages.length} msgs to ${topic}):`, err);
   });
 
   // Last consumed offset per (topic, partition); used by the lag poll.
@@ -364,7 +365,11 @@ async function main(): Promise<void> {
           // rate at 1/broker-RTT per partition (same antipattern the python
           // ingester removed in a6d1fae). The gateway is stateless; a dropped
           // md.bbo publish is recovered by the next L1 move, no resync needed.
-          batcher.enqueue(bboTopic(bbo.exchange, bbo.symbol), `${bbo.exchange}:${bbo.symbol}`, data);
+          batcher.enqueue(
+            bboTopic(bbo.exchange, bbo.symbol),
+            `${bbo.exchange}:${bbo.symbol}`,
+            data,
+          );
           broadcaster.broadcast(data);
         } else if (result.broadcast && broadcaster.size > 0) {
           // Trade relay: forward the raw wire bytes (valid JSON, decoded above).

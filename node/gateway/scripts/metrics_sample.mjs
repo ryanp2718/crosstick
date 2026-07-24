@@ -34,7 +34,7 @@ console.log(`sampling ${URL} every ${INTERVAL_MS / 1000}s, ${N} samples`);
 for (let i = 0; i < N; i++) {
   if (i > 0) await new Promise((r) => setTimeout(r, INTERVAL_MS));
   samples.push(await scrape());
-  process.stdout.write(`  t+${i * INTERVAL_MS / 1000}s ok\n`);
+  process.stdout.write(`  t+${(i * INTERVAL_MS) / 1000}s ok\n`);
 }
 
 console.log("\n=== per-segment deltas (each ~10s) ===");
@@ -42,14 +42,17 @@ console.log("seg | deltas | bbo | bbo/del% | trades | bcast | sum_ok");
 for (let i = 1; i < N; i++) {
   const prev = samples[i - 1];
   const cur = samples[i];
-  const dDeltas = sumByTopicSuffix(cur, "gateway_messages_consumed_total", ".deltas") -
-                  sumByTopicSuffix(prev, "gateway_messages_consumed_total", ".deltas");
-  const dTrades = sumByTopicSuffix(cur, "gateway_messages_consumed_total", "md.trades") -
-                  sumByTopicSuffix(prev, "gateway_messages_consumed_total", "md.trades");
-  const dBbo = (cur['gateway_bbo_produced_total{result="ok"}'] ?? 0) -
-               (prev['gateway_bbo_produced_total{result="ok"}'] ?? 0);
-  const dBcast = (cur["gateway_ws_broadcasts_total"] ?? 0) -
-                 (prev["gateway_ws_broadcasts_total"] ?? 0);
+  const dDeltas =
+    sumByTopicSuffix(cur, "gateway_messages_consumed_total", ".deltas") -
+    sumByTopicSuffix(prev, "gateway_messages_consumed_total", ".deltas");
+  const dTrades =
+    sumByTopicSuffix(cur, "gateway_messages_consumed_total", "md.trades") -
+    sumByTopicSuffix(prev, "gateway_messages_consumed_total", "md.trades");
+  const dBbo =
+    (cur['gateway_bbo_produced_total{result="ok"}'] ?? 0) -
+    (prev['gateway_bbo_produced_total{result="ok"}'] ?? 0);
+  const dBcast =
+    (cur["gateway_ws_broadcasts_total"] ?? 0) - (prev["gateway_ws_broadcasts_total"] ?? 0);
   const ratio = dDeltas ? ((dBbo / dDeltas) * 100).toFixed(1) : "n/a";
   const sumOk = dBcast === dBbo + dTrades ? "ok" : "MISMATCH";
   console.log(
@@ -79,7 +82,9 @@ console.log(`  eventloop_lag_max  = ${evMs("max")} ms`);
 const mib = (b) => (b / 1024 / 1024).toFixed(1);
 const rss0 = first["gateway_process_resident_memory_bytes"];
 const rss1 = last["gateway_process_resident_memory_bytes"];
-console.log(`  rss        = ${mib(rss1)} MiB (start ${mib(rss0)}, Δ ${((rss1 - rss0) / 1024 / 1024).toFixed(2)} MiB)`);
+console.log(
+  `  rss        = ${mib(rss1)} MiB (start ${mib(rss0)}, Δ ${((rss1 - rss0) / 1024 / 1024).toFixed(2)} MiB)`,
+);
 console.log(`  heap_used  = ${mib(last["gateway_nodejs_heap_size_used_bytes"])} MiB`);
 console.log(`  heap_total = ${mib(last["gateway_nodejs_heap_size_total_bytes"])} MiB`);
 
@@ -93,5 +98,6 @@ for (const kind of gcKinds) {
   const cntKey = `gateway_nodejs_gc_duration_seconds_count{kind="${kind}"}`;
   const dSum = (last[sumKey] ?? 0) - (first[sumKey] ?? 0);
   const dCnt = (last[cntKey] ?? 0) - (first[cntKey] ?? 0);
-  if (dCnt > 0) console.log(`  gc[${kind}] over 60s: ${dCnt} pauses, ${(dSum * 1000).toFixed(1)} ms total`);
+  if (dCnt > 0)
+    console.log(`  gc[${kind}] over 60s: ${dCnt} pauses, ${(dSum * 1000).toFixed(1)} ms total`);
 }

@@ -40,7 +40,11 @@ describe("NBBOAggregator", () => {
   describe("single leg", () => {
     it("emits an NBBO equal to the single source BBO", () => {
       const agg = new NBBOAggregator();
-      const nbbo = agg.onBBO(BTC_USD, bbo("coinbase", "BTC-USD", "100", "1", "101", "2"), 1_700_000_000_000);
+      const nbbo = agg.onBBO(
+        BTC_USD,
+        bbo("coinbase", "BTC-USD", "100", "1", "101", "2"),
+        1_700_000_000_000,
+      );
       expect(nbbo).not.toBeNull();
       expect(nbbo!).toMatchObject({
         t: "nbbo",
@@ -262,7 +266,11 @@ describe("isFreshCross", () => {
   function crossedNbbo(bidLegMs: number, askLegMs: number, nowMs: number): NBBOMsg {
     const agg = new NBBOAggregator();
     agg.onBBO(BTC_USD, bbo("coinbase", "BTC-USD", "100", "1", "101", "1", askLegMs * 1e6), nowMs);
-    const nbbo = agg.onBBO(BTC_USD, bbo("kraken", "BTC/USD", "102", "1", "103", "1", bidLegMs * 1e6), nowMs);
+    const nbbo = agg.onBBO(
+      BTC_USD,
+      bbo("kraken", "BTC/USD", "102", "1", "103", "1", bidLegMs * 1e6),
+      nowMs,
+    );
     if (!nbbo || !nbbo.crossed) throw new Error("expected a crossed NBBO");
     return nbbo;
   }

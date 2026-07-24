@@ -18,7 +18,12 @@ export interface TopicMessages {
 
 // Called once per topic per settled flush, with the flush's outcome; the
 // server maps this back onto the per-message result counters.
-export type FlushSettle = (topic: string, messages: KeyedMessage[], ok: boolean, err?: unknown) => void;
+export type FlushSettle = (
+  topic: string,
+  messages: KeyedMessage[],
+  ok: boolean,
+  err?: unknown,
+) => void;
 
 // Emit coalescing (G7): accumulates emitted messages per topic and flushes
 // them through one producer.sendBatch per event-loop tick, replacing one

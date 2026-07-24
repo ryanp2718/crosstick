@@ -22,10 +22,7 @@ export interface CanonicalInstrument {
 
 // Shape of the parsed YAML (validated, then mapped to CanonicalInstrument).
 interface InstrumentsFile {
-  instruments: Record<
-    string,
-    { base: string; quote: string; venues: VenueRef[] }
-  >;
+  instruments: Record<string, { base: string; quote: string; venues: VenueRef[] }>;
 }
 
 export class CanonicalMap {
@@ -82,9 +79,7 @@ export function loadCanonicalMap(path: string): CanonicalMap {
     }
     for (const v of entry.venues) {
       if (!v.exchange || !v.symbol) {
-        throw new Error(
-          `${path}: ${canonical_id} has a venue entry missing exchange/symbol`,
-        );
+        throw new Error(`${path}: ${canonical_id} has a venue entry missing exchange/symbol`);
       }
     }
     instruments.push({ canonical_id, base: entry.base, quote: entry.quote, venues: entry.venues });

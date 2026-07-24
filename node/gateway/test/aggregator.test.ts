@@ -10,21 +10,31 @@ import {
 } from "../src/metrics.js";
 import type { BookDeltaMsg, BookSnapshotMsg, WireLevel } from "../src/messages.js";
 
-function snap(
-  seq: number, bids: WireLevel[], asks: WireLevel[], epoch?: number,
-): BookSnapshotMsg {
+function snap(seq: number, bids: WireLevel[], asks: WireLevel[], epoch?: number): BookSnapshotMsg {
   return {
-    t: "snap", exchange: "kraken", symbol: "BTC/USD", sequence: seq,
-    bids, asks, exchange_ts_ns: 1, local_ts_ns: 2, epoch,
+    t: "snap",
+    exchange: "kraken",
+    symbol: "BTC/USD",
+    sequence: seq,
+    bids,
+    asks,
+    exchange_ts_ns: 1,
+    local_ts_ns: 2,
+    epoch,
   };
 }
 
-function delta(
-  seq: number, bids: WireLevel[], asks: WireLevel[], epoch?: number,
-): BookDeltaMsg {
+function delta(seq: number, bids: WireLevel[], asks: WireLevel[], epoch?: number): BookDeltaMsg {
   return {
-    t: "delta", exchange: "kraken", symbol: "BTC/USD", sequence: seq,
-    bids, asks, exchange_ts_ns: 1, local_ts_ns: 2, epoch,
+    t: "delta",
+    exchange: "kraken",
+    symbol: "BTC/USD",
+    sequence: seq,
+    bids,
+    asks,
+    exchange_ts_ns: 1,
+    local_ts_ns: 2,
+    epoch,
   };
 }
 
@@ -51,7 +61,8 @@ async function replayDepthFor(exchange: string): Promise<{ count: number; sum: n
   const m = await bookHealReplayDepth.get();
   const pick = (suffix: string) =>
     m.values.find(
-      (v) => v.metricName === `gateway_book_heal_replay_depth_${suffix}` &&
+      (v) =>
+        v.metricName === `gateway_book_heal_replay_depth_${suffix}` &&
         v.labels.exchange === exchange,
     )?.value ?? 0;
   return { count: pick("count"), sum: pick("sum") };
@@ -68,8 +79,13 @@ describe("Aggregator", () => {
     const a = new Aggregator();
     const bbo = a.applyBook(snap(0, [["100", "1"]], [["101", "2"]]));
     expect(bbo).toMatchObject({
-      t: "bbo", exchange: "kraken", symbol: "BTC/USD",
-      bid_px: "100", bid_sz: "1", ask_px: "101", ask_sz: "2",
+      t: "bbo",
+      exchange: "kraken",
+      symbol: "BTC/USD",
+      bid_px: "100",
+      bid_sz: "1",
+      ask_px: "101",
+      ask_sz: "2",
     });
   });
 
@@ -135,8 +151,14 @@ describe("Aggregator", () => {
     it("buffers per stream independently", () => {
       const a = new Aggregator();
       const other: BookDeltaMsg = {
-        t: "delta", exchange: "coinbase", symbol: "BTC-USD", sequence: 1,
-        bids: [["999", "1"]], asks: [], exchange_ts_ns: 1, local_ts_ns: 2,
+        t: "delta",
+        exchange: "coinbase",
+        symbol: "BTC-USD",
+        sequence: 1,
+        bids: [["999", "1"]],
+        asks: [],
+        exchange_ts_ns: 1,
+        local_ts_ns: 2,
       };
       a.applyBook(other); // buffered under coinbase, must not affect kraken
       const bbo = a.applyBook(snap(0, [["100", "1"]], [["101", "2"]]));
@@ -161,8 +183,14 @@ describe("Aggregator", () => {
     const a = new Aggregator();
     a.applyBook(snap(0, [["100", "1"]], [["101", "2"]]));
     const other: BookSnapshotMsg = {
-      t: "snap", exchange: "coinbase", symbol: "BTC-USD", sequence: 0,
-      bids: [["200", "1"]], asks: [["201", "2"]], exchange_ts_ns: 1, local_ts_ns: 2,
+      t: "snap",
+      exchange: "coinbase",
+      symbol: "BTC-USD",
+      sequence: 0,
+      bids: [["200", "1"]],
+      asks: [["201", "2"]],
+      exchange_ts_ns: 1,
+      local_ts_ns: 2,
     };
     const bbo = a.applyBook(other);
     expect(bbo).toMatchObject({ exchange: "coinbase", bid_px: "200" });
@@ -222,7 +250,17 @@ describe("Aggregator", () => {
       const a = new Aggregator();
       a.applyBook(snap(5, [["100", "1"]], [["101", "1"]], 9));
       // A live delta deletes the old top and advances the book to seq 7.
-      a.applyBook(delta(7, [["100", "0"], ["100.6", "2"]], [], 9));
+      a.applyBook(
+        delta(
+          7,
+          [
+            ["100", "0"],
+            ["100.6", "2"],
+          ],
+          [],
+          9,
+        ),
+      );
       // A periodic re-snapshot stamped at the OLD seq 6 (captured before delta 7
       // applied) arrives late; resetting to it would resurrect the deleted 100
       // bid and rewind the 100.6 top.
@@ -271,7 +309,17 @@ describe("Aggregator", () => {
       const healBefore = await healFor("kraken");
       const depthBefore = await replayDepthFor("kraken");
       // In-band recovery snapshot: bid 100 gone (implicit delete), bid 98 present.
-      const healed = a.applyBook(snap(8, [["98", "1"], ["97", "1"]], [["99", "1"]], 9));
+      const healed = a.applyBook(
+        snap(
+          8,
+          [
+            ["98", "1"],
+            ["97", "1"],
+          ],
+          [["99", "1"]],
+          9,
+        ),
+      );
       // Without replay this reads 98/99, resurrecting the deleted 98 for a full
       // re-snapshot interval (the delta that removes it is behind the consumer).
       expect(healed).toMatchObject({ bid_px: "97", ask_px: "99" });

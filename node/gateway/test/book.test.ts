@@ -43,14 +43,33 @@ describe("cmpDecimal", () => {
 describe("Book", () => {
   it("tracks best bid/ask from a snapshot", () => {
     const b = new Book();
-    b.applySnapshot(1, 0, [["100", "1"], ["99", "2"]], [["101", "0.5"], ["102", "3"]]);
+    b.applySnapshot(
+      1,
+      0,
+      [
+        ["100", "1"],
+        ["99", "2"],
+      ],
+      [
+        ["101", "0.5"],
+        ["102", "3"],
+      ],
+    );
     expect(b.bestBid()).toEqual(["100", "1"]);
     expect(b.bestAsk()).toEqual(["101", "0.5"]);
   });
 
   it("exposes next-best after a zero-size delete of the top", () => {
     const b = new Book();
-    b.applySnapshot(1, 0, [["100", "1"], ["99", "2"]], [["101", "1"]]);
+    b.applySnapshot(
+      1,
+      0,
+      [
+        ["100", "1"],
+        ["99", "2"],
+      ],
+      [["101", "1"]],
+    );
     expect(b.applyDelta(2, [["100", "0"]], [])).toBe(true);
     expect(b.bestBid()).toEqual(["99", "2"]);
   });

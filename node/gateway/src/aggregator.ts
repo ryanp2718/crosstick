@@ -187,11 +187,7 @@ export class Aggregator {
     return [...this.lastBbo.values()];
   }
 
-  private deriveBbo(
-    key: string,
-    book: Book,
-    msg: BookSnapshotMsg | BookDeltaMsg,
-  ): BBOMsg | null {
+  private deriveBbo(key: string, book: Book, msg: BookSnapshotMsg | BookDeltaMsg): BBOMsg | null {
     const bid = book.bestBid();
     const ask = book.bestAsk();
     if (!bid || !ask) return null; // one-sided book has no BBO
@@ -214,8 +210,10 @@ export class Aggregator {
     const prev = this.lastBbo.get(key);
     if (
       prev &&
-      prev.bid_px === bid[0] && prev.bid_sz === bid[1] &&
-      prev.ask_px === ask[0] && prev.ask_sz === ask[1]
+      prev.bid_px === bid[0] &&
+      prev.bid_sz === bid[1] &&
+      prev.ask_px === ask[0] &&
+      prev.ask_sz === ask[1]
     ) {
       return null;
     }

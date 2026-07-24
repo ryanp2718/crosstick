@@ -22,8 +22,14 @@ describe("routeMessage", () => {
     const agg = new Aggregator();
     const nbboAgg = new NBBOAggregator();
     const snap: BookSnapshotMsg = {
-      t: "snap", exchange: "kraken", symbol: "BTC/USD", sequence: 0,
-      bids: [["100", "1"]], asks: [["101", "2"]], exchange_ts_ns: 1, local_ts_ns: 2,
+      t: "snap",
+      exchange: "kraken",
+      symbol: "BTC/USD",
+      sequence: 0,
+      bids: [["100", "1"]],
+      asks: [["101", "2"]],
+      exchange_ts_ns: 1,
+      local_ts_ns: 2,
     };
     const r = routeMessage(snap, agg, mappedCanonicalMap, nbboAgg, 2);
     expect(r.publish).toMatchObject({ t: "bbo", bid_px: "100", ask_px: "101" });
@@ -34,8 +40,14 @@ describe("routeMessage", () => {
     const agg = new Aggregator();
     const nbboAgg = new NBBOAggregator();
     const oneSided: BookSnapshotMsg = {
-      t: "snap", exchange: "kraken", symbol: "BTC/USD", sequence: 0,
-      bids: [["100", "1"]], asks: [], exchange_ts_ns: 1, local_ts_ns: 2,
+      t: "snap",
+      exchange: "kraken",
+      symbol: "BTC/USD",
+      sequence: 0,
+      bids: [["100", "1"]],
+      asks: [],
+      exchange_ts_ns: 1,
+      local_ts_ns: 2,
     };
     const r = routeMessage(oneSided, agg, mappedCanonicalMap, nbboAgg, 2);
     expect(r.publish).toBeNull();
@@ -48,8 +60,15 @@ describe("routeMessage", () => {
     const agg = new Aggregator();
     const nbboAgg = new NBBOAggregator();
     const trade: TradeMsg = {
-      t: "trade", exchange: "kraken", symbol: "BTC/USD", trade_id: "1",
-      price: "100", size: "0.5", side: "bid", exchange_ts_ns: 1, local_ts_ns: 2,
+      t: "trade",
+      exchange: "kraken",
+      symbol: "BTC/USD",
+      trade_id: "1",
+      price: "100",
+      size: "0.5",
+      side: "bid",
+      exchange_ts_ns: 1,
+      local_ts_ns: 2,
     };
     const r = routeMessage(trade, agg, mappedCanonicalMap, nbboAgg, 2);
     expect(r.publish).toBeNull();
@@ -61,8 +80,14 @@ describe("routeMessage", () => {
     const agg = new Aggregator();
     const nbboAgg = new NBBOAggregator();
     const snap: BookSnapshotMsg = {
-      t: "snap", exchange: "kraken", symbol: "BTC/USD", sequence: 0,
-      bids: [["100", "1"]], asks: [["101", "2"]], exchange_ts_ns: 1, local_ts_ns: 2,
+      t: "snap",
+      exchange: "kraken",
+      symbol: "BTC/USD",
+      sequence: 0,
+      bids: [["100", "1"]],
+      asks: [["101", "2"]],
+      exchange_ts_ns: 1,
+      local_ts_ns: 2,
     };
     const r = routeMessage(snap, agg, mappedCanonicalMap, nbboAgg, 2);
     expect(r.nbboPublish).toMatchObject({ t: "nbbo", canonical_id: "BTC-USD" });
@@ -74,9 +99,14 @@ describe("routeMessage", () => {
     const nbboAgg = new NBBOAggregator();
     const tsNs = 1_700_000_000_000_000_000;
     const snap: BookSnapshotMsg = {
-      t: "snap", exchange: "kraken", symbol: "BTC/USD", sequence: 0,
-      bids: [["100", "1"]], asks: [["101", "2"]],
-      exchange_ts_ns: tsNs, local_ts_ns: tsNs,
+      t: "snap",
+      exchange: "kraken",
+      symbol: "BTC/USD",
+      sequence: 0,
+      bids: [["100", "1"]],
+      asks: [["101", "2"]],
+      exchange_ts_ns: tsNs,
+      local_ts_ns: tsNs,
     };
     const nowMs = tsNs / 1e6 + 25;
     const r = routeMessage(snap, agg, mappedCanonicalMap, nbboAgg, nowMs);
@@ -88,8 +118,14 @@ describe("routeMessage", () => {
     const agg = new Aggregator();
     const nbboAgg = new NBBOAggregator();
     const snap: BookSnapshotMsg = {
-      t: "snap", exchange: "kraken", symbol: "BTC/USD", sequence: 0,
-      bids: [["100", "1"]], asks: [["101", "2"]], exchange_ts_ns: 1, local_ts_ns: 2,
+      t: "snap",
+      exchange: "kraken",
+      symbol: "BTC/USD",
+      sequence: 0,
+      bids: [["100", "1"]],
+      asks: [["101", "2"]],
+      exchange_ts_ns: 1,
+      local_ts_ns: 2,
     };
     const r = routeMessage(snap, agg, emptyCanonicalMap, nbboAgg, 2);
     expect(r.publish).not.toBeNull();

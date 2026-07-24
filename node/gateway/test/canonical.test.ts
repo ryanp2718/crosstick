@@ -52,9 +52,7 @@ describe("CanonicalMap", () => {
   });
 
   it("get() / all() expose canonicals", () => {
-    const m = new CanonicalMap([
-      { canonical_id: "X", base: "X", quote: "Y", venues: [] },
-    ]);
+    const m = new CanonicalMap([{ canonical_id: "X", base: "X", quote: "Y", venues: [] }]);
     expect(m.get("X")?.base).toBe("X");
     expect(m.all()).toHaveLength(1);
   });
