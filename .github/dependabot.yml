@@ -1,0 +1,38 @@
+version: 2
+updates:
+  # Node gateway (pnpm). Minor/patch are grouped into one PR; majors come
+  # separately so they get a real look.
+  - package-ecosystem: "npm"
+    directory: "/node/gateway"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: "deps"
+    groups:
+      gateway-minor:
+        update-types: ["minor", "patch"]
+
+  # Python (uv). Dependabot reads uv.lock; it will not bump a pinned uv tool
+  # version, only the locked dependencies.
+  - package-ecosystem: "uv"
+    directory: "/python"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: "deps"
+    groups:
+      python-minor:
+        update-types: ["minor", "patch"]
+
+  # The workflow actions themselves (keeps @v4 pins current).
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    commit-message:
+      prefix: "ci"
+    groups:
+      actions:
+        patterns: ["*"]
