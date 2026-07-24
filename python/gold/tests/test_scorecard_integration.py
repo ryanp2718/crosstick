@@ -102,7 +102,7 @@ def test_scorecard_pipeline_over_s3(fs: pafs.S3FileSystem) -> None:
     # silver: the streaming driver reads bronze over S3 and writes the DQ facts
     # one partition at a time (memory-bounded). Row-for-row equivalence with the
     # in-memory build_silver is pinned without Docker in silver/tests/test_streaming.
-    build_silver_streaming(fs, lake, silver, date, canonical)
+    build_silver_streaming(fs, fs, lake, silver, date, canonical)
     assert read_dataset(fs, silver, "book_quality", date) is not None
 
     # gold: aggregate silver over S3 into the scorecard.
@@ -127,6 +127,6 @@ def test_scorecard_pipeline_over_s3(fs: pafs.S3FileSystem) -> None:
     # idempotent: a recompute overwrites the same keys -> identical row counts.
     datasets = ("book_quality", "latency", "status_events", "quotes", "nbbo")
     before = {ds: read_dataset(fs, silver, ds, date).num_rows for ds in datasets}
-    build_silver_streaming(fs, lake, silver, date, canonical)
+    build_silver_streaming(fs, fs, lake, silver, date, canonical)
     after = {ds: read_dataset(fs, silver, ds, date).num_rows for ds in datasets}
     assert before == after

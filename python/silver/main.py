@@ -5,9 +5,11 @@ silver fact streams (book_quality, latency, status_events, quotes, nbbo), and
 write them to the silver bucket — one overwrite-keyed object per partition, so a
 recompute is idempotent.
 
-Env mirrors the materializer: ``S3_ENDPOINT`` / ``S3_ACCESS_KEY`` /
-``S3_SECRET_KEY`` / ``INSTRUMENTS_FILE``; plus ``LAKE_BUCKET`` (bronze source,
-default ``lake``) and ``SILVER_BUCKET`` (default ``silver``).
+Env: base ``S3_*`` is the silver (derived) endpoint; ``LAKE_S3_*`` optionally
+points bronze reads at a distinct endpoint, falling back to ``S3_*`` when unset so
+a single-endpoint run is unchanged (see common.lake.bronze_filesystem_from_env).
+Plus ``INSTRUMENTS_FILE``, ``LAKE_BUCKET`` (bronze source, default ``lake``) and
+``SILVER_BUCKET`` (default ``silver``).
 """
 from __future__ import annotations
 
@@ -25,6 +27,7 @@ from analytics.corpus import CorpusRecord
 from common.asof import reorder
 from common.lake import (
     PartitionWriter,
+    bronze_filesystem_from_env,
     filesystem_from_env,
     instruments_path_from_env,
     iter_partition_batches,
@@ -176,28 +179,30 @@ def _venue_quote_stream(
 
 
 def _process_partition(
-    fs: pafs.FileSystem, lake_bucket: str, silver_bucket: str, date: str,
+    bronze_fs: pafs.FileSystem, derived_fs: pafs.FileSystem,
+    lake_bucket: str, silver_bucket: str, date: str,
     canonical: CanonicalMap, exchange: str, symbol: str, present: set[str],
     counts: dict[str, int],
 ) -> None:
     """Fold one bronze (exchange, symbol) partition into book_quality + quotes +
-    latency, streamed to one object each. Peak memory is one file + one OrderBook
-    + a row batch. Bronze is already partitioned by canonical symbol (object_key
-    resolves), so the partition symbol is the output canonical; the rows resolve
-    the same value, so output partitions match the in-memory build_silver."""
+    latency, streamed to one object each. Bronze reads go through bronze_fs, silver
+    writes through derived_fs (one endpoint each; equal when unsplit). Peak memory is
+    one file + one OrderBook + a row batch. Bronze is already partitioned by canonical
+    symbol (object_key resolves), so the partition symbol is the output canonical; the
+    rows resolve the same value, so output partitions match the in-memory build_silver."""
     canon = symbol
     bron = {"exchange": exchange, "symbol": symbol}
     bq_key = partition_key("book_quality", exchange=exchange, symbol=canon, date=date)
     qt_key = partition_key("quotes", exchange=exchange, symbol=canon, date=date)
     lat_key = partition_key("latency", exchange=exchange, symbol=canon, date=date)
-    bq = PartitionWriter(fs, silver_bucket, bq_key, BOOK_QUALITY_SCHEMA)
-    qt = PartitionWriter(fs, silver_bucket, qt_key, QUOTES_SCHEMA)
-    lat = PartitionWriter(fs, silver_bucket, lat_key, LATENCY_SCHEMA)
+    bq = PartitionWriter(derived_fs, silver_bucket, bq_key, BOOK_QUALITY_SCHEMA)
+    qt = PartitionWriter(derived_fs, silver_bucket, qt_key, QUOTES_SCHEMA)
+    lat = PartitionWriter(derived_fs, silver_bucket, lat_key, LATENCY_SCHEMA)
     bqb, qtb, latb = _Batch(bq), _Batch(qt), _Batch(lat)
     try:
         if present & set(BOOK_DATASETS):
-            snap_recs = _iter_records(fs, lake_bucket, "book_snapshots", date, bron)
-            delta_recs = _iter_records(fs, lake_bucket, "book_deltas", date, bron)
+            snap_recs = _iter_records(bronze_fs, lake_bucket, "book_snapshots", date, bron)
+            delta_recs = _iter_records(bronze_fs, lake_bucket, "book_deltas", date, bron)
             snaps = to_book_recs(snap_recs, canonical)
             deltas = to_book_recs(delta_recs, canonical)
             for bq_row, q_row, lat_row in book_partition_rows(snaps, deltas, exchange):
@@ -211,7 +216,7 @@ def _process_partition(
                     counts["latency"] += 1
         for dataset in NONBOOK_LATENCY_DATASETS:
             if dataset in present:
-                recs = _iter_records(fs, lake_bucket, dataset, date, bron)
+                recs = _iter_records(bronze_fs, lake_bucket, dataset, date, bron)
                 for lat_row in latency_rows(recs, canonical):
                     latb.add(lat_row)
                     counts["latency"] += 1
@@ -236,30 +241,31 @@ def _write_rows(
 
 
 def _build_nbbo_streaming(
-    fs: pafs.FileSystem, silver_bucket: str, date: str, status_events: list[dict],
+    derived_fs: pafs.FileSystem, silver_bucket: str, date: str, status_events: list[dict],
     counts: dict[str, int],
 ) -> None:
     """Per-canonical NBBO from the persisted quotes, streamed: each venue's quotes go
     through a bounded reorder buffer (fold order -> ts order, fail-loud past
     WINDOW_NS) k-way-merged with its down-sentinels, then `iter_nbbo` -> stream-
-    written. Peak memory is ~one row group + the reorder window per venue, not a whole
-    canonical's quotes — the same NBBO as the `_build_nbbo` oracle on benign data."""
+    written. Reads and writes silver only, so a single derived_fs. Peak memory is ~one
+    row group + the reorder window per venue, not a whole canonical's quotes. The output
+    is the same NBBO as the `_build_nbbo` oracle on benign data."""
     quotes_by_canon: dict[str, list[dict]] = defaultdict(list)
-    for part in list_partitions(fs, silver_bucket, "quotes", date):
+    for part in list_partitions(derived_fs, silver_bucket, "quotes", date):
         quotes_by_canon[part["symbol"]].append(part)
     downs = downs_by_exchange(status_events)
     for canon, parts in quotes_by_canon.items():
         streams: dict[str, Iterable[tuple[int, tuple | None]]] = {}
         for part in parts:
             exchange = part["exchange"]
-            quotes = reorder(_venue_quote_stream(fs, silver_bucket, date, part), WINDOW_NS)
+            quotes = reorder(_venue_quote_stream(derived_fs, silver_bucket, date, part), WINDOW_NS)
             sentinels = ((dts, None) for dts in sorted(downs.get(exchange, [])))
             # quotes first so an equal-ts down evicts the leg (matches the oracle's
             # stable sort, which appends sentinels after quotes)
             streams[exchange] = heapq.merge(quotes, sentinels, key=lambda e: e[0])
         key = partition_key("nbbo", symbol=canon, date=date)
         prev_ts: int | None = None
-        with PartitionWriter(fs, silver_bucket, key, NBBO_SCHEMA) as writer:
+        with PartitionWriter(derived_fs, silver_bucket, key, NBBO_SCHEMA) as writer:
             batch = _Batch(writer)
             for row in iter_nbbo(canon, streams):
                 if prev_ts is not None and row["ts_ns"] < prev_ts:  # gold relies on this
@@ -271,36 +277,38 @@ def _build_nbbo_streaming(
 
 
 def build_silver_streaming(
-    fs: pafs.FileSystem, lake_bucket: str, silver_bucket: str, date: str, canonical: CanonicalMap
+    bronze_fs: pafs.FileSystem, derived_fs: pafs.FileSystem,
+    lake_bucket: str, silver_bucket: str, date: str, canonical: CanonicalMap
 ) -> dict[str, int]:
     """Memory-bounded silver build: one bronze (exchange, symbol) partition at a
     time (book fold + latency), then NBBO per canonical from the persisted quotes.
-    Output matches build_silver on clean data; peak memory is a single partition's
-    file + OrderBook + a row batch, not the whole day."""
+    Bronze reads use bronze_fs, silver reads/writes use derived_fs (equal filesystems
+    when unsplit). Output matches build_silver on clean data; peak memory is a single
+    partition's file + OrderBook + a row batch, not the whole day."""
     counts: dict[str, int] = defaultdict(int)
 
     # Phase 1: per bronze (exchange, native-symbol) partition -> book_quality,
     # quotes, latency. All of an instrument's datasets share one native symbol.
     datasets_by_part: dict[tuple[str, str], set[str]] = defaultdict(set)
     for dataset in (*BOOK_DATASETS, *NONBOOK_LATENCY_DATASETS):
-        for part in list_partitions(fs, lake_bucket, dataset, date):
+        for part in list_partitions(bronze_fs, lake_bucket, dataset, date):
             datasets_by_part[(part["exchange"], part["symbol"])].add(dataset)
     for (exchange, symbol), present in datasets_by_part.items():
-        _process_partition(fs, lake_bucket, silver_bucket, date, canonical,
-                           exchange, symbol, present, counts)
+        _process_partition(bronze_fs, derived_fs, lake_bucket, silver_bucket, date,
+                           canonical, exchange, symbol, present, counts)
 
     # Phase 1c: status per exchange (small), retained for NBBO eviction.
     status_events: list[dict] = []
-    for part in list_partitions(fs, lake_bucket, "status", date):
-        recs = list(_iter_records(fs, lake_bucket, "status", date, part))
+    for part in list_partitions(bronze_fs, lake_bucket, "status", date):
+        recs = list(_iter_records(bronze_fs, lake_bucket, "status", date, part))
         rows = _status_transitions(part["exchange"], recs)
         key = partition_key("status_events", exchange=part["exchange"], date=date)
-        _write_rows(fs, silver_bucket, key, STATUS_SCHEMA, rows)
+        _write_rows(derived_fs, silver_bucket, key, STATUS_SCHEMA, rows)
         status_events.extend(rows)
         counts["status_events"] += len(rows)
 
     # Phase 2: NBBO per canonical (the only cross-venue step), streamed.
-    _build_nbbo_streaming(fs, silver_bucket, date, status_events, counts)
+    _build_nbbo_streaming(derived_fs, silver_bucket, date, status_events, counts)
     return counts
 
 
@@ -313,12 +321,15 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 def main() -> None:
     logging.basicConfig(level=os.environ.get("LOG_LEVEL", "INFO"))
     args = parse_args()
-    fs = filesystem_from_env()
+    bronze_fs = bronze_filesystem_from_env()
+    derived_fs = filesystem_from_env()
     lake_bucket = os.environ.get("LAKE_BUCKET", "lake")
     silver_bucket = os.environ.get("SILVER_BUCKET", "silver")
     canonical = CanonicalMap.from_yaml(instruments_path_from_env())
     for date in args.dates:
-        counts = build_silver_streaming(fs, lake_bucket, silver_bucket, date, canonical)
+        counts = build_silver_streaming(
+            bronze_fs, derived_fs, lake_bucket, silver_bucket, date, canonical
+        )
         if not counts:
             log.warning("no bronze partitions for %s", date)
             continue
