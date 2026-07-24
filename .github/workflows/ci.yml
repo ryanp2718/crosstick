@@ -101,3 +101,11 @@ jobs:
             echo "checking $f"
             jq empty "$f"
           done
+
+  # House-style guard: zero em-dashes (U+2014) in tracked files.
+  conventions:
+    name: conventions (no em-dash)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: python3 scripts/check_no_em_dash.py
