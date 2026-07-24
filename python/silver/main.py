@@ -35,6 +35,7 @@ from common.lake import (
     list_partitions,
     partition_key,
     read_dataset,
+    write_freshness_markers,
     write_object,
 )
 from materializer.bronze import CanonicalMap, table_to_records
@@ -333,6 +334,9 @@ def main() -> None:
         if not counts:
             log.warning("no bronze partitions for %s", date)
             continue
+        # Markers last, after the streaming build has closed every silver object, so
+        # the exporter reads freshness in O(1) without a metered LIST walk.
+        write_freshness_markers(derived_fs, silver_bucket, date, counts)
         log.info(
             "silver %s: %d book_quality, %d latency, %d status_events, %d quotes, %d nbbo",
             date, counts["book_quality"], counts["latency"], counts["status_events"],

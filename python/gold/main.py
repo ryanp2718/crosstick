@@ -27,6 +27,7 @@ from common.lake import (
     list_partitions,
     partition_key,
     read_dataset,
+    write_freshness_markers,
     write_object,
 )
 from gold.basis import BASIS_SCHEMA, basis_summary_table, iter_basis, summary_row
@@ -87,11 +88,12 @@ def _nbbo_stream(
 
 def write_basis_for_date(
     fs: pafs.FileSystem, silver_bucket: str, gold_bucket: str, date: str, canonical: CanonicalMap
-) -> int:
+) -> dict[str, int]:
     """Stream the basis mart for one date: per base, k-way merge the two legs' sorted
     NBBO partitions (O(frontier) memory) into the event-grain series, written
-    incrementally, accumulating the daily summary — no whole-day nbbo read. Returns
-    the number of basis observations written."""
+    incrementally, accumulating the daily summary, no whole-day nbbo read. Returns the
+    per-dataset row counts written (``basis``, ``basis_summary``), empty when no base
+    had data, for the caller's freshness markers."""
     have = {p["symbol"] for p in list_partitions(fs, silver_bucket, "nbbo", date)}
     summaries: list[dict] = []
     n = 0
@@ -126,7 +128,9 @@ def write_basis_for_date(
             basis_summary_table(summaries),
         )
         log.info("gold PUT %s (%d basis obs, %d base(s))", path, n, len(summaries))
-    return n
+    if n == 0:
+        return {}
+    return {"basis": n, "basis_summary": len(summaries)}
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
@@ -149,12 +153,14 @@ def main() -> None:
     canonical = CanonicalMap.from_yaml(instruments_path_from_env())
     total_violations = 0
     for date in args.dates:
+        counts: dict[str, int] = {}
         scorecard = build_for_date(fs, silver_bucket, date)
         if scorecard:
             path = write_object(
                 fs, gold_bucket, partition_key("scorecard", date=date),
                 scorecard_table(scorecard),
             )
+            counts["scorecard"] = len(scorecard)
             violations = sum(r["n_violations"] for r in scorecard)
             total_violations += violations
             log.info("gold PUT %s (%d checks, %d violations)", path, len(scorecard), violations)
@@ -166,10 +172,13 @@ def main() -> None:
                         r["n_violations"], r["detail"] or "",
                     )
 
-        n_basis = write_basis_for_date(fs, silver_bucket, gold_bucket, date, canonical)
+        counts.update(write_basis_for_date(fs, silver_bucket, gold_bucket, date, canonical))
 
-        if not scorecard and not n_basis:
+        if not counts:
             log.warning("no silver facts for %s; skipping", date)
+            continue
+        # Markers last, after the gold objects for this date are written.
+        write_freshness_markers(fs, gold_bucket, date, counts)
     if args.fail_on_violation and total_violations:
         log.error("scorecard found %d violations", total_violations)
         sys.exit(1)

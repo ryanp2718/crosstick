@@ -13,6 +13,7 @@ this module is the read/write plumbing the layers above bronze share:
 from __future__ import annotations
 
 import os
+import time
 from collections.abc import Iterator
 from pathlib import Path
 
@@ -233,6 +234,71 @@ def write_object(fs: pafs.FileSystem, bucket: str, key: str, table: pa.Table) ->
         fs.create_dir(path.rsplit("/", 1)[0], recursive=True)
     pq.write_table(table, path, filesystem=fs, compression="zstd")
     return path
+
+
+# ── freshness markers ─────────────────────────────────────────────────────────
+# A tiny overwrite-keyed object per dataset under `_freshness/`, stamped with when
+# the dataset was last built. It lets the lake-exporter read a derived layer's
+# freshness in O(1) (one GET per marker) instead of a full LIST walk whose Class A
+# cost grows with venues x securities (the difference between free and metered on
+# R2). A once-daily audit still walks the layer to cross-check the markers.
+FRESHNESS_PREFIX = "_freshness"
+
+_FRESHNESS_SCHEMA = pa.schema([
+    ("dataset", pa.string()),
+    ("date", pa.string()),
+    ("written_at_epoch", pa.float64()),
+    ("row_count", pa.int64()),
+])
+
+
+def write_freshness_marker(
+    fs: pafs.FileSystem, bucket: str, dataset: str, *,
+    date: str, row_count: int, written_at_epoch: float | None = None,
+) -> str:
+    """Write the freshness marker for one dataset at `_freshness/<dataset>.parquet`,
+    overwriting in place. Records the date built, the wall-clock write time, and how
+    many rows landed. Call this LAST, after the dataset's data objects are written,
+    so a partial or aborted build can never read back as fresh."""
+    written_at = time.time() if written_at_epoch is None else written_at_epoch
+    table = pa.table(
+        {
+            "dataset": [dataset],
+            "date": [date],
+            "written_at_epoch": [float(written_at)],
+            "row_count": [int(row_count)],
+        },
+        schema=_FRESHNESS_SCHEMA,
+    )
+    return write_object(fs, bucket, f"{FRESHNESS_PREFIX}/{dataset}.parquet", table)
+
+
+def write_freshness_markers(
+    fs: pafs.FileSystem, bucket: str, date: str, counts: dict[str, int],
+    written_at_epoch: float | None = None,
+) -> None:
+    """Write a marker for every dataset that produced rows, sharing one timestamp.
+    A zero-row dataset writes no object, so it gets no marker (its freshness stays
+    undefined, exactly as the LIST walk reported it)."""
+    written_at = time.time() if written_at_epoch is None else written_at_epoch
+    for dataset, n in counts.items():
+        if n > 0:
+            write_freshness_marker(
+                fs, bucket, dataset, date=date, row_count=n, written_at_epoch=written_at
+            )
+
+
+def read_freshness_markers(fs: pafs.FileSystem, bucket: str) -> dict[str, dict]:
+    """Every freshness marker in a bucket, keyed by dataset. One LIST of the small
+    `_freshness/` prefix plus a GET per marker: cost tracks the dataset count, not
+    the retained history the date-pruned walk descends."""
+    selector = pafs.FileSelector(f"{bucket}/{FRESHNESS_PREFIX}", allow_not_found=True)
+    out: dict[str, dict] = {}
+    for info in fs.get_file_info(selector):
+        if info.type == pafs.FileType.File and info.path.endswith(".parquet"):
+            dataset = info.path.replace("\\", "/").rsplit("/", 1)[-1][: -len(".parquet")]
+            out[dataset] = _read_file(fs, info.path).to_pylist()[0]
+    return out
 
 
 class PartitionWriter:

@@ -62,8 +62,8 @@ def test_streaming_basis_matches_build_basis(tmp_path) -> None:
     _seed_bronze(fs, lake, records, canonical)
     build_silver_streaming(fs, fs, lake, silver, date, canonical)
 
-    n = write_basis_for_date(fs, silver, gold, date, canonical)
-    assert n  # the golden corpus produces a BTC basis series
+    counts = write_basis_for_date(fs, silver, gold, date, canonical)
+    assert counts["basis"]  # the golden corpus produces a BTC basis series
 
     # oracle: build_basis over the whole day of nbbo, round-tripped through the
     # schema so both sides carry the same decimal scale before comparison.

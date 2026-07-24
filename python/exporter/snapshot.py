@@ -23,7 +23,7 @@ from datetime import UTC, datetime
 from prometheus_client.core import GaugeMetricFamily
 from pyarrow import fs as pafs
 
-from common.lake import latest_date, read_dataset
+from common.lake import FRESHNESS_PREFIX, latest_date, read_dataset, read_freshness_markers
 
 log = logging.getLogger(__name__)
 
@@ -151,12 +151,23 @@ def _newest_per_dataset(fs: pafs.FileSystem, bucket: str) -> dict[str, float]:
     """
     out: dict[str, float] = {}
     for info in fs.get_file_info(pafs.FileSelector(bucket, allow_not_found=True)):
-        if info.type != pafs.FileType.Directory:
-            continue
+        if info.type != pafs.FileType.Directory or _basename(info.path) == FRESHNESS_PREFIX:
+            continue  # skip the freshness markers' own prefix (not a data dataset)
         mtime = _newest_parquet_mtime(fs, info.path)
         if mtime > 0.0:
             out[_basename(info.path)] = mtime
     return out
+
+
+def _derived_freshness(fs: pafs.FileSystem, bucket: str) -> dict[str, float]:
+    """Freshness (epoch seconds of the last build) per dataset for a derived layer,
+    from the O(1) per-dataset markers the batch writes. Falls back to the date-pruned
+    LIST walk when no markers exist yet (pre-migration, or before the first batch that
+    writes them), so the gauge is never blank."""
+    markers = read_freshness_markers(fs, bucket)
+    if not markers:
+        return _newest_per_dataset(fs, bucket)
+    return {ds: float(m["written_at_epoch"]) for ds, m in markers.items()}
 
 
 def _gold_rows(
@@ -173,12 +184,14 @@ def build_families(
     bronze_fs: pafs.FileSystem, derived_fs: pafs.FileSystem,
     lake_bucket: str, silver_bucket: str, gold_bucket: str, now_s: float
 ) -> list[GaugeMetricFamily]:
-    # Bronze lives on its own endpoint (bronze_fs); silver/gold and the gold rollups
-    # are the derived layers (derived_fs). Equal filesystems when unsplit.
+    # Bronze lives on its own endpoint (bronze_fs) and stays on the LIST walk (local
+    # MinIO, free). Silver/gold are the derived layers (derived_fs): freshness comes
+    # from the O(1) markers, so the hot path issues no metered LIST walk on the cloud
+    # store. Equal filesystems when unsplit.
     by_layer = {
         "bronze": _newest_per_dataset(bronze_fs, lake_bucket),
-        "silver": _newest_per_dataset(derived_fs, silver_bucket),
-        "gold": _newest_per_dataset(derived_fs, gold_bucket),
+        "silver": _derived_freshness(derived_fs, silver_bucket),
+        "gold": _derived_freshness(derived_fs, gold_bucket),
     }
     sc_rows, sc_date = _gold_rows(derived_fs, gold_bucket, "scorecard")
     basis_rows, _ = _gold_rows(derived_fs, gold_bucket, "basis_summary")
@@ -187,3 +200,24 @@ def build_families(
         *scorecard_families(sc_rows, sc_date),
         *basis_families(basis_rows),
     ]
+
+
+def audit_families(
+    derived_fs: pafs.FileSystem, silver_bucket: str, gold_bucket: str
+) -> list[GaugeMetricFamily]:
+    """Daily cross-check of the freshness markers against reality: the full LIST walk
+    (the cost the markers save on the hot path) vs each marker's written_at, per
+    derived dataset. Exposes lake_freshness_marker_skew_seconds so a marker that
+    drifts from the newest object it claims to describe (a stuck or partial write)
+    is visible. Run on its own slow cadence (~daily), not every scrape."""
+    fam = GaugeMetricFamily(
+        "lake_freshness_marker_skew_seconds",
+        "Abs seconds between a dataset's freshness marker and its newest object mtime",
+        labels=["layer", "dataset"],
+    )
+    for layer, bucket in (("silver", silver_bucket), ("gold", gold_bucket)):
+        actual = _newest_per_dataset(derived_fs, bucket)
+        for ds, m in read_freshness_markers(derived_fs, bucket).items():
+            if ds in actual:
+                fam.add_metric([layer, ds], abs(float(m["written_at_epoch"]) - actual[ds]))
+    return [fam]

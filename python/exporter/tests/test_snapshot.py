@@ -12,9 +12,10 @@ from datetime import UTC, datetime
 import pyarrow as pa
 from pyarrow import fs as pafs
 
-from common.lake import partition_key, write_object
+from common.lake import partition_key, write_freshness_marker, write_object
 from exporter.snapshot import (
     _newest_per_dataset,
+    audit_families,
     basis_families,
     build_families,
     freshness_families,
@@ -159,3 +160,34 @@ def test_build_families_over_local_fs(tmp_path) -> None:
     assert ("gold_basis_bps", (("base", "BTC"), ("stat", "mean"))) in idx
     # freshness present for the seeded bronze dataset, and a real positive age.
     assert idx[("lake_freshness_seconds", (("dataset", "book_deltas"), ("layer", "bronze")))] > 0
+
+
+def test_build_families_freshness_from_markers(tmp_path) -> None:
+    # With markers present, derived freshness is the marker's written_at (O(1) GET),
+    # not the object mtime the LIST walk would find. Prove it: an old object with a
+    # much newer marker reports the marker's age.
+    fs = pafs.LocalFileSystem()
+    lake, silver, gold = (str(tmp_path / b) for b in ("lake", "silver", "gold"))
+    write_object(fs, gold, partition_key("scorecard", date=DATE), scorecard_table(SCORECARD_ROWS))
+    os.utime(f"{gold}/{partition_key('scorecard', date=DATE)}", (1_000.0, 1_000.0))
+    write_freshness_marker(fs, gold, "scorecard", date=DATE, row_count=4,
+                           written_at_epoch=1_999_000.0)
+
+    idx = _index(build_families(fs, fs, lake, silver, gold, now_s=2_000_000.0))
+    gold_fresh = ("lake_freshness_seconds", (("dataset", "scorecard"), ("layer", "gold")))
+    assert idx[gold_fresh] == 2_000_000.0 - 1_999_000.0  # from the marker, not mtime 1000
+
+
+def test_audit_families_reports_marker_skew(tmp_path) -> None:
+    fs = pafs.LocalFileSystem()
+    silver, gold = (str(tmp_path / b) for b in ("silver", "gold"))
+    key = partition_key("scorecard", date=DATE)
+    write_object(fs, gold, key, scorecard_table(SCORECARD_ROWS))
+    os.utime(f"{gold}/{key}", (1_000.0, 1_000.0))  # actual newest mtime
+    write_freshness_marker(fs, gold, "scorecard", date=DATE, row_count=4,
+                           written_at_epoch=1_030.0)  # marker 30s off the object
+
+    idx = _index(audit_families(fs, silver, gold))
+    skew = ("lake_freshness_marker_skew_seconds",
+            (("dataset", "scorecard"), ("layer", "gold")))
+    assert idx[skew] == 30.0

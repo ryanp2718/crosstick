@@ -19,11 +19,20 @@ log = logging.getLogger(__name__)
 
 
 class LakeCollector:
-    """Wraps a snapshot builder; `refresh()` rebuilds the cache, `collect()` serves it."""
+    """Wraps a snapshot builder; `refresh()` rebuilds the cache, `collect()` serves it.
 
-    def __init__(self, build: Callable[[], list[Metric]]) -> None:
+    An optional `audit` builder runs on a slower cadence (the caller drives it) for the
+    once-daily marker-vs-reality cross-check; its families are cached separately and
+    merged into every scrape, so a scrape never blocks on the full LIST walk."""
+
+    def __init__(
+        self, build: Callable[[], list[Metric]],
+        audit: Callable[[], list[Metric]] | None = None,
+    ) -> None:
         self._build = build
+        self._audit = audit
         self._families: list[Metric] = []
+        self._audit_families: list[Metric] = []
         self._errors = 0.0
         self._last_success = 0.0
 
@@ -35,8 +44,18 @@ class LakeCollector:
             self._errors += 1
             log.exception("lake-exporter refresh failed; serving last good snapshot")
 
+    def run_audit(self) -> None:
+        if self._audit is None:
+            return
+        try:
+            self._audit_families = self._audit()
+        except Exception:  # keep the last good audit snapshot
+            self._errors += 1
+            log.exception("lake-exporter audit failed; serving last good audit snapshot")
+
     def collect(self) -> Iterator[Metric]:
         yield from self._families
+        yield from self._audit_families
         errs = CounterMetricFamily(
             "lake_exporter_refresh_errors",
             "Lake snapshot refreshes that raised (serving the last good snapshot)",
