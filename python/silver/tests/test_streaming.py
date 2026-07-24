@@ -63,7 +63,7 @@ def test_streaming_matches_in_memory(tmp_path) -> None:
     silver_mem = (tmp_path / "silver_mem").as_posix()
     _seed_bronze(fs, lake, records, canonical)
 
-    build_silver_streaming(fs, lake, silver_stream, date, canonical)
+    build_silver_streaming(fs, fs, lake, silver_stream, date, canonical)
     write_silver(fs, silver_mem, build_silver(read_bronze_records(fs, lake, date), canonical))
 
     for ds in SILVER_DATASETS:
@@ -86,7 +86,7 @@ def test_streaming_counts_match_facts(tmp_path) -> None:
     lake = (tmp_path / "lake").as_posix()
     _seed_bronze(fs, lake, records, canonical)
 
-    counts = build_silver_streaming(fs, lake, (tmp_path / "silver").as_posix(), date, canonical)
+    counts = build_silver_streaming(fs, fs, lake, (tmp_path / "silver").as_posix(), date, canonical)
     facts = build_silver(read_bronze_records(fs, lake, date), canonical)
     assert counts["book_quality"] == len(facts.book_quality)
     assert counts["latency"] == len(facts.latency)

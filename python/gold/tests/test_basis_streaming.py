@@ -60,7 +60,7 @@ def test_streaming_basis_matches_build_basis(tmp_path) -> None:
     silver = (tmp_path / "silver").as_posix()
     gold = (tmp_path / "gold").as_posix()
     _seed_bronze(fs, lake, records, canonical)
-    build_silver_streaming(fs, lake, silver, date, canonical)
+    build_silver_streaming(fs, fs, lake, silver, date, canonical)
 
     n = write_basis_for_date(fs, silver, gold, date, canonical)
     assert n  # the golden corpus produces a BTC basis series

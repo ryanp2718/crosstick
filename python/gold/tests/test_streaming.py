@@ -56,7 +56,7 @@ def _silver(tmp_path) -> tuple[pafs.FileSystem, str, str]:
     lake = (tmp_path / "lake").as_posix()
     silver = (tmp_path / "silver").as_posix()
     _seed_bronze(fs, lake, records, canonical)
-    build_silver_streaming(fs, lake, silver, date, canonical)
+    build_silver_streaming(fs, fs, lake, silver, date, canonical)
     return fs, silver, date
 
 
