@@ -1,7 +1,7 @@
 """Integration: replay the golden corpus into an ephemeral Redpanda and read it
 back, asserting a faithful round-trip.
 
-This is the foundation of the integration harness — it proves ephemeral infra +
+This is the foundation of the integration harness - it proves ephemeral infra +
 deterministic replay work end-to-end. The gateway-in-the-loop NBBO assertion
 (Phase 0b) builds on the same fixtures.
 

@@ -16,12 +16,12 @@ class Side(enum.StrEnum):
 
 
 class BookLevel(msgspec.Struct, frozen=True, array_like=True):
-    """Decodes from a JSON array [price, size] — NOT a dict.
+    """Decodes from a JSON array [price, size] - NOT a dict.
 
     Matches Binance's wire format (string [price, qty] arrays), so the Binance
     driver decodes levels straight into this. Coinbase sends objects
     {price_level, new_quantity} and Kraken v2 sends objects {price, qty} as
-    JSON numbers — those drivers must decode by key, not reuse BookLevel.
+    JSON numbers - those drivers must decode by key, not reuse BookLevel.
     """
 
     price: str
@@ -38,9 +38,9 @@ class BookSnapshot(msgspec.Struct, tag="snap", tag_field="t", frozen=True):
     local_ts_ns: int
     # Per-WS-connection generation. coinbase/kraken reset `sequence` on each
     # reconnect, so sequence alone can't tell a prior connection's deltas from
-    # the current one's — the gateway keys book reconstruction on (epoch,
+    # the current one's - the gateway keys book reconstruction on (epoch,
     # sequence) to avoid replaying a stale epoch onto a fresh snapshot. Defaults
-    # to 0 so pre-epoch captures decode (compared by equality only — never time).
+    # to 0 so pre-epoch captures decode (compared by equality only - never time).
     epoch: int = 0
 
 
@@ -92,7 +92,7 @@ class Liquidation(msgspec.Struct, tag="liq", tag_field="t", frozen=True):
 
     SAMPLED, not a tape: Binance pushes only the largest liquidation per
     symbol per 1000ms (see DESIGN_perp_capture.md). `side` is the side of the
-    forced order itself — ASK means a long position was liquidated."""
+    forced order itself - ASK means a long position was liquidated."""
 
     exchange: str
     symbol: str
@@ -123,7 +123,7 @@ class MarkPrice(msgspec.Struct, tag="mark", tag_field="t", frozen=True):
 class OpenInterest(msgspec.Struct, tag="oi", tag_field="t", frozen=True):
     """Total open interest for a derivatives instrument.
 
-    REST-polled — Binance has no OI stream — so the cadence is the ingester's
+    REST-polled - Binance has no OI stream - so the cadence is the ingester's
     poll interval, not an exchange event clock. `exchange_ts_ns` is the
     venue's response timestamp. (DESIGN_perp_capture.md slice 2.)"""
 
@@ -167,7 +167,7 @@ def encode(msg: msgspec.Struct) -> bytes:
 
 
 # Streaming decoder: covers only the types that ingesters and the gateway
-# actually produce.  VWAP is excluded — it is never on a live topic.
+# actually produce.  VWAP is excluded - it is never on a live topic.
 _STREAMING_TYPES = (
     BookSnapshot | BookDelta | Trade | BBO | Spread | Status | Liquidation | MarkPrice
     | OpenInterest

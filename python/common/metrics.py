@@ -106,7 +106,7 @@ def serve_metrics_in_background(
 ) -> None:
     """Start a metrics HTTP server on a daemon thread.
 
-    Threading (not asyncio) is intentional — prom-client renders are sync and
+    Threading (not asyncio) is intentional - prom-client renders are sync and
     we want metrics to keep responding even if the event loop is busy. `registry`
     defaults to the shared ingest/materializer REGISTRY; the lake-exporter passes
     its own so it serves only its lake-derived metrics.

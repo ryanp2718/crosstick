@@ -1,6 +1,6 @@
 """Component tests for Materializer chunk/commit behaviour.
 
-The Parquet PUT is monkeypatched to a recorder — the real S3 path is covered
+The Parquet PUT is monkeypatched to a recorder - the real S3 path is covered
 by the integration test. Here we pin the cut rules (size-dominant, UTC date
 boundary, age), the start-offset key naming, and commit-after-PUT offsets.
 """

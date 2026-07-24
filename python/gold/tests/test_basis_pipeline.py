@@ -40,7 +40,7 @@ def test_btc_basis_value(basis) -> None:
 
 def test_basis_gap_when_binance_book_crosses(basis) -> None:
     # The crossed delta clears BTC-USDT (and the venue later goes down), so the
-    # series holds only the pre-cross observations — it does not carry a stale
+    # series holds only the pre-cross observations - it does not carry a stale
     # USDT leg forward.
     btc = [r for r in basis if r["base"] == "BTC"]
     assert len(btc) == 2

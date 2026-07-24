@@ -6,7 +6,7 @@ name: crosstick
 # the same topic firehose it fans out to WS clients.
 #
 # App services carry healthchecks so `docker compose up -d --wait` blocks on a
-# real ready signal. NOTE: depends_on orders `compose up` only — on a host/Docker
+# real ready signal. NOTE: depends_on orders `compose up` only - on a host/Docker
 # reboot the daemon restarts every `unless-stopped` container at once, ignoring it.
 # Redpanda's --memory cap (below) is what keeps it from reserving most of the VM
 # and leaving the RAM-tight box with no headroom for a new container to start; the
@@ -58,8 +58,8 @@ services:
   #   fetches into Request/ListOffsets timeouts and crash loops; polling is the
   #   pre-v26 behavior the client is stable on.
   # - default_topic_partitions: already Redpanda's default, pinned because
-  #   single-partition topics are what makes per-topic total order — and
-  #   byte-identical NBBO replay — hold for auto-created topics.
+  #   single-partition topics are what makes per-topic total order - and
+  #   byte-identical NBBO replay - hold for auto-created topics.
   # - balancing modes: fresh clusters auto-enable these enterprise features under
   #   the 30-day trial license, leaving a license violation (blocks upgrades)
   #   when it lapses; both are no-ops on one node with one core anyway.
@@ -124,8 +124,8 @@ services:
         condition: service_healthy
     # Idempotent bucket setup + a bronze lifecycle rule: expire raw `lake` objects
     # after 30 days (matches log_retention_ms) so the lake can't grow unbounded.
-    # Only deletes once data ages past 30d (nothing yet — capture started <30d ago).
-    # mc is pinned (above), so the single `ilm rule add` syntax is known-good — no
+    # Only deletes once data ages past 30d (nothing yet - capture started <30d ago).
+    # mc is pinned (above), so the single `ilm rule add` syntax is known-good - no
     # version fallback. Non-blocking (|| WARN to stderr) so a retention hiccup never
     # fails minio-init (materializer waits on it) yet stays visible in the logs;
     # retention is non-critical here (~200 GB free). Verify: mc ilm rule ls local/lake.

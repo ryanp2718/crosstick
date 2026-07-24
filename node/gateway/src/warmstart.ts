@@ -5,17 +5,17 @@
 // empty until its venue's next snapshot. Instead we re-derive state from the
 // log: one seek per (topic, partition), chosen by topic class.
 //
-//   *.snapshots — latest snapshot (HWM-1) when one exists inside the lookback,
+//   *.snapshots - latest snapshot (HWM-1) when one exists inside the lookback,
 //                 else the live edge (the ingester's periodic re-snapshot
 //                 bounds that wait to one interval).
-//   *.deltas    — first offset at/after (now - lookback). A snapshot inside
+//   *.deltas    - first offset at/after (now - lookback). A snapshot inside
 //                 the lookback is by definition newer than the cutoff, so this
 //                 covers every delta past it; the surplus prefix is absorbed
 //                 by the aggregator's pre-snapshot buffering + sequence guard
 //                 (D2a). No snapshot inside the lookback degrades to waiting
 //                 for the next periodic one, exactly like a cold start.
-//   md.trades.* — live edge; trades are events, not state to rebuild.
-//   md.status.* — first offset at/after (now - lookback), same as deltas:
+//   md.trades.* - live edge; trades are events, not state to rebuild.
+//   md.status.* - first offset at/after (now - lookback), same as deltas:
 //                 recent heartbeats seed liveness + the stream clock, cheap and
 //                 independent of cleanup policy (an earliest seek replays a
 //                 delete-policy status topic's full history).
@@ -24,7 +24,7 @@
 // NOT harmless when the per-topic backlogs drain unevenly: the stream clock is
 // the max event-time across ALL topics, so a leg from a slow-draining book is
 // aged (and cross-checked) against a clock a fast-draining topic already pushed
-// ahead — a stale top-of-book then wins the NBBO and prints a phantom cross
+// ahead - a stale top-of-book then wins the NBBO and prints a phantom cross
 // until its own replay catches up. md.status drains far faster than md.book, so
 // liveness eviction doesn't suppress it. DrainGate (below) holds derived output
 // until every backlogged book partition reaches its startup HWM.
@@ -41,7 +41,7 @@ export function classifyTopic(topic: string): TopicClass {
   return "other";
 }
 
-// The slice of kafkajs's Admin the planner needs — kept minimal so tests can
+// The slice of kafkajs's Admin the planner needs - kept minimal so tests can
 // stub it. fetchTopicOffsets returns the HWM as both `offset` and `high`;
 // fetchTopicOffsetsByTimestamp returns the earliest offset whose timestamp is
 // >= the argument, or "-1" when no such message exists.
@@ -62,7 +62,7 @@ export interface Seek {
   // Set only for book partitions sought strictly below the live edge: the last
   // offset of the startup backlog (HWM-1) the server must replay before its
   // book is rebuilt. Absent when the seek lands at the live edge (empty topic,
-  // or no snapshot/delta inside the lookback) — those carry no backlog to gate.
+  // or no snapshot/delta inside the lookback) - those carry no backlog to gate.
   drainTo?: string;
 }
 
@@ -102,7 +102,7 @@ export async function planWarmStart(
           const tsOff = ts === undefined ? -1n : BigInt(ts);
           const withinLookback = tsOff >= 0n && tsOff < hwm;
           if (!withinLookback) {
-            offset = high; // nothing recent enough — start at the live edge
+            offset = high; // nothing recent enough - start at the live edge
           } else {
             offset = cls === "snapshots" ? (hwm - 1n).toString() : ts!;
           }
@@ -122,15 +122,15 @@ export async function planWarmStart(
 }
 
 // Holds the gateway's derived output (md.bbo/md.nbbo) through the warm-start
-// replay and opens it once every backlogged book partition has drained — see
+// replay and opens it once every backlogged book partition has drained - see
 // the module header for why an ungated uneven drain emits phantom crosses. A
 // clean start (and the byte-identical replay test) plans no drainTo, so the
 // gate is never armed and emission is unchanged.
 interface DrainState {
   drainTo: bigint;
   // True once we've seen an offset within the backlog (<= drainTo). Guards
-  // against a pre-seek straggler from the committed edge — an offset already
-  // past the backlog — spuriously opening the gate before the replay runs.
+  // against a pre-seek straggler from the committed edge - an offset already
+  // past the backlog - spuriously opening the gate before the replay runs.
   engaged: boolean;
 }
 
@@ -152,12 +152,12 @@ export class DrainGate {
     }
   }
 
-  // True while any backlogged book partition is still draining — output held.
+  // True while any backlogged book partition is still draining - output held.
   get warming(): boolean {
     return this.pending.size > 0;
   }
 
-  // Record a consumed offset; returns true exactly once — on the message that
+  // Record a consumed offset; returns true exactly once - on the message that
   // drains the final pending partition (the instant the gate opens).
   observe(topic: string, partition: number, offset: string): boolean {
     const st = this.pending.get(drainKey(topic, partition));

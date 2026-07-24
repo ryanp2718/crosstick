@@ -97,7 +97,7 @@ async def amain() -> None:
                 log.warning("signal handlers unavailable on this platform; use Ctrl+C")
                 break
 
-        # One failed run() fails the process (compose restarts it) — letting
+        # One failed run() fails the process (compose restarts it) - letting
         # half a venue keep running would mask the loss of the other half.
         await asyncio.gather(*(ing.run() for ing in ingesters))
     finally:

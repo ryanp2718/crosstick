@@ -13,7 +13,7 @@ Five fact streams, each canonical-resolved:
   - latency      : per-hop latency (ns) for every firehose record with headers.
   - status_events: typed venue up/down transitions with downtime.
   - quotes       : per-venue reconstructed top-of-book (best bid/ask + sizes) at
-                   each book event with a valid two-sided book — the same
+                   each book event with a valid two-sided book - the same
                    OrderBook fold as book_quality, one pass.
   - nbbo         : per-canonical reconstructed NBBO (max-bid/min-ask across a
                    canonical's venues, evicting a venue while its status is down).
@@ -152,7 +152,7 @@ def build_silver(records: Iterable[CorpusRecord], canonical: CanonicalMap) -> Si
             )
 
     # One OrderBook fold per (exchange, symbol) feeds BOTH book_quality and
-    # quotes — same reconstruction, so the two never disagree on best bid/ask.
+    # quotes - same reconstruction, so the two never disagree on best bid/ask.
     # Snapshots and deltas are sorted per stream then merged, the same path the
     # streaming driver feeds from disk-ordered files (silver/main.py).
     for (exchange, _symbol), recs in books.items():
@@ -171,7 +171,7 @@ def build_silver(records: Iterable[CorpusRecord], canonical: CanonicalMap) -> Si
 
 @dataclass
 class _BookEvent:
-    """One reconstructed book event — the shared output of the fold that both
+    """One reconstructed book event - the shared output of the fold that both
     book_quality (quality flags) and quotes (top-of-book series) derive from."""
 
     rec: _BookRec
@@ -191,7 +191,7 @@ def fold_book_partition(
 ) -> Iterator[_BookEvent]:
     """Reconstruct one (exchange, symbol) book, yielding an event per record.
 
-    `snaps` and `deltas` must each already be in `(epoch, sequence)` order — they
+    `snaps` and `deltas` must each already be in `(epoch, sequence)` order - they
     are merged lazily by `(epoch, sequence, snap-first)` (so neither whole stream
     need be resident), the regime the bronze topics are written in. In-memory
     callers sort each stream first; the streaming driver feeds disk-ordered files.
@@ -243,7 +243,7 @@ def book_partition_rows(
 
 
 def to_book_recs(records: Iterable[CorpusRecord], canonical: CanonicalMap) -> Iterator[_BookRec]:
-    """Decode bronze book records (snapshots or deltas) into `_BookRec`s — the
+    """Decode bronze book records (snapshots or deltas) into `_BookRec`s - the
     streaming driver's per-partition adapter into `fold_book_partition`."""
     for rec in records:
         meta = parse_topic(rec.topic)
@@ -297,7 +297,7 @@ def _latency_dict(
     exchange_ts_ns: int, local_ts_ns: int, recv: int | None,
 ) -> dict | None:
     # Locally-generated records have no exchange clock (exchange_ts_ns == 0:
-    # re-emitted snapshots, binance(-futures) snapshots) — skip their latency.
+    # re-emitted snapshots, binance(-futures) snapshots) - skip their latency.
     if exchange_ts_ns == 0 or recv is None:
         return None
     return {
@@ -334,7 +334,7 @@ def _book_quality_row(ev: _BookEvent) -> dict:
 
 
 def _quote_row(ev: _BookEvent) -> dict | None:
-    """A quote is the top of a *valid* two-sided book — skip events that raised
+    """A quote is the top of a *valid* two-sided book - skip events that raised
     an invariant (the book is resyncing) or are one-sided."""
     if ev.invariant_kind is not None or ev.best_bid is None or ev.best_ask is None:
         return None
@@ -360,11 +360,11 @@ def iter_nbbo(
     """Per-canonical NBBO from already ts-sorted per-venue `(ts, (qts,bid,ask)|None)`
     streams: max-bid / min-ask across the live venues on each tick. A venue's leg is
     evicted either by a `None` value (status-down eviction, DESIGN_nbbo.md) or when
-    its last quote is older than `max_age_ns` (staleness eviction — a quiet venue
+    its last quote is older than `max_age_ns` (staleness eviction - a quiet venue
     would otherwise be carried into a crossed/wide NBBO). Each value embeds its own
     quote ts (`qts`) so the carried-forward age is visible without changing
     `merge_latest`. The shared core of the in-memory `_build_nbbo` oracle and the
-    streaming driver (silver/main.py) — the only difference is whether the venue
+    streaming driver (silver/main.py) - the only difference is whether the venue
     streams are materialized sorted lists or lazy reorder+merge iterators.
     Backward-only via `merge_latest`. Ties on best bid/ask are broken
     deterministically by venue name so `bid_venue`/`ask_venue` don't depend on
@@ -392,7 +392,7 @@ def iter_nbbo(
 
 
 def downs_by_exchange(status_events: Iterable[dict]) -> dict[str, list[int]]:
-    """Down-transition timestamps per exchange — the NBBO eviction points. Shared by
+    """Down-transition timestamps per exchange - the NBBO eviction points. Shared by
     the `_build_nbbo` oracle and the streaming driver so the two can't disagree on
     what evicts a venue's leg."""
     downs: dict[str, list[int]] = defaultdict(list)
@@ -405,7 +405,7 @@ def downs_by_exchange(status_events: Iterable[dict]) -> dict[str, list[int]]:
 def _build_nbbo(
     quotes: list[dict], status_events: list[dict], max_age_ns: int = MAX_LEG_AGE_NS
 ) -> list[dict]:
-    """Per-canonical NBBO from per-venue quotes — the in-memory oracle; the batch
+    """Per-canonical NBBO from per-venue quotes - the in-memory oracle; the batch
     path streams per partition (silver/main.py). Builds each venue's ts-sorted stream
     (quotes + a `None` eviction sentinel at each down transition, carried forward
     until the venue requotes) and delegates the cross-venue merge to `iter_nbbo`.

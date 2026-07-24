@@ -303,7 +303,7 @@ async def test_process_crossed_delta_raises_invariant():
 
 
 async def test_emitted_book_messages_carry_connection_epoch():
-    """Snapshot + delta from one connection share that connection's epoch — what
+    """Snapshot + delta from one connection share that connection's epoch - what
     lets the gateway tell this connection's deltas from a prior (reset-counter)
     one's."""
     ing = _ing()

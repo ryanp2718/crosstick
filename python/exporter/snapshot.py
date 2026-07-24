@@ -2,7 +2,7 @@
 
 Split from the serving/refresh loop (`service.py`) so the row->metric mapping is
 unit-testable with plain dicts and the I/O is integration-tested over MinIO. This
-exporter only *reads* the already-derived gold rollups + lists object metadata —
+exporter only *reads* the already-derived gold rollups + lists object metadata -
 it computes nothing new (a gold mart reads silver, never bronze; this reads gold).
 
 Metric taxonomy (domain-prefixed, matching `md_*` / `bronze_*` / `gateway_*`):

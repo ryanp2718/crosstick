@@ -14,7 +14,7 @@ Wire contract (verified against current Binance docs, see plan):
 
 Local-book sync (the reason BaseIngester has BUFFERING / buffer_append):
   1. bootstrap() flips the symbol BUFFERING and kicks off the REST fetch in the
-     background, returning immediately (the connect sequence must not block — the
+     background, returning immediately (the connect sequence must not block - the
      reader/applier only start once every bootstrap returns).
   2. WS deltas that arrive before the snapshot lands are buffered (bounded; an
      overflow resyncs). Trades are emitted immediately regardless of book state.

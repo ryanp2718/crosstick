@@ -126,7 +126,7 @@ def test_nbbo_evicts_stale_quiet_venue() -> None:
 
 
 def test_nbbo_keeps_quiet_venue_within_max_age() -> None:
-    # A leg quiet but within max_age is still valid — it must be carried forward.
+    # A leg quiet but within max_age is still valid - it must be carried forward.
     s = 1_000_000_000
     quotes = [
         _q("BTC-USD", "coinbase", 1 * s, "100", "101"),

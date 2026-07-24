@@ -2,7 +2,7 @@
 
 The checksum is the linchpin: test_snapshot_real_vector feeds a frame captured
 live from wss://ws.kraken.com/v2 and asserts our book reproduces Kraken's own
-CRC32 — that gates the Decimal-preserves-trailing-zeros assumption end to end.
+CRC32 - that gates the Decimal-preserves-trailing-zeros assumption end to end.
 The synthetic tests build internally-consistent checksums to exercise the state
 machine (go-live, gap/mismatch resync, zero-qty removal, trade side mapping).
 """
@@ -22,7 +22,7 @@ from ingest.kraken import KrakenIngester
 from ingest.tests.test_base_ingester import FakeProducer, fake_server  # noqa: F401
 
 # A real BTC/USD depth-10 snapshot captured from wss://ws.kraken.com/v2.
-# checksum=1494999917 is Kraken's own — the worked-example regression vector.
+# checksum=1494999917 is Kraken's own - the worked-example regression vector.
 REAL_SNAPSHOT = (
     b'{"channel":"book","type":"snapshot","data":[{"symbol":"BTC/USD",'
     b'"bids":[{"price":75620.2,"qty":0.01733846},{"price":75619.5,"qty":0.00132241},'
@@ -44,7 +44,7 @@ REAL_SNAPSHOT = (
 
 def _lvls(xs: list[tuple[str, str]]) -> str:
     # Emit price/qty as raw JSON number literals so exact digits (incl. trailing
-    # zeros) survive — json.dumps(float) would drop them and break the checksum.
+    # zeros) survive - json.dumps(float) would drop them and break the checksum.
     return ",".join(f'{{"price":{p},"qty":{q}}}' for p, q in xs)
 
 
@@ -232,7 +232,7 @@ async def test_published_log_reconstructs_book() -> None:
         typ="update",
     ))
 
-    # Rebuild a fresh book from the published log alone — crucially WITHOUT trim,
+    # Rebuild a fresh book from the published log alone - crucially WITHOUT trim,
     # the way a generic downstream consumer would.
     rebuilt = OrderBook("kraken", "BTC/USD")
     for topic, payload in ing.producer.sent:

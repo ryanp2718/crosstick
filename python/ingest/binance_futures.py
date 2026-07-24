@@ -1,4 +1,4 @@
-"""Binance USDⓈ-M perpetual-futures ingester — liquidations, mark/funding,
+"""Binance USDⓈ-M perpetual-futures ingester - liquidations, mark/funding,
 open interest, and the perp L2 book + trade tape.
 
 Feed: wss://fstream.binance.com routed combined streams (no auth) plus REST
@@ -11,9 +11,9 @@ legacy-URL sunset): depth lives on /public, aggTrade/markPrice/forceOrder on
 path's streams. So this driver runs as TWO instances of the same class
 (main.py builds both into one process), selected by ``mode``:
 
-  - mode="market": /market/stream — forceOrder + markPrice + aggTrade, plus
+  - mode="market": /market/stream - forceOrder + markPrice + aggTrade, plus
     the slice-2 open-interest REST poll rider. Book-less and stateless.
-  - mode="depth":  /public/stream — depth@100ms + the REST-snapshot/BUFFERING
+  - mode="depth":  /public/stream - depth@100ms + the REST-snapshot/BUFFERING
     book machinery. This instance owns md.status.binance-futures: venue
     status exists to evict stale book legs from NBBO, and the book lives
     here. The market connection's liveness is observable independently via
@@ -23,20 +23,20 @@ Slice 1 (forceOrder + markPrice) is stateless: both streams are venue-computed
 snapshots, so a reconnect (Binance force-closes at 24h) costs only the gap
 window.
 
-Slice 3 (depth + aggTrade) brings the REST-snapshot/BUFFERING machinery — but
+Slice 3 (depth + aggTrade) brings the REST-snapshot/BUFFERING machinery - but
 the FUTURES depth sync differs from spot in every load-bearing rule, which is
 why none of binance.py's sync code is reused:
 
   - continuity: each event's `pu` must equal the previous event's `u`
     (spot: `U == prev_u + 1`);
   - sync point: the first applied event must OVERLAP the snapshot,
-    `U <= lastUpdateId <= u` — futures events straddle the snapshot id,
+    `U <= lastUpdateId <= u` - futures events straddle the snapshot id,
     they do not resume at lastUpdateId+1;
   - pre-snapshot drop: `u < lastUpdateId`, strictly (spot: `u <= lastUpdateId`).
 
 Slice 2 (open interest) is a REST poll rider: there is no OI stream, so a
 background loop polls /fapi/v1/openInterest per symbol and emits
-md.openinterest.* — independent of the WS connection state.
+md.openinterest.* - independent of the WS connection state.
 
 Wire notes:
   - All streams are known at construction, so each instance connects to its
@@ -44,7 +44,7 @@ Wire notes:
     messages (build_subscribe_messages returns []).
   - Combined-stream frames are enveloped {"stream": ..., "data": {...}}.
   - forceOrder is SAMPLED: largest liquidation per symbol per 1000ms only.
-  - futures has only @aggTrade — there is no raw per-fill trade stream.
+  - futures has only @aggTrade - there is no raw per-fill trade stream.
   - markPrice@1s ticks every second per symbol, which makes the staleness
     watchdog meaningful even when no liquidations occur.
 """
@@ -94,7 +94,7 @@ DEFAULT_REST_BASE = "https://fapi.binance.com"
 DEFAULT_SYMBOLS = ["BTCUSDT", "ETHUSDT"]
 DEFAULT_DEPTH_LIMIT = 1000
 # market: markPrice@1s guarantees ~1 frame/s/symbol when healthy;
-# depth: depth@100ms is ~10 frames/s/symbol — both well inside 10s.
+# depth: depth@100ms is ~10 frames/s/symbol - both well inside 10s.
 DEFAULT_STALE_TIMEOUT = 10.0
 DEFAULT_OI_POLL_INTERVAL = 10.0  # finer than the 5m REST-backfill grain, weight-trivial
 
@@ -219,7 +219,7 @@ class BinanceFuturesIngester(BaseIngester):
         symbols = symbols if symbols is not None else list(DEFAULT_SYMBOLS)
         self._mode: Mode = mode
         if mode == "market":
-            # Book-less: no periodic re-snapshot, and no md.status heartbeats —
+            # Book-less: no periodic re-snapshot, and no md.status heartbeats -
             # the depth instance owns venue status (see module docstring).
             kw.setdefault("snapshot_interval_s", None)
             kw.setdefault("heartbeat_s", None)
@@ -240,7 +240,7 @@ class BinanceFuturesIngester(BaseIngester):
         self._snapshots: dict[str, object] = {}
         self._snapshot_tasks: dict[str, asyncio.Task[None]] = {}
         # Symbols past their first applied delta: from then on continuity is
-        # the pu chain. A flag, not spot's last_seq==snap_id trick — a first
+        # the pu chain. A flag, not spot's last_seq==snap_id trick - a first
         # event ending exactly at lastUpdateId leaves last_seq unchanged.
         self._synced: set[str] = set()
         # Bumped on every reconnect; a fetch tagged with a stale generation
@@ -265,7 +265,7 @@ class BinanceFuturesIngester(BaseIngester):
 
     async def bootstrap(self, symbol: str) -> None:
         """Depth mode: flip BUFFERING and fetch the REST snapshot in the
-        background. Market mode: no-op — its streams are stateless.
+        background. Market mode: no-op - its streams are stateless.
 
         Returns immediately: bootstrap runs inside the connect sequence before
         the reader/applier start, so it must not block on the REST round-trip.
@@ -405,7 +405,7 @@ class BinanceFuturesIngester(BaseIngester):
         await self._apply_delta_synced(ctx, event)
 
     async def _apply_delta_synced(self, ctx: SymbolContext, event: ParsedEvent) -> None:
-        """Futures depth sync — overlap + pu chain, NOT spot's +1 update ids."""
+        """Futures depth sync - overlap + pu chain, NOT spot's +1 update ids."""
         ev = event.payload
         if ctx.symbol not in self._synced:
             # First event after the REST snapshot: drop anything that ended
@@ -420,7 +420,7 @@ class BinanceFuturesIngester(BaseIngester):
             self._synced.add(ctx.symbol)
             if ev.u == ctx.last_seq:
                 # Sync point established, but every update in this event is
-                # already in the snapshot — applying would violate the book's
+                # already in the snapshot - applying would violate the book's
                 # monotonic-sequence invariant for nothing.
                 return
         elif ev.pu != ctx.last_seq:
@@ -470,7 +470,7 @@ class BinanceFuturesIngester(BaseIngester):
         """Emit md.openinterest.* every oi_poll_interval_s per symbol.
 
         Independent of the WS connection: OI is a REST resource, so a depth
-        reconnect shouldn't gap it. Per-symbol failures log and skip — the
+        reconnect shouldn't gap it. Per-symbol failures log and skip - the
         poll must survive transient REST errors for the process lifetime."""
         if self._oi_poll_interval_s is None:
             return
@@ -519,7 +519,7 @@ class BinanceFuturesIngester(BaseIngester):
 
     def _mark_all_stale(self, reason: str) -> None:
         if self._mode == "market":
-            # No book state to invalidate — and both instances share the
+            # No book state to invalidate - and both instances share the
             # (exchange, symbol) metric labels, so a market-connection blip
             # must not overwrite the depth instance's md_book_state.
             return

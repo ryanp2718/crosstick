@@ -4,7 +4,7 @@
 // risk precision loss on long fractions, so they are compared by raw digits.
 // Used for book-level ordering and NBBO winner + size-tie-break selection. A tiny
 // size can arrive in scientific notation ("1E-8"), so exponent tokens are first
-// expanded to plain digits — the raw-digit comparison alone would mis-sort them.
+// expanded to plain digits - the raw-digit comparison alone would mis-sort them.
 export function cmpDecimal(a: string, b: string): number {
   a = toPlainDecimal(a);
   b = toPlainDecimal(b);

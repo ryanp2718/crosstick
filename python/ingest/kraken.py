@@ -9,7 +9,7 @@ Wire contract (verified against current Kraken v2 docs, see plan):
     as are {"channel":"heartbeat"} and {"channel":"status"} control frames.
   - Book message: {"channel":"book","type":"snapshot"|"update","data":[{symbol,
     bids:[{price,qty}],asks:[{price,qty}],checksum,timestamp}]}. price/qty are JSON
-    numbers; qty 0 removes the level. There is NO per-message sequence number —
+    numbers; qty 0 removes the level. There is NO per-message sequence number -
     integrity is verified by the CRC32 `checksum` over the top-10 book after each
     apply. A mismatch means we missed an update -> resync.
   - Trade message: {"channel":"trade","type":...,"data":[{symbol,side,price,qty,
@@ -18,7 +18,7 @@ Wire contract (verified against current Kraken v2 docs, see plan):
 Decimal, not float: the checksum strips the decimal point and leading zeros but
 KEEPS trailing zeros ("0.00100000" -> "100000"), so the exact wire digits matter.
 msgspec decodes the JSON number straight into Decimal preserving those digits, and
-str(Decimal) reproduces the original token — feeding kraken_checksum() the book's
+str(Decimal) reproduces the original token - feeding kraken_checksum() the book's
 own stored values therefore reconstructs Kraken's checksum input exactly.
 
 Kraken carries no sequence number, so OrderBook's monotonic-sequence guard is fed a
@@ -253,7 +253,7 @@ class KrakenIngester(BaseIngester):
         ctx.book.apply_delta(seq, _book_levels(d.bids), _book_levels(d.asks))
         # Kraken drops levels that fall out of the depth window WITHOUT sending a
         # delete, so trim locally and relay an explicit size=0 delete for each
-        # evicted level — that keeps "snapshot + deltas -> book" reconstructable
+        # evicted level - that keeps "snapshot + deltas -> book" reconstructable
         # downstream, matching the coinbase/binance delta contract.
         evicted_bids, evicted_asks = ctx.book.trim(self._depth)
         self._verify_checksum(ctx, d.checksum)
@@ -274,7 +274,7 @@ class KrakenIngester(BaseIngester):
 
     def _verify_checksum(self, ctx: SymbolContext, expected: int) -> None:
         """CRC32 over the top-10 asks (low->high) then bids (high->low). A
-        mismatch means a dropped/reordered update — the book is wrong, resync."""
+        mismatch means a dropped/reordered update - the book is wrong, resync."""
         asks = [(str(px), str(sz)) for px, sz in ctx.book.top_n(Side.ASK, 10)]
         bids = [(str(px), str(sz)) for px, sz in ctx.book.top_n(Side.BID, 10)]
         got = kraken_checksum(asks, bids)

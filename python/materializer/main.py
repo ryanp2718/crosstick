@@ -8,7 +8,7 @@ into bronze Parquet on the lake. Config via env, matching docker-compose:
 
 The consumer group is the durable "how far has bronze got" cursor:
 ``auto_offset_reset=earliest`` means a first deployment drains everything the
-log still retains (the 30-day retention window is the data-loss horizon —
+log still retains (the 30-day retention window is the data-loss horizon -
 see docs/data-contracts.md "Retention").
 """
 from __future__ import annotations

@@ -3,7 +3,7 @@ build_silver. Seeds the golden corpus as bronze on a LocalFileSystem (no Docker)
 and asserts every silver dataset matches, row-for-row, between the two paths.
 
 The golden corpus is order-clean, so the streaming 2-way merge of snapshots and
-deltas is identical to build_silver's per-partition sort — this pins that
+deltas is identical to build_silver's per-partition sort - this pins that
 equivalence unconditionally.
 """
 from __future__ import annotations

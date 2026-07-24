@@ -2,10 +2,10 @@
 per-symbol state machine.
 
 Subclasses (binance.py, coinbase.py, kraken.py) implement four hooks:
-    bootstrap(symbol)           — REST snapshot + warm the local book to LIVE
-    build_subscribe_messages()  — exchange-specific subscribe payloads
-    parse_message(raw, ts_ns)   — decode WS frame to ParsedEvent[]
-    process_event(event)        — apply event to book state; emit to Kafka
+    bootstrap(symbol)           - REST snapshot + warm the local book to LIVE
+    build_subscribe_messages()  - exchange-specific subscribe payloads
+    parse_message(raw, ts_ns)   - decode WS frame to ParsedEvent[]
+    process_event(event)        - apply event to book state; emit to Kafka
 
 The base class owns:
     - the WS connect loop with full-jitter exponential backoff
@@ -15,7 +15,7 @@ The base class owns:
     - graceful shutdown
     - Prometheus metric emission
 
-On `asyncio.QueueFull` we close the WS and let the connect-loop resync — see
+On `asyncio.QueueFull` we close the WS and let the connect-loop resync - see
 `docs/anti-patterns.md`: dropping deltas corrupts the book permanently.
 """
 from __future__ import annotations
@@ -106,7 +106,7 @@ class SymbolContext:
         """Append a delta to the pre-snapshot buffer.
 
         Raises ResyncRequired if more than MAX_BUFFER_DELTAS accumulate before
-        the snapshot arrives — a stalled bootstrap that keeps buffering is safer
+        the snapshot arrives - a stalled bootstrap that keeps buffering is safer
         to restart than to replay a truncated sequence.
         """
         if len(self.buffered) >= MAX_BUFFER_DELTAS:
@@ -182,7 +182,7 @@ class BaseIngester(ABC):
         self.ping_interval = ping_interval
         self.ping_timeout = ping_timeout
         # Per-frame WS receive cap. Coinbase's full-depth L2 snapshot is ~5 MiB,
-        # so the 4 MiB default is too small for it — drivers raise this as needed.
+        # so the 4 MiB default is too small for it - drivers raise this as needed.
         self.ws_max_size = ws_max_size
         # Data-staleness watchdog: a socket can stay alive (heartbeats, pings)
         # while market data goes silent. When set, reconnect if no frame arrives
@@ -192,14 +192,14 @@ class BaseIngester(ABC):
         # Venue-health heartbeat: emit 'up' on md.status.<exchange> every
         # heartbeat_s while streaming so the gateway can tell "alive" from a
         # crashed ingester (which sends no graceful 'down'). None disables all
-        # status emission — for venues split across several connections
+        # status emission - for venues split across several connections
         # (binance-futures), exactly one instance owns md.status.<exchange>.
         # See common.models.Status.
         self.heartbeat_s = heartbeat_s
         # Periodic re-snapshot: without it a snapshot exists only at
         # bootstrap/resync, so any consumer warming up from the log would have
         # to replay an unbounded delta tail. Re-emitting the local book every
-        # snapshot_interval_s bounds that tail to one interval — the keystone
+        # snapshot_interval_s bounds that tail to one interval - the keystone
         # of the gateway's warm restart (D2) and of bounded replay seeks.
         # None disables (book-less connections, e.g. the binance-futures
         # market-streams instance, have nothing to re-emit).
@@ -341,7 +341,7 @@ class BaseIngester(ABC):
 
     async def _snapshot_loop(self) -> None:
         """Re-emit each LIVE symbol's local book to its snapshot topic every
-        snapshot_interval_s (see __init__ — bounds the delta tail a warm
+        snapshot_interval_s (see __init__ - bounds the delta tail a warm
         consumer must replay). Skips while disconnected: a STALE book is the
         previous connection's state and must not be republished as current."""
         if self.snapshot_interval_s is None:
@@ -363,7 +363,7 @@ class BaseIngester(ABC):
 
     async def _emit_book_snapshot(self, ctx: SymbolContext) -> None:
         """Serialize the full local book as a BookSnapshot at its current
-        sequence — identical shape to a bootstrap snapshot, so consumers can't
+        sequence - identical shape to a bootstrap snapshot, so consumers can't
         tell (and needn't care) which kind they warmed from."""
         now_ns = time.time_ns()
         book = ctx.book
@@ -465,7 +465,7 @@ class BaseIngester(ABC):
     async def _connect_and_stream(self) -> None:
         self._reset_contexts()
         self._queue = asyncio.Queue(maxsize=self.queue_maxsize)
-        # Fresh per-connection delivery-failure signal — see _emit().
+        # Fresh per-connection delivery-failure signal - see _emit().
         self._produce_failed = asyncio.Event()
         log.info("connecting %s -> %s", self.exchange, self.ws_url)
         async with websockets.connect(
@@ -568,7 +568,7 @@ class BaseIngester(ABC):
 
         Returns (rather than raising) on trip: returning trips the
         wait(FIRST_COMPLETED) in _connect_and_stream, which cancels the
-        reader/applier and lets run() reconnect — same wind-down path as a
+        reader/applier and lets run() reconnect - same wind-down path as a
         clean reader exit. ping/pong catches dead sockets; this catches a live
         socket whose data has gone silent.
         """
@@ -588,7 +588,7 @@ class BaseIngester(ABC):
     def _observe_recv_clock(self, recv_ns: int) -> None:
         """Live host-clock canary: count backward steps between consecutive WS-frame
         recv timestamps. One process clock read in arrival order, so a step back is a
-        real wall-clock regression — none of the fold/epoch/snapshot reordering the
+        real wall-clock regression - none of the fold/epoch/snapshot reordering the
         silver `clock_monotonic` check must exclude, so a healthy host reads exactly 0.
         """
         prev = self._prev_recv_ns
@@ -604,7 +604,7 @@ class BaseIngester(ABC):
     async def _reader(self, ws: websockets.WebSocketClientProtocol) -> None:
         """Pulls frames off the WS as fast as possible; pushes to bounded queue.
 
-        QueueFull means the applier is behind — close the WS to force a
+        QueueFull means the applier is behind - close the WS to force a
         full reconnect + resync. Dropping frames silently is forbidden:
         a missed `del price` delta leaves a phantom level forever.
         """
@@ -629,7 +629,7 @@ class BaseIngester(ABC):
                     book_resyncs.labels(
                         exchange=self.exchange, reason="queue_full"
                     ).inc()
-                    # Don't await ws.close() here — it would block on the
+                    # Don't await ws.close() here - it would block on the
                     # server's close response. The `async with ws:` exit
                     # will close with our configured close_timeout. Return
                     # immediately so the wait(FIRST_COMPLETED) in
@@ -670,7 +670,7 @@ class BaseIngester(ABC):
                     )
                 ctx = self.contexts.get(ev.symbol)
                 if ctx is None:
-                    # Unsolicited symbol — possible if exchange sends extras.
+                    # Unsolicited symbol - possible if exchange sends extras.
                     continue
                 try:
                     await self.process_event(ctx, ev)
@@ -683,7 +683,7 @@ class BaseIngester(ABC):
                     book_resyncs.labels(
                         exchange=self.exchange, reason="event_handler"
                     ).inc()
-                    # Abort the whole connection — simplest correct behaviour.
+                    # Abort the whole connection - simplest correct behaviour.
                     raise
                 except BookInvariantError as e:
                     log.error(

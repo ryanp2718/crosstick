@@ -118,7 +118,7 @@ def _put_o(fs, bucket: str, key: str, o: int) -> None:
 
 
 def _bd(ex: str, sym: str, name: str | None = None) -> str:
-    """A book_deltas key — a fixed part.parquet, or an explicit offset filename."""
+    """A book_deltas key - a fixed part.parquet, or an explicit offset filename."""
     if name is None:
         return partition_key("book_deltas", exchange=ex, symbol=sym, date=D)
     return _file_key("book_deltas", exchange=ex, symbol=sym, date=D, name=name)

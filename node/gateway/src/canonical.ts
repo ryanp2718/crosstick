@@ -49,7 +49,7 @@ export class CanonicalMap {
     }
   }
 
-  // Hot-path lookup. Returns undefined for venues not declared in the map —
+  // Hot-path lookup. Returns undefined for venues not declared in the map -
   // gateway treats this as "BBO from an unmapped venue, skip NBBO routing"
   // rather than an error (allows incrementally adding venues).
   lookup(exchange: string, symbol: string): CanonicalInstrument | undefined {

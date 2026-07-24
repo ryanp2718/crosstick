@@ -3,7 +3,7 @@
 build_for_date streams silver one partition at a time (bounded memory); this pins
 it row-for-row against build_scorecard over the whole day (the simple oracle).
 Seeds the golden corpus as bronze on a LocalFileSystem and runs the real silver
-streaming driver to produce the silver it reads — no Docker.
+streaming driver to produce the silver it reads - no Docker.
 """
 from __future__ import annotations
 
@@ -77,7 +77,7 @@ def test_per_partition_matches_build_scorecard(tmp_path) -> None:
 
 
 def test_book_accumulator_merges_across_tables(tmp_path) -> None:
-    """Splitting a partition across update() calls equals one call — the additive
+    """Splitting a partition across update() calls equals one call - the additive
     merge that makes the columnar fold (and later map-reduce) correct."""
     fs, silver, date = _silver(tmp_path)
     parts = list_partitions(fs, silver, "book_quality", date)

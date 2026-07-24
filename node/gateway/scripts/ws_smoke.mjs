@@ -1,4 +1,4 @@
-// Smoke: connect to the gateway WS twice — second connection should receive a
+// Smoke: connect to the gateway WS twice - second connection should receive a
 // snapshot-on-connect (latest BBO per stream the gateway has seen). Then both
 // should keep receiving live broadcasts.
 

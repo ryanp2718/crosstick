@@ -6,7 +6,7 @@ This is the producing half of the integration harness: spin up an ephemeral
 Redpanda (see `analytics/tests`), replay a corpus, and assert downstream
 behaviour against the recorded outputs.
 
-All records go to **partition 0** by design — the project's `md.*` topics are
+All records go to **partition 0** by design - the project's `md.*` topics are
 single-stream per symbol, so a single partition gives deterministic offsets
 (0..N in replay order), which Phase 3's snapshot-offset-seek work relies on.
 

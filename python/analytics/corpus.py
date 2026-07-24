@@ -1,7 +1,7 @@
 """Golden-corpus record format: a faithful, replayable capture of Kafka records.
 
 A corpus is a gzipped JSON-lines file (`.jsonl.gz`), one `CorpusRecord` per line.
-It preserves everything needed to replay a slice of the log deterministically —
+It preserves everything needed to replay a slice of the log deterministically -
 topic, partition, offset, record timestamp, key, value, and headers (including
 the latency-tracking `local_recv_ts_ns` / `exchange_ts_ns`). Bytes fields are
 base64-encoded by msgspec's JSON codec, matching the wire convention elsewhere
@@ -42,7 +42,7 @@ _DECODER = msgspec.json.Decoder(CorpusRecord)
 
 
 class CorpusWriter:
-    """Streaming writer — open once, write as records arrive, close.
+    """Streaming writer - open once, write as records arrive, close.
 
     Used by `capture`, which appends over a live window. One gzip member,
     one JSON object per line.

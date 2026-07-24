@@ -2,7 +2,7 @@
 
 The golden corpus (analytics/tests/golden.py) plants three hard events and one
 false-positive trap. This asserts the scorecard catches the incidents and does
-NOT trip on the trap — the Phase 2 "CI against the planted gap" contract.
+NOT trip on the trap - the Phase 2 "CI against the planted gap" contract.
 """
 from __future__ import annotations
 
@@ -47,7 +47,7 @@ def test_binance_planted_venue_down(scorecard) -> None:
 
 
 def test_perp_update_ids_do_not_false_positive(scorecard) -> None:
-    # binance-futures sequences are update-ids (monotonic, non-contiguous) — a
+    # binance-futures sequences are update-ids (monotonic, non-contiguous) - a
     # naive gap detector would flag this healthy stream.
     r = scorecard[("sequence_gap", "binance-futures", "BTC-USDT-PERP")]
     assert r["n_violations"] == 0

@@ -4,7 +4,7 @@ Wire contract verified against current Binance derivatives docs (see
 docs/DESIGN_perp_capture.md): combined-stream envelope {"stream","data"},
 forceOrder with nested `o`, markPriceUpdate flat fields, streams routed by
 type across TWO connections (depth on /public/stream, the rest on
-/market/stream — one connection never delivers both), all streams in the
+/market/stream - one connection never delivers both), all streams in the
 query (no live SUBSCRIBE), futures diff-depth (U/u/pu, snapshot overlap
 sync), aggTrade-only tape, REST openInterest.
 """
@@ -303,7 +303,7 @@ async def test_agg_trade_emits_with_side(m, expected):
     assert msg.exchange_ts_ns == 123456785 * 1_000_000
 
 
-# ─── unit: futures depth sync (overlap + pu chain — NOT spot's rules) ────────
+# ─── unit: futures depth sync (overlap + pu chain - NOT spot's rules) ────────
 
 
 @pytest.mark.asyncio
@@ -389,7 +389,7 @@ async def test_pu_gap_resyncs():
 @pytest.mark.asyncio
 async def test_first_delta_ending_at_last_update_id_then_pu_chain():
     """Regression for the synced flag: a first delta with u == lastUpdateId
-    leaves last_seq unchanged, so 'first delta' must be tracked explicitly —
+    leaves last_seq unchanged, so 'first delta' must be tracked explicitly -
     the NEXT event chains via pu and must not be re-checked for straddle."""
     ing = _ing()
     ctx = ing.contexts["BTCUSDT"]

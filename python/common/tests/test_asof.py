@@ -62,7 +62,7 @@ def test_reorder_passthrough_already_sorted() -> None:
 
 def test_reorder_emits_incrementally_and_keeps_equal_ts_order() -> None:
     # a straggler within W is placed in ts order; equal-ts entries keep arrival
-    # (fold) order via the read_idx tiebreak — reproducing a stable sort.
+    # (fold) order via the read_idx tiebreak - reproducing a stable sort.
     events = [(1, "x"), (1, "y"), (3, "z"), (10, "w"), (8, "late")]  # 'late' 2 behind, < W
     assert list(reorder(events, 5)) == [(1, "x"), (1, "y"), (3, "z"), (8, "late"), (10, "w")]
 

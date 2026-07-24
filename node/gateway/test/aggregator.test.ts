@@ -182,7 +182,7 @@ describe("Aggregator", () => {
     it("drops a prior-epoch high-seq delta buffered before the snapshot", () => {
       const a = new Aggregator();
       // Prior connection (epoch 1) left a high-seq delta whose bid sits ABOVE
-      // the fresh snapshot's ask — applying it would cross the book.
+      // the fresh snapshot's ask - applying it would cross the book.
       a.applyBook(delta(5000, [["200", "1"]], [], 1));
       // Current connection (epoch 2) snapshot resets the counter to 0.
       const bbo = a.applyBook(snap(0, [["100", "1"]], [["101", "1"]], 2));
@@ -195,7 +195,7 @@ describe("Aggregator", () => {
       a.applyBook(snap(0, [["100", "1"]], [["101", "1"]], 2));
       // A straggler from epoch 1 with a crossing bid and a higher seq.
       expect(a.applyBook(delta(5000, [["200", "1"]], [], 1))).toBeNull();
-      // Live book is untouched — still the epoch-2 snapshot's top-of-book.
+      // Live book is untouched - still the epoch-2 snapshot's top-of-book.
       expect(a.snapshot()[0]).toMatchObject({ bid_px: "100", ask_px: "101" });
     });
 

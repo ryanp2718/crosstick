@@ -12,9 +12,9 @@ The corpus mirrors production framing: market-data records are keyed
 `ingest/base_ingester.py` `_emit` / `_send_status`).
 
 PLANTED HARD EVENTS (Phase 2 data-quality must detect these):
-  * sequence gap   — kraken book deltas skip seq 7 (...6, 8...)
-  * crossed book   — a binance delta lifts the bid above the ask
-  * venue down     — binance emits md.status.binance state="down"
+  * sequence gap   - kraken book deltas skip seq 7 (...6, 8...)
+  * crossed book   - a binance delta lifts the bid above the ask
+  * venue down     - binance emits md.status.binance state="down"
 
 One logical asset (BTC) across three venues, spanning the USD vs USDT quote
 split (coinbase/kraken BTC-USD, binance BTCUSDT) so strict per-quote bucketing
@@ -24,7 +24,7 @@ The binance-futures perp segment (BTCUSDT -> canonical BTC-USDT-PERP) covers
 the derivatives datasets (markprice / liquidations / openinterest) and plants
 a FALSE-POSITIVE TRAP for Phase 2: futures book sequences are update-ids,
 monotonic but NOT contiguous on a healthy stream (continuity lives in `pu`,
-which doesn't survive normalization) — a naive seq+1 gap detector would flag
+which doesn't survive normalization) - a naive seq+1 gap detector would flag
 a perfectly healthy perp stream.
 """
 from __future__ import annotations
@@ -201,7 +201,7 @@ def build_golden_records() -> list[CorpusRecord]:
     )
 
     # ── kraken BTC/USD: PLANTED sequence gap (6 → 8, skips 7) ───────────────
-    # (OrderBook won't catch this — 6→8 is still monotonic — which is exactly
+    # (OrderBook won't catch this - 6→8 is still monotonic - which is exactly
     #  why Phase 2 needs explicit gap detection.)
     kr, s_kr = "kraken", "BTC/USD"
     log.md(

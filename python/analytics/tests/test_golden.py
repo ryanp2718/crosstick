@@ -72,7 +72,7 @@ def test_perp_book_reconstructs_with_noncontiguous_sequences(
     golden_records: list[CorpusRecord],
 ) -> None:
     """The perp deltas replay cleanly through the real OrderBook even though
-    their sequences jump (futures update-ids — the planted Phase 2
+    their sequences jump (futures update-ids - the planted Phase 2
     false-positive trap is a *healthy* stream, not a defect)."""
     snap_topic = book_snapshot_topic("binance-futures", "BTCUSDT")
     delta_topic = book_delta_topic("binance-futures", "BTCUSDT")

@@ -96,7 +96,7 @@ const WARMSTART_LOOKBACK_MS = Number(process.env.WARMSTART_LOOKBACK_MS ?? 600_00
 // Consumer group session timeout. The kafkajs default (30s) is too tight for the
 // warm-start replay against the single-shard (smp=1) redpanda: the replay's
 // fetches plus the ingesters' produce firehose serialize on one shard, so
-// heartbeats queue behind them and miss the window — the coordinator evicts the
+// heartbeats queue behind them and miss the window - the coordinator evicts the
 // member ("not aware of this member") and the drain livelocks (see warmstart.ts).
 // 90s lets a delayed heartbeat land in the load gaps before eviction; well within
 // redpanda's 300s group_max_session_timeout_ms. A multi-shard/managed broker
@@ -105,7 +105,7 @@ const KAFKA_SESSION_TIMEOUT_MS = Number(process.env.KAFKA_SESSION_TIMEOUT_MS ?? 
 // Must be >= sessionTimeout (kafkajs default 60s), so it is raised alongside.
 const KAFKA_REBALANCE_TIMEOUT_MS = Number(process.env.KAFKA_REBALANCE_TIMEOUT_MS ?? 90_000);
 // Total fetch ceiling. Left at the kafkajs default; exposed only as an escape
-// hatch — a smaller cap eases shard saturation if the timeout raise alone doesn't
+// hatch - a smaller cap eases shard saturation if the timeout raise alone doesn't
 // stop warm-start evictions, but it slows the drain and would hurt replay over a
 // future high-latency remote/tiered log, so it stays default until proven needed.
 const KAFKA_MAX_BYTES = Number(process.env.KAFKA_MAX_BYTES ?? 10 * 1024 * 1024);
@@ -137,7 +137,7 @@ async function serveStatic(rel: string, res: http.ServerResponse): Promise<void>
 }
 
 async function main(): Promise<void> {
-  // Load canonical map first — fail fast on a malformed instruments.yml
+  // Load canonical map first - fail fast on a malformed instruments.yml
   // instead of discovering it only when the first BBO routes through.
   const canonicalMap = loadCanonicalMap(INSTRUMENTS_FILE);
   console.log(
@@ -150,7 +150,7 @@ async function main(): Promise<void> {
   // Stream clock: max event-time (ns→ms) across consumed messages. Every NBBO
   // timestamp, leg age, and liveness-eviction decision derives from it instead
   // of Date.now(), so md.nbbo.* is a pure function of the log (D1). Tradeoff:
-  // if ALL ingesters go silent the clock freezes and nothing is evicted — but
+  // if ALL ingesters go silent the clock freezes and nothing is evicted - but
   // then nothing is emitted either; per-leg ages are the consumer's staleness
   // signal, and ingester liveness is alerted on independently via Prometheus.
   let streamNowMs = 0;
@@ -209,7 +209,7 @@ async function main(): Promise<void> {
   const producer = kafka.producer({ allowAutoTopicCreation: true });
   const consumer = kafka.consumer({
     groupId: GROUP_ID,
-    // Fetch ceiling per partition — must clear the largest message we expect
+    // Fetch ceiling per partition - must clear the largest message we expect
     // to consume (Coinbase L2 snapshot ~1.1 MiB), else the broker truncates
     // and the fetch loops without progress.
     maxBytesPerPartition: MAX_MESSAGE_BYTES,
@@ -225,7 +225,7 @@ async function main(): Promise<void> {
   await admin.connect();
 
   // Pre-create md.nbbo.* topics as compacted so late-joining consumers can
-  // bootstrap from the latest message per canonical_id. Idempotent — kafkajs
+  // bootstrap from the latest message per canonical_id. Idempotent - kafkajs
   // returns false (not an error) when the topic already exists.
   const compacted = [{ name: "cleanup.policy", value: "compact" }];
   const nbboTopics = canonicalMap.all().map((c) => ({
@@ -380,7 +380,7 @@ async function main(): Promise<void> {
       // gate; flush a snapshot so the compacted md.nbbo carries the true
       // current state, not whatever the pre-restart edge left there.
       if (gate?.observe(topic, partition, message.offset)) {
-        console.log("[gateway] warm-start drain complete — resuming derived output");
+        console.log("[gateway] warm-start drain complete - resuming derived output");
         for (const nbbo of nbboAgg.snapshot(streamNowMs)) emitNbbo(nbbo);
       }
     },
@@ -388,7 +388,7 @@ async function main(): Promise<void> {
 
   // Warm-start seeks (D2b): re-derive in-memory state from the log instead of
   // resuming at committed group offsets with empty books. Must run after
-  // consumer.run() — kafkajs only accepts seek() on a running consumer. A few
+  // consumer.run() - kafkajs only accepts seek() on a running consumer. A few
   // messages may consume from the old position before the seeks land; the
   // aggregator's order-insensitivity (D2a) makes that prefix harmless.
   const warmTopics = (await admin.listTopics()).filter((t) =>
@@ -399,7 +399,7 @@ async function main(): Promise<void> {
   // Arm the gate only after the seeks land (no await between): the pre-seek
   // prefix consumed from the committed edge is the existing harmless replay
   // (D2a), but its offsets sit at/after the backlog targets and would open the
-  // gate spuriously — so observe() must run only against the post-seek backlog.
+  // gate spuriously - so observe() must run only against the post-seek backlog.
   gate = new DrainGate(seeks);
   warmstartPlanned.set(1);
   console.log(
@@ -436,7 +436,7 @@ async function main(): Promise<void> {
     try {
       clearInterval(lagPoll);
       // Stop accepting new messages (so no new sends are issued), then drain
-      // any in-flight sends before disconnecting the producer — disconnect
+      // any in-flight sends before disconnecting the producer - disconnect
       // aborts pending sends rather than flushing them.
       await consumer.disconnect();
       if (batcher.pending > 0 || batcher.inFlightCount > 0) {

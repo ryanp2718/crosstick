@@ -10,7 +10,7 @@ import {
 import type { BBOMsg, BookDeltaMsg, BookSnapshotMsg } from "./messages.js";
 
 // Deltas retained per stream while waiting for its snapshot (drop-oldest on
-// overflow — the oldest buffered deltas are the lowest-seq ones a snapshot's
+// overflow - the oldest buffered deltas are the lowest-seq ones a snapshot's
 // sequence supersedes, so shedding them never gaps the book above the snapshot).
 export const MAX_PENDING_DELTAS = 10_000;
 
@@ -36,8 +36,8 @@ const ONSET_RING = 250;
 // Order-insensitive across the snapshot/delta topic pair (D2): a delta that
 // arrives before its stream's snapshot is buffered, not dropped, and drained
 // in order once the snapshot lands (the monotonic sequence guard discards the
-// ones the snapshot already covers). Cross-topic consumption order — replay,
-// warm restart, live race — therefore converges to the same book; only the
+// ones the snapshot already covers). Cross-topic consumption order - replay,
+// warm restart, live race - therefore converges to the same book; only the
 // emitted BBO *sequence* coalesces when deltas drain in a batch.
 //
 // Epoch-keyed (see messages.ts BookSnapshotMsg.epoch): coinbase/kraken reset
@@ -46,7 +46,7 @@ const ONSET_RING = 250;
 // is only applied to a book of its OWN connection epoch; deltas of any other
 // epoch are buffered (never applied to the live book) until a matching-epoch
 // snapshot drains them. This is what stops the warm-start crossed-book
-// corruption — by equality only, so it is immune to the clock skew that can
+// corruption - by equality only, so it is immune to the clock skew that can
 // reorder epoch values.
 export class Aggregator {
   private readonly books = new Map<string, Book>();
@@ -119,7 +119,7 @@ export class Aggregator {
       this.books.set(key, book);
     }
     // A same-epoch re-snapshot the book already passed is a rewind, normally
-    // skipped — unless the book is crossed, when applySnapshot applies it as a
+    // skipped - unless the book is crossed, when applySnapshot applies it as a
     // resync that heals the corruption (bounds a cross to one interval).
     const staleReSnapshot = epoch === book.epoch && msg.sequence <= book.seq;
     const snapApplied = book.applySnapshot(msg.sequence, epoch, msg.bids, msg.asks);
@@ -181,7 +181,7 @@ export class Aggregator {
     return this.deriveBbo(key, book, last);
   }
 
-  // Last known BBO per (exchange, symbol) — used for snapshot-on-connect so
+  // Last known BBO per (exchange, symbol) - used for snapshot-on-connect so
   // new WS clients don't sit blank during quiet periods.
   snapshot(): BBOMsg[] {
     return [...this.lastBbo.values()];
@@ -196,7 +196,7 @@ export class Aggregator {
     const ask = book.bestAsk();
     if (!bid || !ask) return null; // one-sided book has no BBO
 
-    // Crossed within-venue book (ask < bid): count it but still emit — a
+    // Crossed within-venue book (ask < bid): count it but still emit - a
     // faithful projection, not a silent fixer. The re-snapshot rewind that drove
     // this is now guarded (book.ts), so a residual cross is upstream corruption.
     const crossed = cmpDecimal(ask[0], bid[0]) < 0;

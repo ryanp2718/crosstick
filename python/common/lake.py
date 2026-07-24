@@ -6,7 +6,7 @@ this module is the read/write plumbing the layers above bronze share:
   - an S3/MinIO filesystem and the instruments path from env (lifted here so
     silver and gold don't each re-derive the materializer's wiring),
   - Hive-partitioned object listing + reading for one dataset+date,
-  - overwrite-keyed writes — a deterministic key per partition+date, so a
+  - overwrite-keyed writes - a deterministic key per partition+date, so a
     recompute rewrites the identical object (the same idempotency discipline as
     bronze's start-offset keys; see materializer/bronze.object_key).
 """
@@ -126,7 +126,7 @@ def _list_date_files(
 
 def _read_file(fs: pafs.FileSystem, path: str) -> pa.Table:
     # Read by handle, not pq.read_table(path, filesystem=...), which would infer
-    # Hive partition columns from the path — those collide with the exchange/date
+    # Hive partition columns from the path - those collide with the exchange/date
     # columns silver/gold already carry as real data.
     with fs.open_input_file(path) as handle:
         return pq.read_table(handle)
@@ -172,7 +172,7 @@ def latest_date(fs: pafs.FileSystem, bucket: str, dataset: str) -> str | None:
     """The newest `date=` partition present for one dataset, or None if empty.
 
     Dates are ISO `YYYY-MM-DD` so lexical max == chronological max. Lists the
-    dataset prefix once (ListObjects only, no bodies) — used by the lake-exporter
+    dataset prefix once (ListObjects only, no bodies) - used by the lake-exporter
     to find which day's gold rollup to publish.
     """
     selector = pafs.FileSelector(f"{bucket}/{dataset}", recursive=True, allow_not_found=True)
@@ -190,7 +190,7 @@ def iter_partition_tables(
     fs: pafs.FileSystem, bucket: str, dataset: str, date: str, part: dict[str, str]
 ) -> Iterator[pa.Table]:
     """Yield one table per parquet file of a single partition, in sorted (offset)
-    order, reading one file at a time (the streaming-read seam — the whole
+    order, reading one file at a time (the streaming-read seam - the whole
     partition is never resident). Prefix-matches with a trailing slash so
     `symbol=BTC-USD` does not match `symbol=BTC-USD2`.
     """
@@ -307,7 +307,7 @@ class PartitionWriter:
     Rows are written in batches to a single `{bucket}/{key}` parquet via
     `pq.ParquetWriter` (one row group per batch), so a partition's output never
     has to be fully resident. The output stream is opened lazily on the first
-    non-empty batch — a partition with no rows writes nothing (matching the
+    non-empty batch - a partition with no rows writes nothing (matching the
     previous group-then-write behavior). Same zstd + overwrite semantics as
     `write_object`, so the idempotency contract holds.
     """

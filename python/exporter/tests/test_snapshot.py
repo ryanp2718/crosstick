@@ -1,7 +1,7 @@
 """Unit tests for the lake-exporter metric mapping + I/O orchestration.
 
 The pure mappers are tested with plain dicts; `build_families` is exercised over a
-LocalFileSystem (real read/write path, no Docker) — the S3 path is in
+LocalFileSystem (real read/write path, no Docker) - the S3 path is in
 test_exporter_integration.py.
 """
 from __future__ import annotations

@@ -125,7 +125,7 @@ describe("NBBOAggregator", () => {
       const first = agg.onBBO(BTC_USD, bbo("kraken", "BTC/USD", "100", "1", "200", "1"), 1);
       expect(first).not.toBeNull();
       // venueB joins with identical L1 (same px, same sz). coinbase wins
-      // alphabetically — but L1 tuple is unchanged, so no emit.
+      // alphabetically - but L1 tuple is unchanged, so no emit.
       const second = agg.onBBO(BTC_USD, bbo("coinbase", "BTC-USD", "100", "1", "200", "1"), 2);
       expect(second).toBeNull();
     });
@@ -233,7 +233,7 @@ describe("NBBOAggregator", () => {
       expect(agg.setVenueDown("binance", true, 2)).toEqual([]);
     });
 
-    it("is idempotent — re-marking the current state returns []", () => {
+    it("is idempotent - re-marking the current state returns []", () => {
       const agg = new NBBOAggregator();
       agg.onBBO(BTC_USD, bbo("coinbase", "BTC-USD", "100", "1", "101", "1"), 1);
       agg.onBBO(BTC_USD, bbo("kraken", "BTC/USD", "102", "1", "103", "1"), 2);

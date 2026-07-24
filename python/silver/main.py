@@ -2,7 +2,7 @@
 
 For each UTC date, read the bronze datasets the DQ transforms need, compute the
 silver fact streams (book_quality, latency, status_events, quotes, nbbo), and
-write them to the silver bucket — one overwrite-keyed object per partition, so a
+write them to the silver bucket - one overwrite-keyed object per partition, so a
 recompute is idempotent.
 
 Env: base ``S3_*`` is the silver (derived) endpoint; ``LAKE_S3_*`` optionally
@@ -56,7 +56,7 @@ from silver.dq import (
 
 log = logging.getLogger(__name__)
 
-# Bronze datasets read by the DQ transforms (bbo/nbbo are derived — skipped).
+# Bronze datasets read by the DQ transforms (bbo/nbbo are derived - skipped).
 SOURCE_DATASETS = (
     "book_snapshots",
     "book_deltas",
@@ -70,7 +70,7 @@ BOOK_DATASETS = ("book_snapshots", "book_deltas")
 # Non-book firehose datasets that carry latency headers (book latency is emitted
 # during the fold, since it already holds the decoded records).
 NONBOOK_LATENCY_DATASETS = ("trades", "liquidations", "mark_price", "open_interest")
-# Rows per ParquetWriter row group — bounds the streaming driver's write buffers.
+# Rows per ParquetWriter row group - bounds the streaming driver's write buffers.
 BATCH_ROWS = 50_000
 # Allowed quote lateness for the NBBO reorder buffer: a quote may arrive this far
 # behind the running-max ts (reconnect-seam stragglers, worst ~29s measured) and
@@ -160,7 +160,7 @@ def _iter_records(
     fs: pafs.FileSystem, bucket: str, dataset: str, date: str, part: dict
 ):
     """Stream a partition's records file-by-file (the whole partition is never
-    resident — one file's records at a time)."""
+    resident - one file's records at a time)."""
     for table in iter_partition_tables(fs, bucket, dataset, date, part):
         yield from table_to_records(table)
 
@@ -169,7 +169,7 @@ def _venue_quote_stream(
     fs: pafs.FileSystem, bucket: str, date: str, part: dict
 ) -> Iterable[tuple[int, tuple]]:
     """Stream one venue's quotes as `(ts_ns, (ts_ns, best_bid, best_ask))` in fold
-    (disk) order, row group by row group — the whole partition is never resident.
+    (disk) order, row group by row group - the whole partition is never resident.
     The value embeds its own ts so iter_nbbo can evict a stale (quiet) leg."""
     for batch in iter_partition_batches(fs, bucket, "quotes", date, part):
         ts = batch.column("ts_ns").to_pylist()

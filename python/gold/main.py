@@ -75,7 +75,7 @@ def _nbbo_stream(
 ) -> Iterator[tuple[int, tuple]]:
     """Stream one canonical's NBBO partition as sorted `(ts_ns, (ts_ns, best_bid,
     best_ask))`. NBBO is written ts-ascending by silver (it is merge_latest output),
-    so the file is already ordered — the leg feeds straight into the k-way merge. The
+    so the file is already ordered - the leg feeds straight into the k-way merge. The
     value embeds its own ts so iter_basis can evict a stale (frozen) leg."""
     part = {"symbol": canonical_symbol}
     for table in iter_partition_tables(fs, silver_bucket, "nbbo", date, part):

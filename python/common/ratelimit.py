@@ -1,4 +1,4 @@
-"""Async token bucket — refills continuously at `rate` tokens/sec up to `capacity`."""
+"""Async token bucket - refills continuously at `rate` tokens/sec up to `capacity`."""
 from __future__ import annotations
 
 import asyncio

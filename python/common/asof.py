@@ -1,4 +1,4 @@
-"""As-of merge for the silver/gold layers — the one definition of "as-of".
+"""As-of merge for the silver/gold layers - the one definition of "as-of".
 
 `merge_latest` folds several timestamped streams onto their union timeline,
 carrying each stream's latest value forward. It is the shared primitive behind
@@ -9,7 +9,7 @@ two reconstructions:
     tick, only where both legs are present).
 
 Backward-only **by construction**: a snapshot at time T reflects only events with
-ts <= T, never a future one — so point-in-time correctness is structural, not a
+ts <= T, never a future one - so point-in-time correctness is structural, not a
 runtime guard. (A no-lookahead property test pins this.)
 """
 from __future__ import annotations
@@ -32,7 +32,7 @@ MAX_LEG_AGE_NS = 10_000_000_000  # 10s
 class LatenessError(Exception):
     """An event arrived more than the allowed window behind the last emitted ts, so
     it cannot be placed without breaking the sorted-input invariant `merge_latest`
-    relies on. Raised by `reorder` — a fail-loud signal of disorder beyond tolerance
+    relies on. Raised by `reorder` - a fail-loud signal of disorder beyond tolerance
     (e.g. a host-clock regression past the reconnect-overlap window)."""
 
 
@@ -51,7 +51,7 @@ def merge_latest(
     """Merge per-key timestamped streams into running-latest snapshots.
 
     Each stream is an iterable of `(ts_ns, value)` sorted ascending by ts (a list
-    or a lazy generator — the merge pulls them lazily, so a streaming caller never
+    or a lazy generator - the merge pulls them lazily, so a streaming caller never
     holds a whole stream). Yields `(ts_ns, snapshot)` once per distinct timestamp
     in the union, where snapshot maps each key to its latest value with event
     ts <= the current ts. A key is absent from the snapshot until its first event;
@@ -78,14 +78,14 @@ def reorder(events: Iterable[tuple[int, Any]], window_ns: int) -> Iterator[tuple
     Inputs are ts-ascending except for bounded out-of-order arrivals (silver quote
     files are fold-ordered: ts-ascending within an epoch, with small reconnect-seam
     inversions). Buffers events in a min-heap keyed `(ts, read_idx)` and emits one
-    once the watermark (max ts seen) has advanced `window_ns` past it — then no later
+    once the watermark (max ts seen) has advanced `window_ns` past it - then no later
     event can undercut it, so output is strictly ts-ascending. `read_idx` breaks
     equal-ts ties by arrival (fold) order, reproducing a stable sort with no reliance
     on a tiebreak column. Memory is the window, not the stream: O(events within the
     last `window_ns`).
 
     Fail-loud: an event arriving with `ts < last_emitted` is more than `window_ns`
-    late and cannot be placed — raise `LatenessError` rather than emit it out of order
+    late and cannot be placed - raise `LatenessError` rather than emit it out of order
     and corrupt a downstream `merge_latest`.
     """
     heap: list[tuple[int, int, Any]] = []

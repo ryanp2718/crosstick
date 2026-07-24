@@ -613,7 +613,7 @@ async def test_reconnect_clears_buffered_and_last_seq(
     buf1, seq1 = bootstrap_entry_states[1]
     assert buf1 == 0 and seq1 == -1, (
         f"second bootstrap: stale state buf={buf1} seq={seq1} "
-        "— _reset_contexts() is missing"
+        "- _reset_contexts() is missing"
     )
 
 
@@ -668,11 +668,11 @@ async def test_gather_bootstrap_collects_all_coroutines(
     # by at most 1. X must never exceed Y (that would indicate orphaned gather tasks
     # from return_exceptions=False running outside the gather's control).
     assert x_count <= y_count, (
-        f"X bootstrapped {x_count} times vs Y {y_count} times — "
+        f"X bootstrapped {x_count} times vs Y {y_count} times - "
         "return_exceptions=False would orphan X tasks, inflating its count"
     )
     assert x_count >= y_count - 1, (
-        f"X bootstrapped {x_count} times vs Y {y_count} times — "
+        f"X bootstrapped {x_count} times vs Y {y_count} times - "
         "X fell more than 1 cycle behind Y (unexpected)"
     )
 
@@ -727,7 +727,7 @@ async def test_buffer_overflow_triggers_resync(
         pass
 
     assert fake_server.connections >= 2, (
-        "expected reconnect after buffer_append overflow — "
+        "expected reconnect after buffer_append overflow - "
         "buffer_append() must raise ResyncRequired"
     )
 
@@ -837,7 +837,7 @@ async def test_base_emit_callback_does_not_cross_connections() -> None:
 
     assert not conn_b_event.is_set(), (
         "stale callback from prior connection tripped the new connection's "
-        "_produce_failed — would cause an unnecessary reconnect+resync"
+        "_produce_failed - would cause an unnecessary reconnect+resync"
     )
 
 
@@ -903,7 +903,7 @@ async def test_periodic_snapshot_reemits_live_book(
 async def test_periodic_snapshot_skips_unwarmed_book(
     fake_server: FakeExchangeServer,
 ) -> None:
-    """A LIVE symbol whose book is empty (sequence < 0 — trade-only ingester)
+    """A LIVE symbol whose book is empty (sequence < 0 - trade-only ingester)
     must not emit snapshots: an empty snap would wipe consumers' books."""
     fake_server.scripted = [json.dumps({"sym": "X", "seq": 1, "kind": "trade"})]
     ing = make_ingester(fake_server, snapshot_interval_s=0.03)
@@ -1037,9 +1037,9 @@ def test_recv_clock_counts_backward_step_and_tracks_worst() -> None:
     before, _ = _recv_clock("clk-back")
     ing._observe_recv_clock(1_000_000_000)
     ing._observe_recv_clock(950_000_000)   # back 50 ms
-    ing._observe_recv_clock(960_000_000)   # forward again — no step
-    ing._observe_recv_clock(900_000_000)   # back 60 ms — new worst
-    ing._observe_recv_clock(880_000_000)   # back 20 ms — worse count, smaller step
+    ing._observe_recv_clock(960_000_000)   # forward again - no step
+    ing._observe_recv_clock(900_000_000)   # back 60 ms - new worst
+    ing._observe_recv_clock(880_000_000)   # back 20 ms - worse count, smaller step
     steps, worst = _recv_clock("clk-back")
     assert steps == before + 3
     assert worst == pytest.approx(60.0)

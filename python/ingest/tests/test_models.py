@@ -30,7 +30,7 @@ def test_book_delta_epoch_round_trips() -> None:
 
 def test_pre_epoch_payload_decodes_to_zero() -> None:
     """A book message captured before the epoch field (no `epoch` key) must still
-    decode — the default keeps existing bronze replayable."""
+    decode - the default keeps existing bronze replayable."""
     legacy = (
         b'{"t":"snap","exchange":"kraken","symbol":"BTC/USD","sequence":0,'
         b'"bids":[["100","1"]],"asks":[["101","2"]],'

@@ -3,7 +3,7 @@
 write_basis_for_date k-way merges each base's two NBBO legs straight from their
 sorted silver partitions and stream-writes the series (no whole-day nbbo read);
 this pins it row-for-row against build_basis over the whole day. Seeds the golden
-corpus as bronze on a LocalFileSystem and runs the real silver streaming driver —
+corpus as bronze on a LocalFileSystem and runs the real silver streaming driver -
 no Docker.
 """
 from __future__ import annotations

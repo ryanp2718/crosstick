@@ -1,4 +1,4 @@
-"""Phase 2 — scorecard-over-S3 integration: bronze -> silver -> gold on MinIO.
+"""Phase 2 - scorecard-over-S3 integration: bronze -> silver -> gold on MinIO.
 
 Seeds the golden corpus as bronze Parquet on an ephemeral MinIO (the same layout
 the materializer writes), then runs the real silver and gold entrypoints against

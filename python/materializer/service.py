@@ -5,7 +5,7 @@ date boundary, or age → PUT Parquet → commit offsets for that partition.
 
 Exactly-once at the file grain: commits happen only AFTER the PUT (the
 make_consumer manual-commit rationale), and each PUT is awaited before
-consumption continues — so at most one PUT is ever un-committed. A crash
+consumption continues - so at most one PUT is ever un-committed. A crash
 therefore re-reads exactly the in-flight chunk, starting at the committed
 offset, and rewrites the *identical* start-offset-keyed object (see
 bronze.object_key). No downstream dedup needed.
@@ -58,7 +58,7 @@ bronze_value_bytes = Counter(
 # Producer-side pipeline-lag gauges (refreshed on a cadence in run()). The
 # lake-side freshness alone misses a consumer that is behind-but-flushing (lag
 # high, objects still landing) or up-but-stuck (consuming into the buffer but not
-# flushing) — these two close that gap.
+# flushing) - these two close that gap.
 bronze_consumer_lag = Gauge(
     "bronze_consumer_lag_messages",
     "Unconsumed messages in the log per assigned partition (highwater - position)",
@@ -77,14 +77,14 @@ bronze_flush_age = Gauge(
 class _Buffer:
     """Pending records for one topic-partition chunk."""
 
-    date: str  # UTC date of the first record — the chunk's date partition
+    date: str  # UTC date of the first record - the chunk's date partition
     first_append: float  # event-loop time; drives the age flush
     value_bytes: int = 0
     records: list[CorpusRecord] = field(default_factory=list)
 
 
 class _DropBuffersOnRevoke(ConsumerRebalanceListener):
-    """On rebalance, drop uncommitted buffers — the next assignee re-reads them
+    """On rebalance, drop uncommitted buffers - the next assignee re-reads them
     from the committed offset, and start-offset keys make the rewrite safe."""
 
     def __init__(self, materializer: Materializer):
@@ -156,7 +156,7 @@ class Materializer:
         for tp in self.consumer.assignment():
             hw = self.consumer.highwater(tp)
             if hw is None:
-                continue  # no fetch yet — highwater unknown
+                continue  # no fetch yet - highwater unknown
             pos = await self.consumer.position(tp)
             bronze_consumer_lag.labels(topic=tp.topic, partition=str(tp.partition)).set(
                 max(hw - pos, 0)
@@ -214,7 +214,7 @@ class Materializer:
         await asyncio.to_thread(
             pq.write_table, table, path, filesystem=self.fs, compression="zstd"
         )
-        # Commit only after the PUT landed; a failure here is fatal by design —
+        # Commit only after the PUT landed; a failure here is fatal by design -
         # the restart re-reads this chunk and overwrites the same key.
         await self.consumer.commit({tp: buf.records[-1].offset + 1})
         self.records_flushed += len(buf.records)

@@ -2,7 +2,7 @@
 
 Pure (no I/O): aggregates the three silver fact streams into a keyed fact table
 `(exchange, canonical_symbol, date, check)`. A gold mart reads *silver*, never
-bronze — the silver layer already did the decode + reconstruction + flagging, so
+bronze - the silver layer already did the decode + reconstruction + flagging, so
 this is plain group-by/rollup (the natural shape for SQL/dbt later, when the
 gold layer has several marts; one mart doesn't justify the warehouse yet).
 
@@ -78,9 +78,9 @@ def _clock_monotonic_row(exchange: str, symbol: str, date: str, group: list[dict
     thousands), separately from epoch-change backward steps (= benign reconnect
     overlap). Snapshots are excluded: they are folded in by sequence but fetched at
     a different time, so they read as recv backward steps that are reordering, not a
-    clock fault — counting them inflated this ~2x on clock-clean days. Deltas arrive
+    clock fault - counting them inflated this ~2x on clock-clean days. Deltas arrive
     in sequence order, so fold order ≈ arrival order and a backward step is a real
-    clock regression. This is the canary the Phase-2 reorder can't mask — it reads
+    clock regression. This is the canary the Phase-2 reorder can't mask - it reads
     the raw recv clock the fold persisted, before any sort. Records with no recv
     clock are skipped."""
     intra = inter = worst = n = 0
@@ -197,7 +197,7 @@ def _status_checks(status_events: Iterable[dict]) -> list[dict]:
 class BookCheckAccumulator:
     """Additive, columnar fold of one book_quality partition (constant
     exchange/canonical_symbol/date) into its three book rows. O(1) state and no
-    per-row dict materialization — the same checks as `_book_checks`, mergeable
+    per-row dict materialization - the same checks as `_book_checks`, mergeable
     across `update` calls so this also drops into a map-reduce later."""
 
     def __init__(self, exchange: str, canonical_symbol: str, date: str):
@@ -298,7 +298,7 @@ class BookCheckAccumulator:
 class LatencyAccumulator:
     """Collect one latency partition's `exchange_to_emit_ns` per dataset and emit
     a `latency.<dataset>` row with p50/95/99. Exact percentiles need every value,
-    so this holds one partition's values (columnar, ~tens of MB) — not the day;
+    so this holds one partition's values (columnar, ~tens of MB) - not the day;
     the out-of-core fix (DuckDB approx_quantile) is P3."""
 
     def __init__(self, exchange: str, canonical_symbol: str, date: str):
@@ -338,7 +338,7 @@ def build_scorecard(
     status_events: Iterable[dict],
 ) -> list[dict]:
     """Roll the three silver fact streams up into scorecard rows (the in-memory
-    oracle; gold's batch path folds per partition — see the accumulators above)."""
+    oracle; gold's batch path folds per partition - see the accumulators above)."""
     return [
         *_book_checks(book_quality),
         *_latency_checks(latency),

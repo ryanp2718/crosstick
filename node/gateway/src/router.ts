@@ -21,7 +21,7 @@ const EMPTY: RouteResult = {
 // Book messages drive per-exchange BBO derivation; if the (exchange, symbol)
 // is mapped to a canonical instrument, the BBO also feeds NBBO aggregation.
 // Trades are relayed to clients only. nowMs is the caller's stream time (max
-// input event-time), not wall clock — see D1 in ARCHITECTURE.md.
+// input event-time), not wall clock - see D1 in ARCHITECTURE.md.
 export function routeMessage(
   msg: StreamMsg,
   agg: Aggregator,

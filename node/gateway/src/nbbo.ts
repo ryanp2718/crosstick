@@ -4,16 +4,16 @@ import type { BBOMsg, NBBOLeg, NBBOMsg } from "./messages.js";
 
 // Per-canonical_id NBBO aggregation. Caller is responsible for resolving an
 // incoming BBO to its CanonicalInstrument (via CanonicalMap.lookup) before
-// calling onBBO — this class knows nothing about the venue→canonical map.
+// calling onBBO - this class knows nothing about the venue→canonical map.
 //
 // nowMs is always caller-supplied (no Date.now() default): the server passes
-// stream time — the max event-time across consumed messages — so every NBBO
+// stream time - the max event-time across consumed messages - so every NBBO
 // timestamp and leg age is a pure function of the log and replays byte-for-
 // byte (D1 in ARCHITECTURE.md).
 //
 // Semantics:
 //   - leg storage: latest BBOMsg per (canonical_id, exchange); a leg never
-//     expires here (per-leg staleness is the consumer's call — they read
+//     expires here (per-leg staleness is the consumer's call - they read
 //     leg_age_ms and filter at their own threshold).
 //   - winner selection: highest bid_px, lowest ask_px; tie-break by larger
 //     size, then alphabetical exchange.
@@ -52,7 +52,7 @@ export class NBBOAggregator {
   }
 
   // Mark a venue up/down. On an actual transition, recomputes every canonical
-  // holding a leg from that venue and returns the NBBOs to (re)publish — a
+  // holding a leg from that venue and returns the NBBOs to (re)publish - a
   // constituents change is worth emitting even if the winning L1 is unchanged.
   setVenueDown(exchange: string, down: boolean, nowMs: number): NBBOMsg[] {
     if (down === this.downVenues.has(exchange)) return [];
