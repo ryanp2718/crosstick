@@ -15,6 +15,9 @@ from common.lake import (
     list_partitions,
     partition_key,
     read_dataset,
+    read_freshness_markers,
+    write_freshness_marker,
+    write_freshness_markers,
     write_object,
 )
 
@@ -179,3 +182,32 @@ def test_partition_writer_no_rows_writes_nothing(tmp_path) -> None:
     with PartitionWriter(fs, bucket, key, schema) as w:
         w.write_rows([])  # nothing
     assert read_dataset(fs, bucket, "book_quality", "2026-06-12") is None
+
+
+def test_freshness_marker_round_trip(tmp_path) -> None:
+    fs = pafs.LocalFileSystem()
+    bucket = tmp_path.as_posix()
+    write_freshness_marker(fs, bucket, "nbbo", date=D, row_count=42, written_at_epoch=1_700.0)
+
+    markers = read_freshness_markers(fs, bucket)
+    assert markers == {
+        "nbbo": {"dataset": "nbbo", "date": D, "written_at_epoch": 1_700.0, "row_count": 42}
+    }
+
+
+def test_read_freshness_markers_absent_is_empty(tmp_path) -> None:
+    fs = pafs.LocalFileSystem()
+    assert read_freshness_markers(fs, tmp_path.as_posix()) == {}
+
+
+def test_write_freshness_markers_skips_zero_and_shares_timestamp(tmp_path) -> None:
+    fs = pafs.LocalFileSystem()
+    bucket = tmp_path.as_posix()
+    # status_events has no rows this run -> no marker; the rest share one write time.
+    write_freshness_markers(
+        fs, bucket, D, {"quotes": 10, "status_events": 0, "nbbo": 3}, written_at_epoch=900.0
+    )
+    markers = read_freshness_markers(fs, bucket)
+    assert set(markers) == {"quotes", "nbbo"}
+    assert markers["quotes"]["row_count"] == 10
+    assert {m["written_at_epoch"] for m in markers.values()} == {900.0}
