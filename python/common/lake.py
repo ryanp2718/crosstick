@@ -20,23 +20,57 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 from pyarrow import fs as pafs
 
+# Base env names + defaults for an S3/MinIO connection. A role prefix (e.g. "LAKE_")
+# selects an override group whose vars fall back to these base names when unset, so a
+# single-endpoint deploy that sets no prefixed vars behaves identically to the base.
+_S3_DEFAULTS = {
+    "S3_ENDPOINT": "http://localhost:9000",
+    "S3_ACCESS_KEY": "minio",
+    "S3_SECRET_KEY": "minio12345",
+    "S3_REGION": "us-east-1",  # MinIO ignores it; pyarrow needs one to skip discovery.
+    "S3_MAX_ATTEMPTS": "10",
+}
 
-def filesystem_from_env() -> pafs.S3FileSystem:
-    endpoint = os.environ.get("S3_ENDPOINT", "http://localhost:9000")
+
+def _s3_env(name: str, prefix: str) -> str:
+    """Read `{prefix}{name}`, falling back to the un-prefixed base, then the default."""
+    default = _S3_DEFAULTS[name]
+    if prefix:
+        return os.environ.get(prefix + name, os.environ.get(name, default))
+    return os.environ.get(name, default)
+
+
+def _filesystem(prefix: str = "") -> pafs.S3FileSystem:
+    endpoint = _s3_env("S3_ENDPOINT", prefix)
     scheme = "https" if endpoint.startswith("https://") else "http"
     return pafs.S3FileSystem(
-        access_key=os.environ.get("S3_ACCESS_KEY", "minio"),
-        secret_key=os.environ.get("S3_SECRET_KEY", "minio12345"),
+        access_key=_s3_env("S3_ACCESS_KEY", prefix),
+        secret_key=_s3_env("S3_SECRET_KEY", prefix),
         endpoint_override=endpoint,
         scheme=scheme,
-        # MinIO ignores regions but pyarrow requires one to skip discovery.
-        region=os.environ.get("S3_REGION", "us-east-1"),
+        region=_s3_env("S3_REGION", prefix),
         # Batch builds make thousands of calls; ride through transient connection
         # blips (local WSL2/MinIO, and expected on cloud S3) instead of aborting.
         retry_strategy=pafs.AwsStandardS3RetryStrategy(
-            max_attempts=int(os.environ.get("S3_MAX_ATTEMPTS", "10"))
+            max_attempts=int(_s3_env("S3_MAX_ATTEMPTS", prefix))
         ),
     )
+
+
+def filesystem_from_env() -> pafs.S3FileSystem:
+    """Filesystem for the primary endpoint (S3_* env). On cloud this is the derived
+    (silver/gold) target; for the materializer it is bronze. Use
+    bronze_filesystem_from_env for a process that must read bronze from a *different*
+    endpoint than it writes (the split-endpoint case)."""
+    return _filesystem()
+
+
+def bronze_filesystem_from_env() -> pafs.S3FileSystem:
+    """Filesystem for the bronze (raw lake) role. Reads LAKE_S3_* with fallback to the
+    base S3_*, so a single-endpoint deploy (no LAKE_* set) is byte-for-byte the same as
+    filesystem_from_env; the split activates only when LAKE_S3_ENDPOINT points somewhere
+    distinct (e.g. bronze stays on MinIO while silver/gold move to R2)."""
+    return _filesystem("LAKE_")
 
 
 def instruments_path_from_env() -> Path:
