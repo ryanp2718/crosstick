@@ -15,7 +15,7 @@
   "dependencies": {
     "kafkajs": "2.2.4",
     "prom-client": "15.1.3",
-    "sorted-btree": "1.8.1",
+    "sorted-btree": "2.1.0",
     "ws": "8.21.1",
     "yaml": "^2.9.0"
   },
