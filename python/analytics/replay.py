@@ -6,7 +6,7 @@ This is the producing half of the integration harness: spin up an ephemeral
 Redpanda (see `analytics/tests`), replay a corpus, and assert downstream
 behaviour against the recorded outputs.
 
-All records go to **partition 0** by design — the project's `md.*` topics are
+All records go to **partition 0** by design - the project's `md.*` topics are
 single-stream per symbol, so a single partition gives deterministic offsets
 (0..N in replay order), which Phase 3's snapshot-offset-seek work relies on.
 
@@ -21,6 +21,7 @@ timestamp jitter in capture order clamps to "send immediately".
     uv run python -m analytics.replay corpus.jsonl.gz
     uv run python -m analytics.replay --speed 1 corpus.jsonl.gz
 """
+
 from __future__ import annotations
 
 import argparse
@@ -37,9 +38,7 @@ from common.kafka_io import make_producer
 log = logging.getLogger(__name__)
 
 
-def pace_delay_sec(
-    first_ts_ms: int, ts_ms: int, elapsed_sec: float, speed: float
-) -> float:
+def pace_delay_sec(first_ts_ms: int, ts_ms: int, elapsed_sec: float, speed: float) -> float:
     """Seconds to wait before sending the record stamped `ts_ms`, given
     `elapsed_sec` already spent replaying at `speed`. Never negative: a record
     behind schedule (or behind cross-topic timestamp jitter) sends now."""
@@ -69,9 +68,7 @@ async def replay_corpus(
             if first_ts_ms is None:
                 first_ts_ms, start_wall = r.timestamp_ms, loop.time()
             else:
-                delay = pace_delay_sec(
-                    first_ts_ms, r.timestamp_ms, loop.time() - start_wall, speed
-                )
+                delay = pace_delay_sec(first_ts_ms, r.timestamp_ms, loop.time() - start_wall, speed)
                 if delay > 0:
                     await asyncio.sleep(delay)
         await producer.send_and_wait(

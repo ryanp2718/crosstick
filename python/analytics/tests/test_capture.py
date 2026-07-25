@@ -1,4 +1,5 @@
 """Tests for the capture mapping + drain loop (fake consumer, no Docker)."""
+
 from __future__ import annotations
 
 from pathlib import Path

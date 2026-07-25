@@ -32,6 +32,7 @@ jobs:
           cache-dependency-path: node/gateway/pnpm-lock.yaml
       - run: pnpm install --frozen-lockfile
       - run: pnpm exec tsc --noEmit
+      - run: pnpm run format:check
       - run: pnpm test
 
   python:
@@ -49,6 +50,7 @@ jobs:
           python-version: "3.12"
       - run: uv sync --frozen
       - run: uv run ruff check .
+      - run: uv run ruff format --check .
       - run: uv run pytest -q
 
   # Replay harness: testcontainers Redpanda + the real Node gateway in the loop.
@@ -101,3 +103,11 @@ jobs:
             echo "checking $f"
             jq empty "$f"
           done
+
+  # House-style guard: zero em-dashes (U+2014) in tracked files.
+  conventions:
+    name: conventions (no em-dash)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: python3 scripts/check_no_em_dash.py

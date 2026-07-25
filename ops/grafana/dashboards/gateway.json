@@ -52,7 +52,7 @@
     },
     {
       "id": 3,
-      "title": "BBO / delta ratio (%) — dedup paying off",
+      "title": "BBO / delta ratio (%) - dedup paying off",
       "type": "timeseries",
       "gridPos": { "x": 12, "y": 6, "w": 12, "h": 8 },
       "datasource": { "type": "prometheus", "uid": "prometheus" },
@@ -125,7 +125,7 @@
     },
     {
       "id": 8,
-      "title": "Event-loop lag max (ms) — Windows: mean/p99 ≈ 15ms timer floor, only max is informative",
+      "title": "Event-loop lag max (ms) - Windows: mean/p99 ≈ 15ms timer floor, only max is informative",
       "type": "timeseries",
       "gridPos": { "x": 0, "y": 18, "w": 12, "h": 7 },
       "datasource": { "type": "prometheus", "uid": "prometheus" },
@@ -163,7 +163,7 @@
     },
     {
       "id": 10,
-      "title": "GC pause-time per second by kind (ms/s) — spike here = stop-the-world cycle",
+      "title": "GC pause-time per second by kind (ms/s) - spike here = stop-the-world cycle",
       "type": "timeseries",
       "gridPos": { "x": 0, "y": 25, "w": 24, "h": 6 },
       "datasource": { "type": "prometheus", "uid": "prometheus" },

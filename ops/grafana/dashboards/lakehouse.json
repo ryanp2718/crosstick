@@ -23,7 +23,7 @@
     },
     {
       "id": 2,
-      "title": "Bronze freshness (newest dataset) — red >30m = materializer stuck",
+      "title": "Bronze freshness (newest dataset) - red >30m = materializer stuck",
       "type": "stat",
       "gridPos": { "x": 6, "y": 0, "w": 6, "h": 6 },
       "datasource": { "type": "prometheus", "uid": "prometheus" },
@@ -100,7 +100,7 @@
     },
     {
       "id": 7,
-      "title": "Capture-clock backward steps / venue — clean ~150, w32time-stopped ~7000",
+      "title": "Capture-clock backward steps / venue - clean ~150, w32time-stopped ~7000",
       "type": "timeseries",
       "gridPos": { "x": 0, "y": 13, "w": 12, "h": 7 },
       "datasource": { "type": "prometheus", "uid": "prometheus" },
@@ -124,7 +124,7 @@
     },
     {
       "id": 8,
-      "title": "Worst clock step / venue (ms) — red >60s breaches the silver reorder window",
+      "title": "Worst clock step / venue (ms) - red >60s breaches the silver reorder window",
       "type": "timeseries",
       "gridPos": { "x": 12, "y": 13, "w": 12, "h": 7 },
       "datasource": { "type": "prometheus", "uid": "prometheus" },
@@ -176,7 +176,7 @@
     },
     {
       "id": 11,
-      "title": "Scorecard — checks with violations (latest build)",
+      "title": "Scorecard - checks with violations (latest build)",
       "type": "table",
       "gridPos": { "x": 0, "y": 27, "w": 24, "h": 8 },
       "datasource": { "type": "prometheus", "uid": "prometheus" },
@@ -190,7 +190,7 @@
     },
     {
       "id": 12,
-      "title": "Materializer consumer lag / partition — red >50k = falling behind ingest",
+      "title": "Materializer consumer lag / partition - red >50k = falling behind ingest",
       "type": "timeseries",
       "gridPos": { "x": 0, "y": 35, "w": 12, "h": 7 },
       "datasource": { "type": "prometheus", "uid": "prometheus" },
@@ -214,7 +214,7 @@
     },
     {
       "id": 13,
-      "title": "Bronze flush age / dataset (s) — sawtooths to the 900s flush interval; flat-climbing = stuck",
+      "title": "Bronze flush age / dataset (s) - sawtooths to the 900s flush interval; flat-climbing = stuck",
       "type": "timeseries",
       "gridPos": { "x": 12, "y": 35, "w": 12, "h": 7 },
       "datasource": { "type": "prometheus", "uid": "prometheus" },

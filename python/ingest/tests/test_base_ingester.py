@@ -5,6 +5,7 @@ and emits scripted messages. A `FakeIngester` subclasses BaseIngester with
 trivial parse/process logic. Tests exercise the state machine, the bounded
 queue, the token bucket, and the backoff loop.
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -271,6 +272,7 @@ async def test_resync_required_marks_stale_and_reconnects(
 @pytest.mark.asyncio
 async def test_token_bucket_throttles_subscribes(fake_server: FakeExchangeServer) -> None:
     """With rate=10/s and 5 subscribe messages, total send time ≥ ~400ms."""
+
     # Use a subclass that emits 5 subscribe messages.
     class ManyMsgs(FakeIngester):
         def build_subscribe_messages(self) -> list[str]:
@@ -315,9 +317,7 @@ async def test_shutdown_causes_clean_exit_without_cancel(
 ) -> None:
     """Calling shutdown() alone should make run() return within reasonable time
     (no need to cancel the task externally)."""
-    fake_server.scripted = [
-        json.dumps({"sym": "X", "seq": i, "kind": "trade"}) for i in range(3)
-    ]
+    fake_server.scripted = [json.dumps({"sym": "X", "seq": i, "kind": "trade"}) for i in range(3)]
     ing = make_ingester(fake_server)
     run_task = asyncio.create_task(ing.run())
     # Let some messages flow through.
@@ -342,9 +342,7 @@ async def test_queue_full_aborts_connection_and_increments_resync(
 ) -> None:
     """If applier is blocked, queue fills, reader aborts the connection."""
     # Emit far more messages than queue capacity; block the applier so it can't drain.
-    fake_server.scripted = [
-        json.dumps({"sym": "X", "seq": i, "kind": "trade"}) for i in range(200)
-    ]
+    fake_server.scripted = [json.dumps({"sym": "X", "seq": i, "kind": "trade"}) for i in range(200)]
     ing = make_ingester(fake_server, queue_maxsize=5)
     blocker = asyncio.Event()
 
@@ -352,7 +350,6 @@ async def test_queue_full_aborts_connection_and_increments_resync(
         await blocker.wait()
 
     ing.process_hook = block
-
 
     # Snapshot the counter before; we'll check it ticks for "queue_full".
     initial = _resync_count("fake", "queue_full")
@@ -459,11 +456,13 @@ async def test_graceful_shutdown_emits_down(fake_server: FakeExchangeServer) -> 
 
 def _resync_count(exchange: str, reason: str) -> float:
     from common.metrics import book_resyncs
+
     return book_resyncs.labels(exchange=exchange, reason=reason)._value.get()
 
 
 def _ws_reconnect_count(exchange: str, reason: str) -> float:
     from common.metrics import ws_reconnects
+
     return ws_reconnects.labels(exchange=exchange, reason=reason)._value.get()
 
 
@@ -478,9 +477,7 @@ async def test_ws_max_size_override_accepts_large_frame(
     raised. Coinbase's BTC-USD snapshot is ~5 MiB; the default would close the
     connection with 1009. Fails if base hardcodes max_size or ignores the param."""
     big = "x" * (5 * 1024 * 1024)  # > 2**22 (4 MiB) default
-    fake_server.scripted = [
-        json.dumps({"sym": "X", "seq": 1, "kind": "trade", "pad": big})
-    ]
+    fake_server.scripted = [json.dumps({"sym": "X", "seq": 1, "kind": "trade", "pad": big})]
     ing = make_ingester(fake_server, ws_max_size=2**24)  # 16 MiB
     run_task = asyncio.create_task(ing.run())
     for _ in range(150):
@@ -494,9 +491,7 @@ async def test_ws_max_size_override_accepts_large_frame(
     except asyncio.CancelledError:
         pass
 
-    assert len(ing.processed) >= 1, (
-        "a >4 MiB frame should be accepted when ws_max_size is raised"
-    )
+    assert len(ing.processed) >= 1, "a >4 MiB frame should be accepted when ws_max_size is raised"
 
 
 @pytest.mark.asyncio
@@ -535,9 +530,7 @@ async def test_staleness_watchdog_no_false_reconnect_when_active(
 ) -> None:
     """The watchdog must NOT reconnect while frames keep arriving faster than
     stale_timeout, even past the timeout window."""
-    fake_server.scripted = [
-        json.dumps({"sym": "X", "seq": i, "kind": "trade"}) for i in range(60)
-    ]
+    fake_server.scripted = [json.dumps({"sym": "X", "seq": i, "kind": "trade"}) for i in range(60)]
     fake_server.send_delay = 0.02  # ~50/s, well under stale_timeout
     ing = make_ingester(fake_server, stale_timeout=0.3)
     run_task = asyncio.create_task(ing.run())
@@ -550,9 +543,7 @@ async def test_staleness_watchdog_no_false_reconnect_when_active(
     except asyncio.CancelledError:
         pass
 
-    assert conns == 1, (
-        f"watchdog falsely reconnected an active feed (connections={conns})"
-    )
+    assert conns == 1, f"watchdog falsely reconnected an active feed (connections={conns})"
 
 
 # ─── new tests (TDD: written before fixes) ────────────────────────────────
@@ -612,8 +603,7 @@ async def test_reconnect_clears_buffered_and_last_seq(
     assert buf0 == 0 and seq0 == -1, f"first bootstrap: dirty state buf={buf0} seq={seq0}"
     buf1, seq1 = bootstrap_entry_states[1]
     assert buf1 == 0 and seq1 == -1, (
-        f"second bootstrap: stale state buf={buf1} seq={seq1} "
-        "— _reset_contexts() is missing"
+        f"second bootstrap: stale state buf={buf1} seq={seq1} - _reset_contexts() is missing"
     )
 
 
@@ -668,11 +658,11 @@ async def test_gather_bootstrap_collects_all_coroutines(
     # by at most 1. X must never exceed Y (that would indicate orphaned gather tasks
     # from return_exceptions=False running outside the gather's control).
     assert x_count <= y_count, (
-        f"X bootstrapped {x_count} times vs Y {y_count} times — "
+        f"X bootstrapped {x_count} times vs Y {y_count} times - "
         "return_exceptions=False would orphan X tasks, inflating its count"
     )
     assert x_count >= y_count - 1, (
-        f"X bootstrapped {x_count} times vs Y {y_count} times — "
+        f"X bootstrapped {x_count} times vs Y {y_count} times - "
         "X fell more than 1 cycle behind Y (unexpected)"
     )
 
@@ -727,7 +717,7 @@ async def test_buffer_overflow_triggers_resync(
         pass
 
     assert fake_server.connections >= 2, (
-        "expected reconnect after buffer_append overflow — "
+        "expected reconnect after buffer_append overflow - "
         "buffer_append() must raise ResyncRequired"
     )
 
@@ -738,24 +728,36 @@ async def test_buffer_overflow_triggers_resync(
 def _make_ingester_for_emit() -> FakeIngester:
     """A FakeIngester bound to a FakeProducer for direct _emit() unit tests."""
     return FakeIngester(
-        exchange="emit-test", symbols=["X"], ws_url="ws://unused",
+        exchange="emit-test",
+        symbols=["X"],
+        ws_url="ws://unused",
         producer=FakeProducer(),
     )
 
 
 def _trade_msg() -> object:
     from common.models import Side, Trade
+
     return Trade(
-        exchange="emit-test", symbol="X", trade_id="t1",
-        price="100.0", size="1.0", side=Side.BID,
-        exchange_ts_ns=1_000_000_000, local_ts_ns=2_000_000_000,
+        exchange="emit-test",
+        symbol="X",
+        trade_id="t1",
+        price="100.0",
+        size="1.0",
+        side=Side.BID,
+        exchange_ts_ns=1_000_000_000,
+        local_ts_ns=2_000_000_000,
     )
 
 
 def _trade_event() -> ParsedEvent:
     return ParsedEvent(
-        symbol="X", kind="trade", sequence=1, raw_bytes=0,
-        exchange_ts_ns=1_000_000_000, local_recv_ts_ns=2_000_000_000,
+        symbol="X",
+        kind="trade",
+        sequence=1,
+        raw_bytes=0,
+        exchange_ts_ns=1_000_000_000,
+        local_recv_ts_ns=2_000_000_000,
     )
 
 
@@ -776,9 +778,7 @@ async def test_base_emit_resyncs_on_delivery_failure() -> None:
     tears the connection down → reconnect → resnapshot) and increments
     book_resyncs(reason="produce_failed"). Preserves the no-silent-gap
     invariant: never advance the published log past a delivery hole."""
-    before = book_resyncs.labels(
-        exchange="emit-test", reason="produce_failed"
-    )._value.get()
+    before = book_resyncs.labels(exchange="emit-test", reason="produce_failed")._value.get()
 
     ing = _make_ingester_for_emit()
     ing._produce_failed = asyncio.Event()
@@ -789,9 +789,7 @@ async def test_base_emit_resyncs_on_delivery_failure() -> None:
     await asyncio.sleep(0)
     assert ing._produce_failed.is_set()
 
-    after = book_resyncs.labels(
-        exchange="emit-test", reason="produce_failed"
-    )._value.get()
+    after = book_resyncs.labels(exchange="emit-test", reason="produce_failed")._value.get()
     assert after == before + 1
 
 
@@ -837,7 +835,7 @@ async def test_base_emit_callback_does_not_cross_connections() -> None:
 
     assert not conn_b_event.is_set(), (
         "stale callback from prior connection tripped the new connection's "
-        "_produce_failed — would cause an unnecessary reconnect+resync"
+        "_produce_failed - would cause an unnecessary reconnect+resync"
     )
 
 
@@ -846,9 +844,7 @@ async def test_base_emit_callback_does_not_cross_connections() -> None:
 
 def _book_snaps(producer: FakeProducer) -> list[dict]:
     return [
-        json.loads(value)
-        for topic, value in producer.sent
-        if topic == "md.book.fake.X.snapshots"
+        json.loads(value) for topic, value in producer.sent if topic == "md.book.fake.X.snapshots"
     ]
 
 
@@ -857,6 +853,7 @@ class BookedIngester(FakeIngester):
 
     async def bootstrap(self, symbol: str) -> None:
         from decimal import Decimal as D
+
         await super().bootstrap(symbol)
         self.contexts[symbol].book.apply_snapshot(
             7,
@@ -873,10 +870,17 @@ async def test_periodic_snapshot_reemits_live_book(
     every snapshot_interval_s, at the book's current sequence."""
     fake_server.scripted = [json.dumps({"sym": "X", "seq": 1, "kind": "trade"})]
     ing = BookedIngester(
-        exchange="fake", symbols=["X"], ws_url=fake_server.url,
-        producer=FakeProducer(), subscribe_rate=100.0, subscribe_capacity=100.0,
-        queue_maxsize=100, backoff_base=0.001, backoff_cap=0.01,
-        ping_interval=None, ping_timeout=None,
+        exchange="fake",
+        symbols=["X"],
+        ws_url=fake_server.url,
+        producer=FakeProducer(),
+        subscribe_rate=100.0,
+        subscribe_capacity=100.0,
+        queue_maxsize=100,
+        backoff_base=0.001,
+        backoff_cap=0.01,
+        ping_interval=None,
+        ping_timeout=None,
         snapshot_interval_s=0.05,
     )
     run_task = asyncio.create_task(ing.run())
@@ -903,7 +907,7 @@ async def test_periodic_snapshot_reemits_live_book(
 async def test_periodic_snapshot_skips_unwarmed_book(
     fake_server: FakeExchangeServer,
 ) -> None:
-    """A LIVE symbol whose book is empty (sequence < 0 — trade-only ingester)
+    """A LIVE symbol whose book is empty (sequence < 0 - trade-only ingester)
     must not emit snapshots: an empty snap would wipe consumers' books."""
     fake_server.scripted = [json.dumps({"sym": "X", "seq": 1, "kind": "trade"})]
     ing = make_ingester(fake_server, snapshot_interval_s=0.03)
@@ -920,8 +924,12 @@ async def test_reset_contexts_sets_fresh_epoch_stamped_on_snapshot() -> None:
     from decimal import Decimal as D
 
     ing = BookedIngester(
-        exchange="fake", symbols=["X"], ws_url="ws://unused",
-        producer=FakeProducer(), ping_interval=None, ping_timeout=None,
+        exchange="fake",
+        symbols=["X"],
+        ws_url="ws://unused",
+        producer=FakeProducer(),
+        ping_interval=None,
+        ping_timeout=None,
     )
     ing._epoch = 12345  # sentinel a fresh connection must replace
     ing._reset_contexts()
@@ -942,10 +950,17 @@ async def test_periodic_snapshot_none_disables(
 ) -> None:
     fake_server.scripted = [json.dumps({"sym": "X", "seq": 1, "kind": "trade"})]
     ing = BookedIngester(
-        exchange="fake", symbols=["X"], ws_url=fake_server.url,
-        producer=FakeProducer(), subscribe_rate=100.0, subscribe_capacity=100.0,
-        queue_maxsize=100, backoff_base=0.001, backoff_cap=0.01,
-        ping_interval=None, ping_timeout=None,
+        exchange="fake",
+        symbols=["X"],
+        ws_url=fake_server.url,
+        producer=FakeProducer(),
+        subscribe_rate=100.0,
+        subscribe_capacity=100.0,
+        queue_maxsize=100,
+        backoff_base=0.001,
+        backoff_cap=0.01,
+        ping_interval=None,
+        ping_timeout=None,
         snapshot_interval_s=None,
     )
     run_task = asyncio.create_task(ing.run())
@@ -960,6 +975,7 @@ async def test_periodic_snapshot_none_disables(
 
 def _invariant_count(exchange: str, symbol: str, kind: str) -> float:
     from common.metrics import book_invariant_violations
+
     return book_invariant_violations.labels(
         exchange=exchange, symbol=symbol, kind=kind
     )._value.get()
@@ -1008,6 +1024,7 @@ async def test_book_invariant_increments_metric_with_kind(
 
 def _recv_clock(exchange: str) -> tuple[float, float]:
     from common.metrics import recv_clock_backward_steps, recv_clock_worst_step_ms
+
     steps = recv_clock_backward_steps.labels(exchange=exchange)._value.get()
     worst = recv_clock_worst_step_ms.labels(exchange=exchange)._value.get()
     return steps, worst
@@ -1015,7 +1032,10 @@ def _recv_clock(exchange: str) -> tuple[float, float]:
 
 def _clock_ingester(exchange: str) -> FakeIngester:
     return FakeIngester(
-        exchange=exchange, symbols=["X"], ws_url="ws://unused", producer=FakeProducer(),
+        exchange=exchange,
+        symbols=["X"],
+        ws_url="ws://unused",
+        producer=FakeProducer(),
     )
 
 
@@ -1036,10 +1056,10 @@ def test_recv_clock_counts_backward_step_and_tracks_worst() -> None:
     ing = _clock_ingester("clk-back")
     before, _ = _recv_clock("clk-back")
     ing._observe_recv_clock(1_000_000_000)
-    ing._observe_recv_clock(950_000_000)   # back 50 ms
-    ing._observe_recv_clock(960_000_000)   # forward again — no step
-    ing._observe_recv_clock(900_000_000)   # back 60 ms — new worst
-    ing._observe_recv_clock(880_000_000)   # back 20 ms — worse count, smaller step
+    ing._observe_recv_clock(950_000_000)  # back 50 ms
+    ing._observe_recv_clock(960_000_000)  # forward again - no step
+    ing._observe_recv_clock(900_000_000)  # back 60 ms - new worst
+    ing._observe_recv_clock(880_000_000)  # back 20 ms - worse count, smaller step
     steps, worst = _recv_clock("clk-back")
     assert steps == before + 3
     assert worst == pytest.approx(60.0)

@@ -6,10 +6,11 @@ unit-testable without infrastructure. The service half (`materializer.service`)
 wires this to a consumer and a filesystem.
 
 Layout and schema are the contract documented in docs/data-contracts.md
-("Bronze lake"). Rows are verbatim `CorpusRecord`s — the same lossless shape
-the capture/replay harness uses — so any bronze slice is also a replayable
+("Bronze lake"). Rows are verbatim `CorpusRecord`s - the same lossless shape
+the capture/replay harness uses - so any bronze slice is also a replayable
 corpus.
 """
+
 from __future__ import annotations
 
 import logging
@@ -85,7 +86,7 @@ class CanonicalMap:
 
     Mirrors the gateway's resolution so the lake partitions by canonical
     instrument, not each venue's native spelling. Unmapped pairs fall back to
-    the normalized topic symbol (warn once) — bronze never drops data over
+    the normalized topic symbol (warn once) - bronze never drops data over
     missing reference data; curated-vs-discovered symbology at 50+ is
     DESIGN_analytics.md open concern #1.
     """
@@ -116,7 +117,7 @@ class CanonicalMap:
 
     def pairs_by_base(self) -> list[tuple[str, str, str]]:
         """(base, usd_canonical, usdt_canonical) for each base quoted in both USD
-        and USDT — the cross-quote pairs the stablecoin basis joins. Perp
+        and USDT - the cross-quote pairs the stablecoin basis joins. Perp
         canonicals (``-PERP``) are excluded; the basis is spot-vs-spot."""
         by_base: dict[str, dict[str, str]] = defaultdict(dict)
         for canonical, (base, quote) in self._specs.items():
@@ -153,7 +154,7 @@ def object_key(
 
     Named by partition + START offset only (Kafka Connect S3-sink convention),
     not start-end: the end offset of a chunk is wall-clock-dependent (the age
-    flush), but the start is always the committed offset — so a crash-retry
+    flush), but the start is always the committed offset - so a crash-retry
     rewrites the *identical* key and at-least-once becomes exactly-once at the
     file grain. End offset/count live in the Parquet footer metadata. Chunks
     are contiguous per topic-partition, so a sorted listing implies coverage.
@@ -212,7 +213,7 @@ def records_to_table(records: Sequence[CorpusRecord]) -> pa.Table:
 
 
 def table_to_records(table: pa.Table) -> list[CorpusRecord]:
-    """Inverse of records_to_table — bronze is corpus-shaped, so a bronze slice
+    """Inverse of records_to_table - bronze is corpus-shaped, so a bronze slice
     can be read back as replay fodder (and tests assert lossless round-trip)."""
     return [
         CorpusRecord(

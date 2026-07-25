@@ -5,3 +5,4 @@ allowBuilds:
 overrides:
   vite: 6.4.3
   tsx>esbuild: 0.28.1
+  postcss: ^8.5.18

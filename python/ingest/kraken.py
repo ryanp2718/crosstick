@@ -9,7 +9,7 @@ Wire contract (verified against current Kraken v2 docs, see plan):
     as are {"channel":"heartbeat"} and {"channel":"status"} control frames.
   - Book message: {"channel":"book","type":"snapshot"|"update","data":[{symbol,
     bids:[{price,qty}],asks:[{price,qty}],checksum,timestamp}]}. price/qty are JSON
-    numbers; qty 0 removes the level. There is NO per-message sequence number —
+    numbers; qty 0 removes the level. There is NO per-message sequence number -
     integrity is verified by the CRC32 `checksum` over the top-10 book after each
     apply. A mismatch means we missed an update -> resync.
   - Trade message: {"channel":"trade","type":...,"data":[{symbol,side,price,qty,
@@ -18,12 +18,13 @@ Wire contract (verified against current Kraken v2 docs, see plan):
 Decimal, not float: the checksum strips the decimal point and leading zeros but
 KEEPS trailing zeros ("0.00100000" -> "100000"), so the exact wire digits matter.
 msgspec decodes the JSON number straight into Decimal preserving those digits, and
-str(Decimal) reproduces the original token — feeding kraken_checksum() the book's
+str(Decimal) reproduces the original token - feeding kraken_checksum() the book's
 own stored values therefore reconstructs Kraken's checksum input exactly.
 
 Kraken carries no sequence number, so OrderBook's monotonic-sequence guard is fed a
 synthetic per-connection counter (snapshot = 0, each update += 1).
 """
+
 from __future__ import annotations
 
 import json
@@ -59,6 +60,7 @@ _TRADE_SIDE = {"buy": Side.BID, "sell": Side.ASK}
 
 class _Disc(msgspec.Struct):
     """Discriminator: data channels carry `channel`; controls vary."""
+
     channel: str = ""
     type: str = ""
 
@@ -174,19 +176,23 @@ class KrakenIngester(BaseIngester):
 
     def build_subscribe_messages(self) -> list[str]:
         return [
-            json.dumps({
-                "method": "subscribe",
-                "params": {
-                    "channel": "book",
-                    "symbol": self.symbols,
-                    "depth": self._depth,
-                    "snapshot": True,
-                },
-            }),
-            json.dumps({
-                "method": "subscribe",
-                "params": {"channel": "trade", "symbol": self.symbols, "snapshot": False},
-            }),
+            json.dumps(
+                {
+                    "method": "subscribe",
+                    "params": {
+                        "channel": "book",
+                        "symbol": self.symbols,
+                        "depth": self._depth,
+                        "snapshot": True,
+                    },
+                }
+            ),
+            json.dumps(
+                {
+                    "method": "subscribe",
+                    "params": {"channel": "trade", "symbol": self.symbols, "snapshot": False},
+                }
+            ),
         ]
 
     def parse_message(self, raw: bytes, local_recv_ts_ns: int) -> list[ParsedEvent]:
@@ -195,20 +201,30 @@ class KrakenIngester(BaseIngester):
             kind = "snapshot" if disc.type == "snapshot" else "delta"
             out: list[ParsedEvent] = []
             for d in _BOOK_DEC.decode(raw).data:
-                out.append(ParsedEvent(
-                    symbol=d.symbol, kind=kind, payload=d, raw_bytes=len(raw),
-                    exchange_ts_ns=_rfc3339_to_ns(d.timestamp),
-                    local_recv_ts_ns=local_recv_ts_ns,
-                ))
+                out.append(
+                    ParsedEvent(
+                        symbol=d.symbol,
+                        kind=kind,
+                        payload=d,
+                        raw_bytes=len(raw),
+                        exchange_ts_ns=_rfc3339_to_ns(d.timestamp),
+                        local_recv_ts_ns=local_recv_ts_ns,
+                    )
+                )
             return out
         if disc.channel == "trade":
             out = []
             for t in _TRADE_DEC.decode(raw).data:
-                out.append(ParsedEvent(
-                    symbol=t.symbol, kind="trade", payload=t, raw_bytes=len(raw),
-                    exchange_ts_ns=_rfc3339_to_ns(t.timestamp),
-                    local_recv_ts_ns=local_recv_ts_ns,
-                ))
+                out.append(
+                    ParsedEvent(
+                        symbol=t.symbol,
+                        kind="trade",
+                        payload=t,
+                        raw_bytes=len(raw),
+                        exchange_ts_ns=_rfc3339_to_ns(t.timestamp),
+                        local_recv_ts_ns=local_recv_ts_ns,
+                    )
+                )
             return out
         return []  # subscribe ack / heartbeat / status
 
@@ -218,11 +234,17 @@ class KrakenIngester(BaseIngester):
             await self._emit(
                 trade_topic(self.exchange, ctx.symbol),
                 Trade(
-                    exchange=self.exchange, symbol=ctx.symbol, trade_id=str(t.trade_id),
-                    price=str(t.price), size=str(t.qty), side=_trade_side(t.side),
-                    exchange_ts_ns=event.exchange_ts_ns, local_ts_ns=event.local_recv_ts_ns,
+                    exchange=self.exchange,
+                    symbol=ctx.symbol,
+                    trade_id=str(t.trade_id),
+                    price=str(t.price),
+                    size=str(t.qty),
+                    side=_trade_side(t.side),
+                    exchange_ts_ns=event.exchange_ts_ns,
+                    local_ts_ns=event.local_recv_ts_ns,
                 ),
-                ctx.symbol, event,
+                ctx.symbol,
+                event,
             )
             return
 
@@ -236,12 +258,17 @@ class KrakenIngester(BaseIngester):
             await self._emit(
                 book_snapshot_topic(self.exchange, ctx.symbol),
                 BookSnapshot(
-                    exchange=self.exchange, symbol=ctx.symbol, sequence=0,
-                    bids=_wire_levels(d.bids), asks=_wire_levels(d.asks),
-                    exchange_ts_ns=event.exchange_ts_ns, local_ts_ns=event.local_recv_ts_ns,
+                    exchange=self.exchange,
+                    symbol=ctx.symbol,
+                    sequence=0,
+                    bids=_wire_levels(d.bids),
+                    asks=_wire_levels(d.asks),
+                    exchange_ts_ns=event.exchange_ts_ns,
+                    local_ts_ns=event.local_recv_ts_ns,
                     epoch=self._epoch,
                 ),
-                ctx.symbol, event,
+                ctx.symbol,
+                event,
             )
             return
 
@@ -253,7 +280,7 @@ class KrakenIngester(BaseIngester):
         ctx.book.apply_delta(seq, _book_levels(d.bids), _book_levels(d.asks))
         # Kraken drops levels that fall out of the depth window WITHOUT sending a
         # delete, so trim locally and relay an explicit size=0 delete for each
-        # evicted level — that keeps "snapshot + deltas -> book" reconstructable
+        # evicted level - that keeps "snapshot + deltas -> book" reconstructable
         # downstream, matching the coinbase/binance delta contract.
         evicted_bids, evicted_asks = ctx.book.trim(self._depth)
         self._verify_checksum(ctx, d.checksum)
@@ -261,26 +288,36 @@ class KrakenIngester(BaseIngester):
         await self._emit(
             book_delta_topic(self.exchange, ctx.symbol),
             BookDelta(
-                exchange=self.exchange, symbol=ctx.symbol, sequence=seq,
+                exchange=self.exchange,
+                symbol=ctx.symbol,
+                sequence=seq,
                 bids=_wire_levels(d.bids) + _deletes(evicted_bids),
                 asks=_wire_levels(d.asks) + _deletes(evicted_asks),
-                exchange_ts_ns=event.exchange_ts_ns, local_ts_ns=event.local_recv_ts_ns,
+                exchange_ts_ns=event.exchange_ts_ns,
+                local_ts_ns=event.local_recv_ts_ns,
                 epoch=self._epoch,
             ),
-            ctx.symbol, event,
+            ctx.symbol,
+            event,
         )
 
     # ─── internals ─────────────────────────────────────────────────────────
 
     def _verify_checksum(self, ctx: SymbolContext, expected: int) -> None:
         """CRC32 over the top-10 asks (low->high) then bids (high->low). A
-        mismatch means a dropped/reordered update — the book is wrong, resync."""
+        mismatch means a dropped/reordered update - the book is wrong, resync."""
         asks = [(str(px), str(sz)) for px, sz in ctx.book.top_n(Side.ASK, 10)]
         bids = [(str(px), str(sz)) for px, sz in ctx.book.top_n(Side.BID, 10)]
         got = kraken_checksum(asks, bids)
         if got != expected:
             log.error(
                 "CRC MISMATCH %s/%s seq=%s got=%s expected=%s\n  asks=%s\n  bids=%s",
-                self.exchange, ctx.symbol, ctx.last_seq, got, expected, asks, bids,
+                self.exchange,
+                ctx.symbol,
+                ctx.last_seq,
+                got,
+                expected,
+                asks,
+                bids,
             )
             raise ResyncRequired(f"crc mismatch: got {got} expected {expected}")

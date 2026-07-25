@@ -1,4 +1,5 @@
 """Unit tests for the gold scorecard aggregation (pure, over silver rows)."""
+
 from __future__ import annotations
 
 import json
@@ -9,10 +10,20 @@ from gold.scorecard import SCORECARD_SCHEMA, build_scorecard, scorecard_table
 
 def bq(**over) -> dict:
     row = {
-        "exchange": "binance", "canonical_symbol": "BTC-USDT", "date": "2026-06-12",
-        "kind": "delta", "offset": 0, "sequence": 1, "epoch": 0,
-        "exchange_ts_ns": 0, "local_ts_ns": 0, "local_recv_ts_ns": None,
-        "best_bid": None, "best_ask": None, "seq_gap": 0, "crossed": False,
+        "exchange": "binance",
+        "canonical_symbol": "BTC-USDT",
+        "date": "2026-06-12",
+        "kind": "delta",
+        "offset": 0,
+        "sequence": 1,
+        "epoch": 0,
+        "exchange_ts_ns": 0,
+        "local_ts_ns": 0,
+        "local_recv_ts_ns": None,
+        "best_bid": None,
+        "best_ask": None,
+        "seq_gap": 0,
+        "crossed": False,
         "invariant_kind": None,
     }
     row.update(over)
@@ -21,9 +32,14 @@ def bq(**over) -> dict:
 
 def lat(emit_ns: int, **over) -> dict:
     row = {
-        "exchange": "binance", "canonical_symbol": "BTC-USDT", "date": "2026-06-12",
-        "dataset": "trades", "offset": 0, "exchange_ts_ns": 0,
-        "exchange_to_recv_ns": 0, "exchange_to_emit_ns": emit_ns,
+        "exchange": "binance",
+        "canonical_symbol": "BTC-USDT",
+        "date": "2026-06-12",
+        "dataset": "trades",
+        "offset": 0,
+        "exchange_ts_ns": 0,
+        "exchange_to_recv_ns": 0,
+        "exchange_to_emit_ns": emit_ns,
     }
     row.update(over)
     return row
@@ -31,8 +47,13 @@ def lat(emit_ns: int, **over) -> dict:
 
 def st(state: str, ts_ns: int, **over) -> dict:
     row = {
-        "exchange": "binance", "date": "2026-06-12", "ts_ns": ts_ns, "state": state,
-        "prev_state": None, "is_transition": False, "downtime_ns": None,
+        "exchange": "binance",
+        "date": "2026-06-12",
+        "ts_ns": ts_ns,
+        "state": state,
+        "prev_state": None,
+        "is_transition": False,
+        "downtime_ns": None,
     }
     row.update(over)
     return row
@@ -43,9 +64,7 @@ def by_check(rows: list[dict]) -> dict[str, dict]:
 
 
 def test_sequence_gap_counts_and_total_missing() -> None:
-    rows = build_scorecard(
-        [bq(kind="snap"), bq(seq_gap=0), bq(seq_gap=2)], [], []
-    )
+    rows = build_scorecard([bq(kind="snap"), bq(seq_gap=0), bq(seq_gap=2)], [], [])
     r = by_check(rows)["sequence_gap"]
     assert r["n_records"] == 2 and r["n_violations"] == 1
     assert json.loads(r["detail"]) == {"total_missing": 2, "max_gap": 2}
@@ -54,13 +73,22 @@ def test_sequence_gap_counts_and_total_missing() -> None:
 def test_book_invariant_breaks_down_by_kind_and_locked() -> None:
     rows = build_scorecard(
         [
-            bq(invariant_kind="crossed_after_delta", crossed=True,
-               best_bid=Decimal("101"), best_ask=Decimal("100")),
-            bq(invariant_kind="crossed_after_delta", crossed=True,
-               best_bid=Decimal("100"), best_ask=Decimal("100")),
+            bq(
+                invariant_kind="crossed_after_delta",
+                crossed=True,
+                best_bid=Decimal("101"),
+                best_ask=Decimal("100"),
+            ),
+            bq(
+                invariant_kind="crossed_after_delta",
+                crossed=True,
+                best_bid=Decimal("100"),
+                best_ask=Decimal("100"),
+            ),
             bq(),
         ],
-        [], [],
+        [],
+        [],
     )
     r = by_check(rows)["book_invariant"]
     assert r["n_records"] == 3 and r["n_violations"] == 2

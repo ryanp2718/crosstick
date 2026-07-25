@@ -1,4 +1,5 @@
 """Tests for exponential-backoff-with-full-jitter."""
+
 from __future__ import annotations
 
 import pytest
@@ -46,6 +47,7 @@ def test_max_attempts_raises() -> None:
     b.next_delay()
     # attempt == 2 now, max == 2
     import asyncio as _a
+
     with pytest.raises(RuntimeError, match="exhausted"):
         _a.run(b.sleep())
 

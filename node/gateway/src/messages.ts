@@ -14,7 +14,7 @@ export interface BookSnapshotMsg {
   exchange_ts_ns: number;
   local_ts_ns: number;
   // Per-WS-connection generation (models.py BookSnapshot.epoch). Optional on the
-  // wire — pre-epoch captures omit it; the aggregator treats absent as 0.
+  // wire - pre-epoch captures omit it; the aggregator treats absent as 0.
   epoch?: number;
 }
 
@@ -42,7 +42,7 @@ export interface TradeMsg {
   local_ts_ns: number;
 }
 
-// Published by this gateway to md.bbo.* — shape matches models.py BBO so the
+// Published by this gateway to md.bbo.* - shape matches models.py BBO so the
 // Python streaming decoder round-trips it.
 export interface BBOMsg {
   t: "bbo";
@@ -61,8 +61,8 @@ export interface BBOMsg {
 // threshold (see docs/DESIGN_nbbo.md "Per-leg staleness is the consumer's
 // call"). px/sz are the exact source decimal strings, passed through verbatim
 // (lossless) so the md.nbbo log feeds downstream exact-decimal arithmetic.
-// local_ts_ns and leg_age_ms are stream time — the max input event-time at
-// compute, not wall clock — so md.nbbo.* replays deterministically (D1). In
+// local_ts_ns and leg_age_ms are stream time - the max input event-time at
+// compute, not wall clock - so md.nbbo.* replays deterministically (D1). In
 // live operation stream time tracks wall clock within consumer lag (ms).
 export interface NBBOLeg {
   px: string;
@@ -79,7 +79,7 @@ export interface NBBOMsg {
   quote: string;
   best_bid: NBBOLeg;
   best_ask: NBBOLeg;
-  // Exact cmpDecimal(ask,bid) < 0 — not the float spread (epsilon false-positives).
+  // Exact cmpDecimal(ask,bid) < 0 - not the float spread (epsilon false-positives).
   crossed: boolean;
   spread: number;
   mid: number;
@@ -88,7 +88,7 @@ export interface NBBOMsg {
 }
 
 // Per-exchange venue health from the ingester (md.status.<exchange>). Drives
-// connection-state leg eviction in the NBBO aggregator — see DESIGN_nbbo.md.
+// connection-state leg eviction in the NBBO aggregator - see DESIGN_nbbo.md.
 export interface StatusMsg {
   t: "status";
   exchange: string;
@@ -99,7 +99,7 @@ export interface StatusMsg {
 export type StreamMsg = BookSnapshotMsg | BookDeltaMsg | TradeMsg | BBOMsg | NBBOMsg | StatusMsg;
 
 // NOTE: *_ts_ns are epoch nanoseconds (~1.7e18), past Number.MAX_SAFE_INTEGER
-// (~9.0e15). JSON.parse rounds them to ~200ns granularity — negligible for the
+// (~9.0e15). JSON.parse rounds them to ~200ns granularity - negligible for the
 // ms-scale hop-latency we track, but do not treat these as exact ns. A
 // BigInt-aware parse is the hardening if exact ns ever matter here.
 export function decodeMsg(buf: Buffer): StreamMsg {
@@ -120,7 +120,7 @@ export function bboTopic(exchange: string, symbol: string): string {
 }
 
 // canonical_id is constrained to <BASE>-<QUOTE>[-PERP] (see ops/instruments.yml),
-// all topic-safe characters — no normalization required.
+// all topic-safe characters - no normalization required.
 export function nbboTopic(canonical_id: string): string {
   return `md.nbbo.${canonical_id}`;
 }

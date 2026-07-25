@@ -9,6 +9,7 @@ cloud cutover is an env change. Config (env): ``S3_*`` + ``LAKE_S3_*``,
 ``METRICS_PORT`` (9120), ``REFRESH_SEC`` (60), ``AUDIT_INTERVAL_SEC`` (86400, the
 slow marker-vs-reality cross-check), ``LAKE_BUCKET``/``SILVER_BUCKET``/``GOLD_BUCKET``.
 """
+
 from __future__ import annotations
 
 import logging
@@ -48,7 +49,9 @@ def main() -> None:
     serve_metrics_in_background(port=port, registry=registry)
     log.info(
         "lake-exporter serving /metrics on :%d (refresh %.0fs, audit %.0fs)",
-        port, refresh_sec, audit_sec,
+        port,
+        refresh_sec,
+        audit_sec,
     )
     next_audit = time.time() + audit_sec
     while True:

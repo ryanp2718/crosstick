@@ -1,4 +1,5 @@
 """Tests for OrderBook. Written first (TDD)."""
+
 from __future__ import annotations
 
 from decimal import Decimal
@@ -7,7 +8,7 @@ import pytest
 
 from ingest.book import BookInvariantError, OrderBook, Side
 
-# NOTE: BookState was removed — state ownership moved to SymbolContext.state
+# NOTE: BookState was removed - state ownership moved to SymbolContext.state
 # (SymbolState in base_ingester.py) to keep a single source of truth.
 
 
@@ -155,7 +156,7 @@ def test_checksum_top_10_kraken_format() -> None:
         ("0.04960", "0.00000500"),
         ("0.04955", "0.00000500"),
     ]
-    # Sanity: the function returns an unsigned 32-bit int — exact spec value
+    # Sanity: the function returns an unsigned 32-bit int - exact spec value
     # depends on price decimal places. Here we assert it's deterministic and
     # different for different inputs.
     c1 = kraken_checksum(asks, bids)

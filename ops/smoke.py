@@ -53,7 +53,7 @@ def check_targets():
     up = len(targets) - len(down)
     msg = f"{up}/{len(targets)} scrape targets up"
     if down:
-        msg += " — DOWN: " + ", ".join(down)
+        msg += " - DOWN: " + ", ".join(down)
     return None, msg  # informational only
 
 
@@ -94,7 +94,7 @@ def main():
         if fatal and passed is False:
             ok = False
     if not ok:
-        print("\nsmoke check FAILED — recreate the affected service:")
+        print("\nsmoke check FAILED - recreate the affected service:")
         print("  docker compose up -d --force-recreate prometheus grafana")
         sys.exit(1)
     print("\nsmoke check passed")

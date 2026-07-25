@@ -3,18 +3,18 @@
 Replays the golden corpus's gateway *inputs* (md.book.* / md.trades.* /
 md.status.*) into an ephemeral Redpanda, runs the real Node gateway against
 it, and asserts the derived *outputs* (md.bbo.* per exchange, md.nbbo.* cross-
-venue) — closing the integration gap end-to-end across the language seam.
+venue) - closing the integration gap end-to-end across the language seam.
 
 Three tests:
 
   1. **In-order replay** → exact golden BBO sequences + NBBO end-state. Single
      shot: the aggregator buffers pre-snapshot deltas (D2a), so the pre-D2
      two-phase snapshot-then-delta barrier is gone.
-  2. **Adversarial order** — every delta and trade replayed BEFORE any
-     snapshot or status — converges to the same end state, with each stream's
+  2. **Adversarial order** - every delta and trade replayed BEFORE any
+     snapshot or status - converges to the same end state, with each stream's
      buffered deltas drained and coalesced into a single BBO. End-to-end proof
      of the D2a order-insensitivity through a real broker and gateway.
-  3. **Byte-identical determinism** — the same paced replay run twice against
+  3. **Byte-identical determinism** - the same paced replay run twice against
      fresh state must produce byte-identical md.bbo.* and md.nbbo.* streams.
      The Phase 3 acceptance test (DESIGN_analytics.md): any wall-clock leakage
      into NBBO timestamps, leg ages, or eviction (D1) differs across runs and
@@ -25,13 +25,13 @@ Harness mechanics worth knowing:
   * Replay is PACED: each record is produced only after the gateway's /metrics
     consumed-counter shows the previous one processed. The broker guarantees
     no cross-topic consumption order, so pacing is what pins the gateway's
-    merge order to replay order — making the exact-sequence and byte-identity
+    merge order to replay order - making the exact-sequence and byte-identity
     assertions deterministic rather than racy.
   * Replay starts only after the gateway logs its warm-start seek plan (D2b).
     Corpus timestamps are years old, so a record produced before the
     live-edge seek executes would be skipped by it.
   * md.* topic names are fixed by contract, so every gateway session deletes
-    and recreates its topics — tests are independent of each other and of
+    and recreates its topics - tests are independent of each other and of
     execution order within the shared Redpanda container.
   * The corpus's synthetic md.bbo records are excluded from replay: the
     gateway derives BBO from books, it does not consume md.bbo. The binance
@@ -44,6 +44,7 @@ installed (`pnpm -C node/gateway install`); skips otherwise. Run with:
 
     uv run python -m pytest -m integration
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -101,7 +102,7 @@ EXPECTED_BBO: dict[str, list[tuple[str, str, str, str]]] = {
 }
 # Gateway publishes md.nbbo.<canonical_id> (node/gateway/src/messages.ts).
 # The perp buckets separately from spot BTC-USDT despite sharing the native
-# symbol BTCUSDT — that distinct-canonical routing is what's under test here.
+# symbol BTCUSDT - that distinct-canonical routing is what's under test here.
 NBBO_BTC_USD = "md.nbbo.BTC-USD"
 NBBO_BTC_USDT = "md.nbbo.BTC-USDT"
 NBBO_BTC_USDT_PERP = "md.nbbo.BTC-USDT-PERP"
@@ -168,8 +169,8 @@ def _start_gateway(bootstrap: str, group_id: str, ws_port: int, log_path: Path):
     node = shutil.which("node")
     assert node is not None
     # No NBBO_LIVENESS_TIMEOUT_MS override: eviction is measured in log time
-    # (D1), and the corpus spans ~20ms of stream time — far under the 5s
-    # default — so wall-clock pacing delays can't evict anything spuriously.
+    # (D1), and the corpus spans ~20ms of stream time - far under the 5s
+    # default - so wall-clock pacing delays can't evict anything spuriously.
     env = {
         **os.environ,
         "KAFKA_BROKERS": bootstrap,
@@ -311,7 +312,7 @@ def _outputs_complete(by_topic: dict[str, list]) -> bool:
 
 
 def _assert_nbbo_end_state(by_topic: dict[str, list]) -> None:
-    """Latest compacted value per canonical — deterministic fields only (the
+    """Latest compacted value per canonical - deterministic fields only (the
     adversarial run reaches the same values at different stream-clock points,
     so timestamps/leg ages are asserted via the determinism test instead)."""
     btc_usd = json.loads(by_topic[NBBO_BTC_USD][-1].value)
@@ -323,7 +324,7 @@ def _assert_nbbo_end_state(by_topic: dict[str, list]) -> None:
     assert btc_usd["constituents"] == ["coinbase", "kraken"]
 
     # The planted crossed book → crossed NBBO. The binance "down" that follows
-    # evicts the only BTC-USDT leg, which emits nothing — so the crossed record
+    # evicts the only BTC-USDT leg, which emits nothing - so the crossed record
     # is, correctly, the final compacted value.
     btc_usdt = json.loads(by_topic[NBBO_BTC_USDT][-1].value)
     assert btc_usdt["best_bid"]["exchange"] == "binance"
@@ -397,7 +398,7 @@ async def test_replayed_nbbo_is_byte_identical_across_runs(
 ) -> None:
     """Phase 3 acceptance (DESIGN_analytics.md): the same replay run twice
     against fresh state produces byte-identical derived streams. NBBO
-    timestamps, leg ages, and eviction all derive from the stream clock (D1) —
+    timestamps, leg ages, and eviction all derive from the stream clock (D1) -
     any Date.now() leakage would differ between runs and fail here."""
     records = [r for r in golden_records if _is_gateway_input(r)]
     runs: list[dict[str, list[tuple[bytes, bytes]]]] = []

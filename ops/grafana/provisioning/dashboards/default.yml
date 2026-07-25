@@ -3,7 +3,7 @@ providers:
   - name: default
     type: file
     # File watcher poll interval; without this, Grafana v11 doesn't auto-reload
-    # provisioned dashboards on disk changes — a Grafana restart is needed.
+    # provisioned dashboards on disk changes - a Grafana restart is needed.
     updateIntervalSeconds: 10
     options:
       path: /var/lib/grafana/dashboards

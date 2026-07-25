@@ -13,6 +13,7 @@ The basis is the first signal driven through the full spine (`RESEARCH_thesis.md
 §5/§7.3); it is deliberately a near-trivial transform so the engineering effort
 lands on the reusable spine (as-of join, mart conventions, PIT), not the signal.
 """
+
 from __future__ import annotations
 
 from collections import defaultdict
@@ -64,9 +65,7 @@ BASIS_SUMMARY_SCHEMA = pa.schema(
 def _by_canonical(nbbo_rows: Iterable[dict]) -> dict[str, list[tuple[int, tuple]]]:
     out: dict[str, list[tuple[int, tuple]]] = defaultdict(list)
     for r in nbbo_rows:
-        out[r["canonical_symbol"]].append(
-            (r["ts_ns"], (r["ts_ns"], r["best_bid"], r["best_ask"]))
-        )
+        out[r["canonical_symbol"]].append((r["ts_ns"], (r["ts_ns"], r["best_bid"], r["best_ask"])))
     for series in out.values():
         series.sort(key=lambda e: e[0])
     return out
@@ -81,7 +80,7 @@ def iter_basis(
     """Basis rows for one base from its two sorted NBBO legs (`(ts, (qts, bid, ask))`).
 
     A leg whose NBBO is older than `max_age_ns` is treated as stale and the tick is
-    skipped — the single-venue USDT leg in particular simply gaps when its venue
+    skipped - the single-venue USDT leg in particular simply gaps when its venue
     freezes, and merge_latest would otherwise carry the frozen mid forward into a
     bogus basis. The value embeds its own NBBO ts (`qts`) so the carried-forward age
     is visible. The shared core of both the in-memory `build_basis` and the streaming
@@ -91,11 +90,11 @@ def iter_basis(
     """
     for ts, snap in merge_latest({"usd": usd_stream, "usdt": usdt_stream}):
         if "usd" not in snap or "usdt" not in snap:
-            continue  # one leg hasn't quoted yet — no basis
+            continue  # one leg hasn't quoted yet - no basis
         usd_ts, usd_bid, usd_ask = snap["usd"]
         usdt_ts, usdt_bid, usdt_ask = snap["usdt"]
         if ts - usd_ts > max_age_ns or ts - usdt_ts > max_age_ns:
-            continue  # a stale (frozen/quiet) NBBO leg — gap rather than emit a lie
+            continue  # a stale (frozen/quiet) NBBO leg - gap rather than emit a lie
         usd_mid = (usd_bid + usd_ask) / Decimal(2)
         usdt_mid = (usdt_bid + usdt_ask) / Decimal(2)
         basis_abs = usd_mid - usdt_mid
@@ -119,7 +118,7 @@ def build_basis(
     pairs: list[tuple[str, str, str]],
     max_age_ns: int = MAX_LEG_AGE_NS,
 ) -> list[dict]:
-    """Event-grain basis rows for each (base, usd_canonical, usdt_canonical) — the
+    """Event-grain basis rows for each (base, usd_canonical, usdt_canonical) - the
     in-memory oracle; the batch path streams per partition (gold/main)."""
     by_canon = _by_canonical(nbbo_rows)
     rows: list[dict] = []

@@ -2,8 +2,7 @@
 // `.default`; the ESNext + esModuleInterop default-import lands on the wrapper
 // at runtime under tsx (vitest's transform papers over it). Unwrap explicitly.
 import BTreeImport from "sorted-btree";
-const BTree = ((BTreeImport as unknown) as { default?: typeof BTreeImport }).default
-  ?? BTreeImport;
+const BTree = (BTreeImport as unknown as { default?: typeof BTreeImport }).default ?? BTreeImport;
 
 import { cmpDecimal, isZeroSize } from "./decimal.js";
 import type { WireLevel } from "./messages.js";
@@ -13,7 +12,7 @@ export type Level = [string, string]; // [price, size]
 // A depth book per (exchange, symbol), kept only to derive top-of-book. It is a
 // lightweight port of the relevant subset of python/ingest/book.py: enough state
 // to know the next-best level when the current best is deleted. No CRC, no
-// crossed-book guard, no full sequence gap-detection — the ingester already
+// crossed-book guard, no full sequence gap-detection - the ingester already
 // validated all of that; here a monotonic-sequence guard on deltas is enough,
 // and a fresh snapshot resets the book, except a stale same-epoch re-snapshot
 // the book has already advanced past (see applySnapshot).
@@ -28,7 +27,7 @@ export class Book {
   epoch = 0;
 
   // Returns false (mutates nothing) for a stale same-epoch re-snapshot whose seq
-  // the book has already passed — resetting to it would rewind and resurrect
+  // the book has already passed - resetting to it would rewind and resurrect
   // since-deleted levels, crossing newer quotes. EXCEPTION: when the book is
   // already crossed (corrupt), the authoritative uncrossed snapshot is taken as a
   // resync that heals it, bounding a cross to one re-snapshot interval instead of
@@ -72,7 +71,7 @@ export class Book {
     return px === undefined ? null : [px, this.asks.get(px)!];
   }
 
-  // Top-of-book inverted (ask < bid) — a corrupt state a fresh same-epoch
+  // Top-of-book inverted (ask < bid) - a corrupt state a fresh same-epoch
   // snapshot is allowed to heal (see applySnapshot).
   isCrossed(): boolean {
     const bid = this.bids.maxKey();

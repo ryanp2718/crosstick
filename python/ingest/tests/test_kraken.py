@@ -2,10 +2,11 @@
 
 The checksum is the linchpin: test_snapshot_real_vector feeds a frame captured
 live from wss://ws.kraken.com/v2 and asserts our book reproduces Kraken's own
-CRC32 — that gates the Decimal-preserves-trailing-zeros assumption end to end.
+CRC32 - that gates the Decimal-preserves-trailing-zeros assumption end to end.
 The synthetic tests build internally-consistent checksums to exercise the state
 machine (go-live, gap/mismatch resync, zero-qty removal, trade side mapping).
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -22,7 +23,7 @@ from ingest.kraken import KrakenIngester
 from ingest.tests.test_base_ingester import FakeProducer, fake_server  # noqa: F401
 
 # A real BTC/USD depth-10 snapshot captured from wss://ws.kraken.com/v2.
-# checksum=1494999917 is Kraken's own — the worked-example regression vector.
+# checksum=1494999917 is Kraken's own - the worked-example regression vector.
 REAL_SNAPSHOT = (
     b'{"channel":"book","type":"snapshot","data":[{"symbol":"BTC/USD",'
     b'"bids":[{"price":75620.2,"qty":0.01733846},{"price":75619.5,"qty":0.00132241},'
@@ -44,7 +45,7 @@ REAL_SNAPSHOT = (
 
 def _lvls(xs: list[tuple[str, str]]) -> str:
     # Emit price/qty as raw JSON number literals so exact digits (incl. trailing
-    # zeros) survive — json.dumps(float) would drop them and break the checksum.
+    # zeros) survive - json.dumps(float) would drop them and break the checksum.
     return ",".join(f'{{"price":{p},"qty":{q}}}' for p, q in xs)
 
 
@@ -215,24 +216,36 @@ async def test_published_log_reconstructs_book() -> None:
     divergence offline."""
     ing = _ing(depth=2)
     # depth=2 so a single insert forces an eviction Kraken would never delete.
-    await _feed(ing, _book_frame(
-        [("100.0", "1.0"), ("99.0", "1.0")], [("101.0", "1.0"), ("102.0", "1.0")],
-        _checksum([("100.0", "1.0"), ("99.0", "1.0")], [("101.0", "1.0"), ("102.0", "1.0")]),
-    ))
+    await _feed(
+        ing,
+        _book_frame(
+            [("100.0", "1.0"), ("99.0", "1.0")],
+            [("101.0", "1.0"), ("102.0", "1.0")],
+            _checksum([("100.0", "1.0"), ("99.0", "1.0")], [("101.0", "1.0"), ("102.0", "1.0")]),
+        ),
+    )
     # Insert a better bid -> 99.0 falls out of the window (Kraken sends only the insert).
-    await _feed(ing, _book_frame(
-        [("100.5", "2.0")], [],
-        _checksum([("100.5", "2.0"), ("100.0", "1.0")], [("101.0", "1.0"), ("102.0", "1.0")]),
-        typ="update",
-    ))
+    await _feed(
+        ing,
+        _book_frame(
+            [("100.5", "2.0")],
+            [],
+            _checksum([("100.5", "2.0"), ("100.0", "1.0")], [("101.0", "1.0"), ("102.0", "1.0")]),
+            typ="update",
+        ),
+    )
     # Plain in-window update, no eviction.
-    await _feed(ing, _book_frame(
-        [], [("101.0", "3.0")],
-        _checksum([("100.5", "2.0"), ("100.0", "1.0")], [("101.0", "3.0"), ("102.0", "1.0")]),
-        typ="update",
-    ))
+    await _feed(
+        ing,
+        _book_frame(
+            [],
+            [("101.0", "3.0")],
+            _checksum([("100.5", "2.0"), ("100.0", "1.0")], [("101.0", "3.0"), ("102.0", "1.0")]),
+            typ="update",
+        ),
+    )
 
-    # Rebuild a fresh book from the published log alone — crucially WITHOUT trim,
+    # Rebuild a fresh book from the published log alone - crucially WITHOUT trim,
     # the way a generic downstream consumer would.
     rebuilt = OrderBook("kraken", "BTC/USD")
     for topic, payload in ing.producer.sent:
@@ -277,10 +290,18 @@ async def test_unknown_trade_side_resyncs() -> None:
 
 def _make_live(server, **kw: object) -> KrakenIngester:
     return KrakenIngester(
-        producer=FakeProducer(), symbols=["BTC/USD"], ws_url=server.url,
-        subscribe_rate=100.0, subscribe_capacity=100.0, queue_maxsize=200,
-        backoff_base=0.001, backoff_cap=0.01, ping_interval=None, ping_timeout=None,
-        stale_timeout=None, **kw,
+        producer=FakeProducer(),
+        symbols=["BTC/USD"],
+        ws_url=server.url,
+        subscribe_rate=100.0,
+        subscribe_capacity=100.0,
+        queue_maxsize=200,
+        backoff_base=0.001,
+        backoff_cap=0.01,
+        ping_interval=None,
+        ping_timeout=None,
+        stale_timeout=None,
+        **kw,
     )
 
 

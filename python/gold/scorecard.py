@@ -2,7 +2,7 @@
 
 Pure (no I/O): aggregates the three silver fact streams into a keyed fact table
 `(exchange, canonical_symbol, date, check)`. A gold mart reads *silver*, never
-bronze — the silver layer already did the decode + reconstruction + flagging, so
+bronze - the silver layer already did the decode + reconstruction + flagging, so
 this is plain group-by/rollup (the natural shape for SQL/dbt later, when the
 gold layer has several marts; one mart doesn't justify the warehouse yet).
 
@@ -11,6 +11,7 @@ percentiles; `detail` is a compact JSON breakdown (by-kind counts, downtime,
 etc.). Input rows are the dicts `silver.dq.build_silver` emits, or the same rows
 read back from silver Parquet (`Table.to_pylist()`).
 """
+
 from __future__ import annotations
 
 import json
@@ -78,9 +79,9 @@ def _clock_monotonic_row(exchange: str, symbol: str, date: str, group: list[dict
     thousands), separately from epoch-change backward steps (= benign reconnect
     overlap). Snapshots are excluded: they are folded in by sequence but fetched at
     a different time, so they read as recv backward steps that are reordering, not a
-    clock fault — counting them inflated this ~2x on clock-clean days. Deltas arrive
+    clock fault - counting them inflated this ~2x on clock-clean days. Deltas arrive
     in sequence order, so fold order ≈ arrival order and a backward step is a real
-    clock regression. This is the canary the Phase-2 reorder can't mask — it reads
+    clock regression. This is the canary the Phase-2 reorder can't mask - it reads
     the raw recv clock the fold persisted, before any sort. Records with no recv
     clock are skipped."""
     intra = inter = worst = n = 0
@@ -101,8 +102,12 @@ def _clock_monotonic_row(exchange: str, symbol: str, date: str, group: list[dict
                 inter += 1
         prev_recv, prev_epoch = recv, epoch
     return _row(
-        exchange, symbol, date, "clock_monotonic",
-        n_records=n, n_violations=intra,
+        exchange,
+        symbol,
+        date,
+        "clock_monotonic",
+        n_records=n,
+        n_violations=intra,
         detail={"worst_lateness_ms": worst / 1e6, "inter_epoch_steps": inter},
     )
 
@@ -117,27 +122,37 @@ def _book_checks(book_quality: Iterable[dict]) -> list[dict]:
         gaps = [r["seq_gap"] for r in deltas if (r["seq_gap"] or 0) > 0]
         rows.append(
             _row(
-                exchange, symbol, date, "sequence_gap",
-                n_records=len(deltas), n_violations=len(gaps),
+                exchange,
+                symbol,
+                date,
+                "sequence_gap",
+                n_records=len(deltas),
+                n_violations=len(gaps),
                 detail={"total_missing": sum(gaps), "max_gap": max(gaps, default=0)},
             )
         )
         invariants = [r for r in group if r["invariant_kind"]]
         by_kind = Counter(r["invariant_kind"] for r in invariants)
-        locked = sum(
-            1 for r in invariants if r["crossed"] and r["best_bid"] == r["best_ask"]
-        )
+        locked = sum(1 for r in invariants if r["crossed"] and r["best_bid"] == r["best_ask"])
         rows.append(
             _row(
-                exchange, symbol, date, "book_invariant",
-                n_records=len(group), n_violations=len(invariants),
+                exchange,
+                symbol,
+                date,
+                "book_invariant",
+                n_records=len(group),
+                n_violations=len(invariants),
                 detail={**by_kind, "locked": locked},
             )
         )
         rows.append(
             _row(
-                exchange, symbol, date, "coverage",
-                n_records=len(group), n_violations=0,
+                exchange,
+                symbol,
+                date,
+                "coverage",
+                n_records=len(group),
+                n_violations=0,
                 detail={"snapshots": snaps, "deltas": len(deltas)},
             )
         )
@@ -154,9 +169,15 @@ def _latency_checks(latency: Iterable[dict]) -> list[dict]:
         p50, p95, p99 = (float(x) / 1e6 for x in np.percentile(vals, [50, 95, 99]))
         rows.append(
             _row(
-                exchange, symbol, date, f"latency.{dataset}",
-                n_records=len(group), n_violations=0,
-                p50_ms=p50, p95_ms=p95, p99_ms=p99,
+                exchange,
+                symbol,
+                date,
+                f"latency.{dataset}",
+                n_records=len(group),
+                n_violations=0,
+                p50_ms=p50,
+                p95_ms=p95,
+                p99_ms=p99,
                 detail={"max_ms": float(vals.max()) / 1e6},
             )
         )
@@ -172,8 +193,12 @@ def _status_checks(status_events: Iterable[dict]) -> list[dict]:
         downtime_ns = sum(r["downtime_ns"] or 0 for r in group)
         rows.append(
             _row(
-                exchange, None, date, "venue_uptime",
-                n_records=len(group), n_violations=len(downs),
+                exchange,
+                None,
+                date,
+                "venue_uptime",
+                n_records=len(group),
+                n_violations=len(downs),
                 detail={
                     "transitions": len(transitions),
                     "down_transitions": len(downs),
@@ -197,7 +222,7 @@ def _status_checks(status_events: Iterable[dict]) -> list[dict]:
 class BookCheckAccumulator:
     """Additive, columnar fold of one book_quality partition (constant
     exchange/canonical_symbol/date) into its three book rows. O(1) state and no
-    per-row dict materialization — the same checks as `_book_checks`, mergeable
+    per-row dict materialization - the same checks as `_book_checks`, mergeable
     across `update` calls so this also drops into a map-reduce later."""
 
     def __init__(self, exchange: str, canonical_symbol: str, date: str):
@@ -272,25 +297,43 @@ class BookCheckAccumulator:
     def rows(self) -> list[dict]:
         return [
             _row(
-                self.exchange, self.canonical_symbol, self.date, "sequence_gap",
-                n_records=self._n_deltas, n_violations=self._n_gap,
+                self.exchange,
+                self.canonical_symbol,
+                self.date,
+                "sequence_gap",
+                n_records=self._n_deltas,
+                n_violations=self._n_gap,
                 detail={"total_missing": self._total_missing, "max_gap": self._max_gap},
             ),
             _row(
-                self.exchange, self.canonical_symbol, self.date, "book_invariant",
-                n_records=self._n_total, n_violations=self._n_invariant,
+                self.exchange,
+                self.canonical_symbol,
+                self.date,
+                "book_invariant",
+                n_records=self._n_total,
+                n_violations=self._n_invariant,
                 detail={**self._by_kind, "locked": self._locked},
             ),
             _row(
-                self.exchange, self.canonical_symbol, self.date, "coverage",
-                n_records=self._n_total, n_violations=0,
+                self.exchange,
+                self.canonical_symbol,
+                self.date,
+                "coverage",
+                n_records=self._n_total,
+                n_violations=0,
                 detail={"snapshots": self._n_total - self._n_deltas, "deltas": self._n_deltas},
             ),
             _row(
-                self.exchange, self.canonical_symbol, self.date, "clock_monotonic",
-                n_records=self._n_deltas, n_violations=self._clock_intra,
-                detail={"worst_lateness_ms": self._clock_worst / 1e6,
-                        "inter_epoch_steps": self._clock_inter},
+                self.exchange,
+                self.canonical_symbol,
+                self.date,
+                "clock_monotonic",
+                n_records=self._n_deltas,
+                n_violations=self._clock_intra,
+                detail={
+                    "worst_lateness_ms": self._clock_worst / 1e6,
+                    "inter_epoch_steps": self._clock_inter,
+                },
             ),
         ]
 
@@ -298,7 +341,7 @@ class BookCheckAccumulator:
 class LatencyAccumulator:
     """Collect one latency partition's `exchange_to_emit_ns` per dataset and emit
     a `latency.<dataset>` row with p50/95/99. Exact percentiles need every value,
-    so this holds one partition's values (columnar, ~tens of MB) — not the day;
+    so this holds one partition's values (columnar, ~tens of MB) - not the day;
     the out-of-core fix (DuckDB approx_quantile) is P3."""
 
     def __init__(self, exchange: str, canonical_symbol: str, date: str):
@@ -323,9 +366,15 @@ class LatencyAccumulator:
             p50, p95, p99 = (float(x) / 1e6 for x in np.percentile(vals, [50, 95, 99]))
             out.append(
                 _row(
-                    self.exchange, self.canonical_symbol, self.date, f"latency.{ds}",
-                    n_records=len(vals), n_violations=0,
-                    p50_ms=p50, p95_ms=p95, p99_ms=p99,
+                    self.exchange,
+                    self.canonical_symbol,
+                    self.date,
+                    f"latency.{ds}",
+                    n_records=len(vals),
+                    n_violations=0,
+                    p50_ms=p50,
+                    p95_ms=p95,
+                    p99_ms=p99,
                     detail={"max_ms": float(vals.max()) / 1e6},
                 )
             )
@@ -338,7 +387,7 @@ def build_scorecard(
     status_events: Iterable[dict],
 ) -> list[dict]:
     """Roll the three silver fact streams up into scorecard rows (the in-memory
-    oracle; gold's batch path folds per partition — see the accumulators above)."""
+    oracle; gold's batch path folds per partition - see the accumulators above)."""
     return [
         *_book_checks(book_quality),
         *_latency_checks(latency),

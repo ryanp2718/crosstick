@@ -1,21 +1,22 @@
-"""Phase 1 — materializer-in-the-loop integration.
+"""Phase 1 - materializer-in-the-loop integration.
 
 Replays the golden corpus into an ephemeral Redpanda, runs the real
 materializer against an ephemeral MinIO, and asserts:
 
-  * bronze == corpus, verbatim and exactly once — every md.* record lands in
+  * bronze == corpus, verbatim and exactly once - every md.* record lands in
     a Parquet object under its canonical-resolved partition path, and reading
     the lake back reproduces the corpus records losslessly (bronze is
     corpus-shaped by design);
   * crash-recovery exactly-once: simulate "PUT landed, commit lost" by
     rewinding the group's committed offset for the busiest topic and
-    restarting — the rerun rewrites the *same* start-offset keys, so the
+    restarting - the rerun rewrites the *same* start-offset keys, so the
     row count is unchanged (the DESIGN_analytics.md Phase 1 property test).
 
 Requires Docker; excluded from the default suite. Run with:
 
     uv run python -m pytest -m integration
 """
+
 from __future__ import annotations
 
 import asyncio

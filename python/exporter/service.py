@@ -2,11 +2,12 @@
 
 A `prometheus_client` custom Collector returns metric families from a snapshot
 cached by a background refresh, so a Prometheus scrape is always fast and never
-blocks on S3 — and each scrape reflects one consistent snapshot (no stale label
+blocks on S3 - and each scrape reflects one consistent snapshot (no stale label
 sets, the failure mode of mutating shared Gauges in place). A failed refresh
 (transient MinIO blip) keeps the last good snapshot and is itself observable via
 `lake_exporter_refresh_errors_total`.
 """
+
 from __future__ import annotations
 
 import logging
@@ -26,7 +27,8 @@ class LakeCollector:
     merged into every scrape, so a scrape never blocks on the full LIST walk."""
 
     def __init__(
-        self, build: Callable[[], list[Metric]],
+        self,
+        build: Callable[[], list[Metric]],
         audit: Callable[[], list[Metric]] | None = None,
     ) -> None:
         self._build = build
@@ -40,7 +42,7 @@ class LakeCollector:
         try:
             self._families = self._build()
             self._last_success = time.time()
-        except Exception:  # transient S3/MinIO blip — keep the last good snapshot
+        except Exception:  # transient S3/MinIO blip - keep the last good snapshot
             self._errors += 1
             log.exception("lake-exporter refresh failed; serving last good snapshot")
 

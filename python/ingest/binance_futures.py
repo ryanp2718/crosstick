@@ -1,4 +1,4 @@
-"""Binance USDⓈ-M perpetual-futures ingester — liquidations, mark/funding,
+"""Binance USDⓈ-M perpetual-futures ingester - liquidations, mark/funding,
 open interest, and the perp L2 book + trade tape.
 
 Feed: wss://fstream.binance.com routed combined streams (no auth) plus REST
@@ -11,9 +11,9 @@ legacy-URL sunset): depth lives on /public, aggTrade/markPrice/forceOrder on
 path's streams. So this driver runs as TWO instances of the same class
 (main.py builds both into one process), selected by ``mode``:
 
-  - mode="market": /market/stream — forceOrder + markPrice + aggTrade, plus
+  - mode="market": /market/stream - forceOrder + markPrice + aggTrade, plus
     the slice-2 open-interest REST poll rider. Book-less and stateless.
-  - mode="depth":  /public/stream — depth@100ms + the REST-snapshot/BUFFERING
+  - mode="depth":  /public/stream - depth@100ms + the REST-snapshot/BUFFERING
     book machinery. This instance owns md.status.binance-futures: venue
     status exists to evict stale book legs from NBBO, and the book lives
     here. The market connection's liveness is observable independently via
@@ -23,20 +23,20 @@ Slice 1 (forceOrder + markPrice) is stateless: both streams are venue-computed
 snapshots, so a reconnect (Binance force-closes at 24h) costs only the gap
 window.
 
-Slice 3 (depth + aggTrade) brings the REST-snapshot/BUFFERING machinery — but
+Slice 3 (depth + aggTrade) brings the REST-snapshot/BUFFERING machinery - but
 the FUTURES depth sync differs from spot in every load-bearing rule, which is
 why none of binance.py's sync code is reused:
 
   - continuity: each event's `pu` must equal the previous event's `u`
     (spot: `U == prev_u + 1`);
   - sync point: the first applied event must OVERLAP the snapshot,
-    `U <= lastUpdateId <= u` — futures events straddle the snapshot id,
+    `U <= lastUpdateId <= u` - futures events straddle the snapshot id,
     they do not resume at lastUpdateId+1;
   - pre-snapshot drop: `u < lastUpdateId`, strictly (spot: `u <= lastUpdateId`).
 
 Slice 2 (open interest) is a REST poll rider: there is no OI stream, so a
 background loop polls /fapi/v1/openInterest per symbol and emits
-md.openinterest.* — independent of the WS connection state.
+md.openinterest.* - independent of the WS connection state.
 
 Wire notes:
   - All streams are known at construction, so each instance connects to its
@@ -44,10 +44,11 @@ Wire notes:
     messages (build_subscribe_messages returns []).
   - Combined-stream frames are enveloped {"stream": ..., "data": {...}}.
   - forceOrder is SAMPLED: largest liquidation per symbol per 1000ms only.
-  - futures has only @aggTrade — there is no raw per-fill trade stream.
+  - futures has only @aggTrade - there is no raw per-fill trade stream.
   - markPrice@1s ticks every second per symbol, which makes the staleness
     watchdog meaningful even when no liquidations occur.
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -94,7 +95,7 @@ DEFAULT_REST_BASE = "https://fapi.binance.com"
 DEFAULT_SYMBOLS = ["BTCUSDT", "ETHUSDT"]
 DEFAULT_DEPTH_LIMIT = 1000
 # market: markPrice@1s guarantees ~1 frame/s/symbol when healthy;
-# depth: depth@100ms is ~10 frames/s/symbol — both well inside 10s.
+# depth: depth@100ms is ~10 frames/s/symbol - both well inside 10s.
 DEFAULT_STALE_TIMEOUT = 10.0
 DEFAULT_OI_POLL_INTERVAL = 10.0  # finer than the 5m REST-backfill grain, weight-trivial
 
@@ -109,9 +110,15 @@ _FETCH_FAILED = object()
 def stream_names(symbols: list[str], mode: Mode) -> list[str]:
     if mode == "depth":
         return [f"{sym.lower()}@depth@100ms" for sym in symbols]
-    return [name for sym in symbols for name in
-            (f"{sym.lower()}@forceOrder", f"{sym.lower()}@markPrice@1s",
-             f"{sym.lower()}@aggTrade")]
+    return [
+        name
+        for sym in symbols
+        for name in (
+            f"{sym.lower()}@forceOrder",
+            f"{sym.lower()}@markPrice@1s",
+            f"{sym.lower()}@aggTrade",
+        )
+    ]
 
 
 # ─── wire structs (msgspec) ──────────────────────────────────────────────────
@@ -119,6 +126,7 @@ def stream_names(symbols: list[str], mode: Mode) -> list[str]:
 
 class _Envelope(msgspec.Struct):
     """Combined-stream frame; `data` stays raw until discriminated by `e`."""
+
     stream: str = ""
     data: msgspec.Raw = msgspec.Raw(b"")
 
@@ -129,6 +137,7 @@ class _Disc(msgspec.Struct):
 
 class _ForceOrder(msgspec.Struct):
     """Inner `o` object of a forceOrder event."""
+
     s: str
     S: str
     q: str
@@ -219,15 +228,17 @@ class BinanceFuturesIngester(BaseIngester):
         symbols = symbols if symbols is not None else list(DEFAULT_SYMBOLS)
         self._mode: Mode = mode
         if mode == "market":
-            # Book-less: no periodic re-snapshot, and no md.status heartbeats —
+            # Book-less: no periodic re-snapshot, and no md.status heartbeats -
             # the depth instance owns venue status (see module docstring).
             kw.setdefault("snapshot_interval_s", None)
             kw.setdefault("heartbeat_s", None)
         super().__init__(
             exchange="binance-futures",
             symbols=symbols,
-            ws_url=(f"{ws_host}/{_MODE_PATH[mode]}/stream"
-                    f"?streams={'/'.join(stream_names(symbols, mode))}"),
+            ws_url=(
+                f"{ws_host}/{_MODE_PATH[mode]}/stream"
+                f"?streams={'/'.join(stream_names(symbols, mode))}"
+            ),
             producer=producer,
             stale_timeout=stale_timeout,
             **kw,
@@ -240,7 +251,7 @@ class BinanceFuturesIngester(BaseIngester):
         self._snapshots: dict[str, object] = {}
         self._snapshot_tasks: dict[str, asyncio.Task[None]] = {}
         # Symbols past their first applied delta: from then on continuity is
-        # the pu chain. A flag, not spot's last_seq==snap_id trick — a first
+        # the pu chain. A flag, not spot's last_seq==snap_id trick - a first
         # event ending exactly at lastUpdateId leaves last_seq unchanged.
         self._synced: set[str] = set()
         # Bumped on every reconnect; a fetch tagged with a stale generation
@@ -265,7 +276,7 @@ class BinanceFuturesIngester(BaseIngester):
 
     async def bootstrap(self, symbol: str) -> None:
         """Depth mode: flip BUFFERING and fetch the REST snapshot in the
-        background. Market mode: no-op — its streams are stateless.
+        background. Market mode: no-op - its streams are stateless.
 
         Returns immediately: bootstrap runs inside the connect sequence before
         the reader/applier start, so it must not block on the REST round-trip.
@@ -288,32 +299,53 @@ class BinanceFuturesIngester(BaseIngester):
         kind = _DISC_DEC.decode(data).e
         if kind == "depthUpdate":
             d = _DEPTH_DEC.decode(data)
-            return [ParsedEvent(
-                symbol=d.s, kind="delta", sequence=d.u, payload=d,
-                raw_bytes=len(raw), exchange_ts_ns=d.E * 1_000_000,
-                local_recv_ts_ns=local_recv_ts_ns,
-            )]
+            return [
+                ParsedEvent(
+                    symbol=d.s,
+                    kind="delta",
+                    sequence=d.u,
+                    payload=d,
+                    raw_bytes=len(raw),
+                    exchange_ts_ns=d.E * 1_000_000,
+                    local_recv_ts_ns=local_recv_ts_ns,
+                )
+            ]
         if kind == "aggTrade":
             t = _AGG_DEC.decode(data)
-            return [ParsedEvent(
-                symbol=t.s, kind="trade", payload=t,
-                raw_bytes=len(raw), exchange_ts_ns=t.T * 1_000_000,
-                local_recv_ts_ns=local_recv_ts_ns,
-            )]
+            return [
+                ParsedEvent(
+                    symbol=t.s,
+                    kind="trade",
+                    payload=t,
+                    raw_bytes=len(raw),
+                    exchange_ts_ns=t.T * 1_000_000,
+                    local_recv_ts_ns=local_recv_ts_ns,
+                )
+            ]
         if kind == "forceOrder":
             ev = _FORCE_DEC.decode(data)
-            return [ParsedEvent(
-                symbol=ev.o.s, kind="liquidation", payload=ev.o,
-                raw_bytes=len(raw), exchange_ts_ns=ev.o.T * 1_000_000,
-                local_recv_ts_ns=local_recv_ts_ns,
-            )]
+            return [
+                ParsedEvent(
+                    symbol=ev.o.s,
+                    kind="liquidation",
+                    payload=ev.o,
+                    raw_bytes=len(raw),
+                    exchange_ts_ns=ev.o.T * 1_000_000,
+                    local_recv_ts_ns=local_recv_ts_ns,
+                )
+            ]
         if kind == "markPriceUpdate":
             m = _MARK_DEC.decode(data)
-            return [ParsedEvent(
-                symbol=m.s, kind="mark_price", payload=m,
-                raw_bytes=len(raw), exchange_ts_ns=m.E * 1_000_000,
-                local_recv_ts_ns=local_recv_ts_ns,
-            )]
+            return [
+                ParsedEvent(
+                    symbol=m.s,
+                    kind="mark_price",
+                    payload=m,
+                    raw_bytes=len(raw),
+                    exchange_ts_ns=m.E * 1_000_000,
+                    local_recv_ts_ns=local_recv_ts_ns,
+                )
+            ]
         return []
 
     async def process_event(self, ctx: SymbolContext, event: ParsedEvent) -> None:
@@ -322,14 +354,19 @@ class BinanceFuturesIngester(BaseIngester):
             await self._emit(
                 liquidation_topic(self.exchange, ctx.symbol),
                 Liquidation(
-                    exchange=self.exchange, symbol=ctx.symbol,
+                    exchange=self.exchange,
+                    symbol=ctx.symbol,
                     side=Side.ASK if o.S == "SELL" else Side.BID,
-                    price=o.p, avg_price=o.ap, orig_size=o.q, filled_size=o.z,
+                    price=o.p,
+                    avg_price=o.ap,
+                    orig_size=o.q,
+                    filled_size=o.z,
                     status=o.X,
                     exchange_ts_ns=event.exchange_ts_ns,
                     local_ts_ns=event.local_recv_ts_ns,
                 ),
-                ctx.symbol, event,
+                ctx.symbol,
+                event,
             )
             return
         if event.kind == "mark_price":
@@ -337,13 +374,18 @@ class BinanceFuturesIngester(BaseIngester):
             await self._emit(
                 markprice_topic(self.exchange, ctx.symbol),
                 MarkPrice(
-                    exchange=self.exchange, symbol=ctx.symbol,
-                    mark_price=m.p, index_price=m.i, est_settle_price=m.P,
-                    funding_rate=m.r, next_funding_ts_ns=m.T * 1_000_000,
+                    exchange=self.exchange,
+                    symbol=ctx.symbol,
+                    mark_price=m.p,
+                    index_price=m.i,
+                    est_settle_price=m.P,
+                    funding_rate=m.r,
+                    next_funding_ts_ns=m.T * 1_000_000,
                     exchange_ts_ns=event.exchange_ts_ns,
                     local_ts_ns=event.local_recv_ts_ns,
                 ),
-                ctx.symbol, event,
+                ctx.symbol,
+                event,
             )
             return
         if event.kind == "trade":
@@ -351,11 +393,17 @@ class BinanceFuturesIngester(BaseIngester):
             await self._emit(
                 trade_topic(self.exchange, ctx.symbol),
                 Trade(
-                    exchange=self.exchange, symbol=ctx.symbol, trade_id=str(t.a),
-                    price=t.p, size=t.q, side=Side.ASK if t.m else Side.BID,
-                    exchange_ts_ns=event.exchange_ts_ns, local_ts_ns=event.local_recv_ts_ns,
+                    exchange=self.exchange,
+                    symbol=ctx.symbol,
+                    trade_id=str(t.a),
+                    price=t.p,
+                    size=t.q,
+                    side=Side.ASK if t.m else Side.BID,
+                    exchange_ts_ns=event.exchange_ts_ns,
+                    local_ts_ns=event.local_recv_ts_ns,
                 ),
-                ctx.symbol, event,
+                ctx.symbol,
+                event,
             )
             return
 
@@ -388,12 +436,17 @@ class BinanceFuturesIngester(BaseIngester):
         await self._emit(
             book_snapshot_topic(self.exchange, ctx.symbol),
             BookSnapshot(
-                exchange=self.exchange, symbol=ctx.symbol, sequence=last_id,
-                bids=wbids, asks=wasks,
-                exchange_ts_ns=0, local_ts_ns=event.local_recv_ts_ns,
+                exchange=self.exchange,
+                symbol=ctx.symbol,
+                sequence=last_id,
+                bids=wbids,
+                asks=wasks,
+                exchange_ts_ns=0,
+                local_ts_ns=event.local_recv_ts_ns,
                 epoch=self._epoch,
             ),
-            ctx.symbol, event,
+            ctx.symbol,
+            event,
         )
         # Replay everything buffered while the snapshot was in flight, then the
         # delta that triggered the snapshot application.
@@ -405,7 +458,7 @@ class BinanceFuturesIngester(BaseIngester):
         await self._apply_delta_synced(ctx, event)
 
     async def _apply_delta_synced(self, ctx: SymbolContext, event: ParsedEvent) -> None:
-        """Futures depth sync — overlap + pu chain, NOT spot's +1 update ids."""
+        """Futures depth sync - overlap + pu chain, NOT spot's +1 update ids."""
         ev = event.payload
         if ctx.symbol not in self._synced:
             # First event after the REST snapshot: drop anything that ended
@@ -420,7 +473,7 @@ class BinanceFuturesIngester(BaseIngester):
             self._synced.add(ctx.symbol)
             if ev.u == ctx.last_seq:
                 # Sync point established, but every update in this event is
-                # already in the snapshot — applying would violate the book's
+                # already in the snapshot - applying would violate the book's
                 # monotonic-sequence invariant for nothing.
                 return
         elif ev.pu != ctx.last_seq:
@@ -429,12 +482,17 @@ class BinanceFuturesIngester(BaseIngester):
         await self._emit(
             book_delta_topic(self.exchange, ctx.symbol),
             BookDelta(
-                exchange=self.exchange, symbol=ctx.symbol, sequence=ev.u,
-                bids=ev.b, asks=ev.a,
-                exchange_ts_ns=event.exchange_ts_ns, local_ts_ns=event.local_recv_ts_ns,
+                exchange=self.exchange,
+                symbol=ctx.symbol,
+                sequence=ev.u,
+                bids=ev.b,
+                asks=ev.a,
+                exchange_ts_ns=event.exchange_ts_ns,
+                local_ts_ns=event.local_recv_ts_ns,
                 epoch=self._epoch,
             ),
-            ctx.symbol, event,
+            ctx.symbol,
+            event,
         )
         ctx.last_seq = ev.u
 
@@ -452,9 +510,7 @@ class BinanceFuturesIngester(BaseIngester):
         if gen == self._generation:
             self._snapshots[symbol] = value
 
-    async def _rest_snapshot(
-        self, symbol: str
-    ) -> tuple[int, list[BookLevel], list[BookLevel]]:
+    async def _rest_snapshot(self, symbol: str) -> tuple[int, list[BookLevel], list[BookLevel]]:
         client = await self._get_client()
         resp = await client.get(
             f"{self._rest_base}/fapi/v1/depth",
@@ -470,7 +526,7 @@ class BinanceFuturesIngester(BaseIngester):
         """Emit md.openinterest.* every oi_poll_interval_s per symbol.
 
         Independent of the WS connection: OI is a REST resource, so a depth
-        reconnect shouldn't gap it. Per-symbol failures log and skip — the
+        reconnect shouldn't gap it. Per-symbol failures log and skip - the
         poll must survive transient REST errors for the process lifetime."""
         if self._oi_poll_interval_s is None:
             return
@@ -484,23 +540,25 @@ class BinanceFuturesIngester(BaseIngester):
                 resp = await self._fetch_open_interest(symbol)
                 local_ts_ns = time.time_ns()
                 event = ParsedEvent(
-                    symbol=symbol, kind="open_interest",
+                    symbol=symbol,
+                    kind="open_interest",
                     exchange_ts_ns=resp.time * 1_000_000,
                     local_recv_ts_ns=local_ts_ns,
                 )
                 await self._emit(
                     openinterest_topic(self.exchange, symbol),
                     OpenInterest(
-                        exchange=self.exchange, symbol=symbol,
+                        exchange=self.exchange,
+                        symbol=symbol,
                         open_interest=resp.openInterest,
                         exchange_ts_ns=event.exchange_ts_ns,
                         local_ts_ns=local_ts_ns,
                     ),
-                    symbol, event,
+                    symbol,
+                    event,
                 )
             except Exception as e:
-                log.warning("open-interest poll failed for %s/%s: %s",
-                            self.exchange, symbol, e)
+                log.warning("open-interest poll failed for %s/%s: %s", self.exchange, symbol, e)
 
     async def _fetch_open_interest(self, symbol: str) -> _OpenInterestResp:
         client = await self._get_client()
@@ -519,7 +577,7 @@ class BinanceFuturesIngester(BaseIngester):
 
     def _mark_all_stale(self, reason: str) -> None:
         if self._mode == "market":
-            # No book state to invalidate — and both instances share the
+            # No book state to invalidate - and both instances share the
             # (exchange, symbol) metric labels, so a market-connection blip
             # must not overwrite the depth instance's md_book_state.
             return

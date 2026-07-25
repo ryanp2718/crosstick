@@ -13,6 +13,7 @@ Symbols are normalized: '/' is replaced with '-' (Kafka disallows '/' in topic
 names). The native exchange symbol form is preserved in the message body (the
 `symbol` field) for downstream consumers that need to round-trip it.
 """
+
 from __future__ import annotations
 
 import os
@@ -108,19 +109,19 @@ async def make_producer(
 
     - `acks=all` + `enable_idempotence=True` → exactly-once-into-broker semantics
       (within a producer session). Caller still owns end-to-end dedup.
-    - `gzip` compression: native on both sides — aiokafka via stdlib (no
+    - `gzip` compression: native on both sides - aiokafka via stdlib (no
       cramjam/snappy/lz4 needed) and kafkajs decodes it built-in (no extra npm
       codec). The lz4 path looked attractive (faster) but the Node lz4 codecs
       are unmaintained against current Node, so gzip is the practical choice
       end-to-end; at our message rates the extra CPU is negligible. (Note:
-      compression doesn't relax `max_request_size` — aiokafka checks pre-
+      compression doesn't relax `max_request_size` - aiokafka checks pre-
       compression in producer.py:_serialize.)
     - `linger_ms=5`: small wait to batch; trades a few ms of latency for
       significant throughput gain (the firehose path uses pipelined `send()`,
-      so this batching actually engages — see BaseIngester._emit).
+      so this batching actually engages - see BaseIngester._emit).
     - `max_request_size=MAX_MESSAGE_BYTES` (8 MiB) holds the architectural
       ceiling end-to-end. A snapshot that exceeds this raises
-      MessageSizeTooLargeError at produce time — loud, not silent.
+      MessageSizeTooLargeError at produce time - loud, not silent.
     """
     producer = AIOKafkaProducer(
         bootstrap_servers=brokers_from_env(),
@@ -151,7 +152,7 @@ async def make_consumer(
 ) -> AIOKafkaConsumer:
     """Consumer with manual commits.
 
-    `enable_auto_commit=False` is intentional — the materializer (and any
+    `enable_auto_commit=False` is intentional - the materializer (and any
     consumer that materializes side effects) must commit offsets only AFTER
     the side effect lands. Auto-commit would commit before the Parquet PUT
     completes, breaking idempotency on crash.

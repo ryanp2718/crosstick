@@ -6,6 +6,7 @@
 Full jitter dominates equal-jitter for retry storms: it spreads reconnect
 attempts uniformly across the window instead of clumping near `delay`.
 """
+
 from __future__ import annotations
 
 import asyncio

@@ -14,6 +14,7 @@ disturbing any production consumer group.
 For deterministic test fixtures we synthesize instead of capture (see
 `analytics/tests/fixtures`); this tool is for real-world corpora.
 """
+
 from __future__ import annotations
 
 import argparse

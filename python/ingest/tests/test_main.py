@@ -3,6 +3,7 @@
 The run loop / signal handling in main() is thin I/O glue validated by the e2e
 smoke; here we TDD the pure pieces that pick a driver and parse $SYMBOLS.
 """
+
 from __future__ import annotations
 
 import pytest

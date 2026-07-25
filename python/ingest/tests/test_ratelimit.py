@@ -1,4 +1,5 @@
 """Tests for AsyncTokenBucket."""
+
 from __future__ import annotations
 
 import asyncio
@@ -60,7 +61,7 @@ def test_backward_clock_updates_last_timestamp(monkeypatch: pytest.MonkeyPatch) 
     assert bucket._tokens == 3.0
     # _last must be updated to 99.0 so the NEXT refill computes elapsed correctly
     assert bucket._last == 99.0, (
-        "_last not updated after backward jump — "
+        "_last not updated after backward jump - "
         "max(0.0, elapsed) fix is missing, causing future refills to skip"
     )
 

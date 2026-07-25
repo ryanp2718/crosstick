@@ -1,4 +1,5 @@
 """Unit tests for the silver DQ transforms (pure, no infrastructure)."""
+
 from __future__ import annotations
 
 from decimal import Decimal
@@ -40,24 +41,37 @@ def _lv(px: str, sz: str) -> BookLevel:
 def _rec(topic: str, msg, offset: int, *, recv_ns: int | None = None) -> CorpusRecord:
     headers = latency_headers(recv_ns, msg.exchange_ts_ns) if recv_ns is not None else []
     return CorpusRecord(
-        topic=topic, partition=0, offset=offset, timestamp_ms=TS_MS,
-        key=b"k", value=encode(msg), headers=headers,
+        topic=topic,
+        partition=0,
+        offset=offset,
+        timestamp_ms=TS_MS,
+        key=b"k",
+        value=encode(msg),
+        headers=headers,
     )
 
 
 def _snap(ex, sym, seq, bids, asks, ex_ts=5, lo_ts=10):
     return BookSnapshot(
-        exchange=ex, symbol=sym, sequence=seq,
-        bids=[_lv(*b) for b in bids], asks=[_lv(*a) for a in asks],
-        exchange_ts_ns=ex_ts, local_ts_ns=lo_ts,
+        exchange=ex,
+        symbol=sym,
+        sequence=seq,
+        bids=[_lv(*b) for b in bids],
+        asks=[_lv(*a) for a in asks],
+        exchange_ts_ns=ex_ts,
+        local_ts_ns=lo_ts,
     )
 
 
 def _delta(ex, sym, seq, bids, asks, ex_ts=5, lo_ts=10):
     return BookDelta(
-        exchange=ex, symbol=sym, sequence=seq,
-        bids=[_lv(*b) for b in bids], asks=[_lv(*a) for a in asks],
-        exchange_ts_ns=ex_ts, local_ts_ns=lo_ts,
+        exchange=ex,
+        symbol=sym,
+        sequence=seq,
+        bids=[_lv(*b) for b in bids],
+        asks=[_lv(*a) for a in asks],
+        exchange_ts_ns=ex_ts,
+        local_ts_ns=lo_ts,
     )
 
 
@@ -68,12 +82,21 @@ def _book_rows(facts, sequence):
 def test_kraken_contiguous_gap_is_flagged() -> None:
     # kraken synthesizes a per-book +1 counter, so 6 -> 8 is a real hole.
     recs = [
-        _rec(book_snapshot_topic("kraken", "BTC/USD"),
-             _snap("kraken", "BTC/USD", 5, [("100", "1")], [("101", "1")]), 0),
-        _rec(book_delta_topic("kraken", "BTC/USD"),
-             _delta("kraken", "BTC/USD", 6, [], [("101", "0.5")]), 0),
-        _rec(book_delta_topic("kraken", "BTC/USD"),
-             _delta("kraken", "BTC/USD", 8, [("100", "2")], []), 1),
+        _rec(
+            book_snapshot_topic("kraken", "BTC/USD"),
+            _snap("kraken", "BTC/USD", 5, [("100", "1")], [("101", "1")]),
+            0,
+        ),
+        _rec(
+            book_delta_topic("kraken", "BTC/USD"),
+            _delta("kraken", "BTC/USD", 6, [], [("101", "0.5")]),
+            0,
+        ),
+        _rec(
+            book_delta_topic("kraken", "BTC/USD"),
+            _delta("kraken", "BTC/USD", 8, [("100", "2")], []),
+            1,
+        ),
     ]
     facts = build_silver(recs, cmap())
     (gapped,) = _book_rows(facts, 8)
@@ -86,10 +109,16 @@ def test_kraken_contiguous_gap_is_flagged() -> None:
 def test_binance_update_ids_are_not_gaps() -> None:
     # binance stamps update-ids: monotonic but non-contiguous on a healthy stream.
     recs = [
-        _rec(book_snapshot_topic("binance", "BTCUSDT"),
-             _snap("binance", "BTCUSDT", 1000, [("100", "1")], [("101", "1")]), 0),
-        _rec(book_delta_topic("binance", "BTCUSDT"),
-             _delta("binance", "BTCUSDT", 1007, [("100", "2")], []), 0),
+        _rec(
+            book_snapshot_topic("binance", "BTCUSDT"),
+            _snap("binance", "BTCUSDT", 1000, [("100", "1")], [("101", "1")]),
+            0,
+        ),
+        _rec(
+            book_delta_topic("binance", "BTCUSDT"),
+            _delta("binance", "BTCUSDT", 1007, [("100", "2")], []),
+            0,
+        ),
     ]
     facts = build_silver(recs, cmap())
     assert _book_rows(facts, 1007)[0]["seq_gap"] == 0
@@ -97,12 +126,21 @@ def test_binance_update_ids_are_not_gaps() -> None:
 
 def test_crossed_delta_is_flagged() -> None:
     recs = [
-        _rec(book_snapshot_topic("binance", "BTCUSDT"),
-             _snap("binance", "BTCUSDT", 1000, [("64970", "5")], [("65030", "4")]), 0),
-        _rec(book_delta_topic("binance", "BTCUSDT"),
-             _delta("binance", "BTCUSDT", 1001, [], [("65030", "3")]), 0),
-        _rec(book_delta_topic("binance", "BTCUSDT"),
-             _delta("binance", "BTCUSDT", 1002, [("65040", "1")], []), 1),
+        _rec(
+            book_snapshot_topic("binance", "BTCUSDT"),
+            _snap("binance", "BTCUSDT", 1000, [("64970", "5")], [("65030", "4")]),
+            0,
+        ),
+        _rec(
+            book_delta_topic("binance", "BTCUSDT"),
+            _delta("binance", "BTCUSDT", 1001, [], [("65030", "3")]),
+            0,
+        ),
+        _rec(
+            book_delta_topic("binance", "BTCUSDT"),
+            _delta("binance", "BTCUSDT", 1002, [("65040", "1")], []),
+            1,
+        ),
     ]
     facts = build_silver(recs, cmap())
     crossed = _book_rows(facts, 1002)[0]
@@ -115,16 +153,31 @@ def test_resnapshot_collision_is_not_a_non_monotonic_violation() -> None:
     # existing delta's seq). Sorted snap-first, it precedes its same-seq delta,
     # which is then already incorporated -> skip, do not raise + clear the book.
     recs = [
-        _rec(book_snapshot_topic("coinbase", "BTC-USD"),
-             _snap("coinbase", "BTC-USD", 5, [("100", "1")], [("101", "1")]), 0),
-        _rec(book_delta_topic("coinbase", "BTC-USD"),
-             _delta("coinbase", "BTC-USD", 6, [("100.5", "2")], []), 0),
-        _rec(book_delta_topic("coinbase", "BTC-USD"),
-             _delta("coinbase", "BTC-USD", 7, [("100.6", "2")], []), 1),
-        _rec(book_snapshot_topic("coinbase", "BTC-USD"),
-             _snap("coinbase", "BTC-USD", 7, [("100.6", "2")], [("101", "1")]), 2),
-        _rec(book_delta_topic("coinbase", "BTC-USD"),
-             _delta("coinbase", "BTC-USD", 8, [("100.7", "2")], []), 3),
+        _rec(
+            book_snapshot_topic("coinbase", "BTC-USD"),
+            _snap("coinbase", "BTC-USD", 5, [("100", "1")], [("101", "1")]),
+            0,
+        ),
+        _rec(
+            book_delta_topic("coinbase", "BTC-USD"),
+            _delta("coinbase", "BTC-USD", 6, [("100.5", "2")], []),
+            0,
+        ),
+        _rec(
+            book_delta_topic("coinbase", "BTC-USD"),
+            _delta("coinbase", "BTC-USD", 7, [("100.6", "2")], []),
+            1,
+        ),
+        _rec(
+            book_snapshot_topic("coinbase", "BTC-USD"),
+            _snap("coinbase", "BTC-USD", 7, [("100.6", "2")], [("101", "1")]),
+            2,
+        ),
+        _rec(
+            book_delta_topic("coinbase", "BTC-USD"),
+            _delta("coinbase", "BTC-USD", 8, [("100.7", "2")], []),
+            3,
+        ),
     ]
     facts = build_silver(recs, cmap())
     # Neither the re-snapshot nor its colliding delta is flagged.
@@ -139,12 +192,24 @@ def test_resnapshot_collision_is_not_a_non_monotonic_violation() -> None:
 
 def test_latency_skips_locally_generated_records() -> None:
     zero = Trade(
-        exchange="binance", symbol="BTCUSDT", trade_id="1", price="1", size="1",
-        side=Side.BID, exchange_ts_ns=0, local_ts_ns=10,
+        exchange="binance",
+        symbol="BTCUSDT",
+        trade_id="1",
+        price="1",
+        size="1",
+        side=Side.BID,
+        exchange_ts_ns=0,
+        local_ts_ns=10,
     )
     real = Trade(
-        exchange="binance", symbol="BTCUSDT", trade_id="2", price="1", size="1",
-        side=Side.BID, exchange_ts_ns=5, local_ts_ns=10,
+        exchange="binance",
+        symbol="BTCUSDT",
+        trade_id="2",
+        price="1",
+        size="1",
+        side=Side.BID,
+        exchange_ts_ns=5,
+        local_ts_ns=10,
     )
     recs = [
         _rec(trade_topic("binance", "BTCUSDT"), zero, 0, recv_ns=8),

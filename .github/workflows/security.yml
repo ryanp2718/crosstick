@@ -1,0 +1,60 @@
+name: security
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  # Weekly, so newly disclosed vulns in unchanged deps still surface.
+  schedule:
+    - cron: "17 6 * * 1"
+
+concurrency:
+  group: security-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  # Secret scan over the full commit history. Runs the MIT gitleaks CLI image
+  # directly rather than gitleaks-action, whose license gates private repos.
+  secret-scan:
+    name: secret scan (gitleaks)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: gitleaks
+        run: |
+          docker run --rm -v "$PWD:/repo" ghcr.io/gitleaks/gitleaks:v8.24.2 \
+            git /repo --redact --verbose
+
+  audit:
+    name: dependency audit
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          package_json_file: node/gateway/package.json
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: node/gateway/pnpm-lock.yaml
+      - run: pnpm install --frozen-lockfile
+        working-directory: node/gateway
+      - run: pnpm audit --audit-level high
+        working-directory: node/gateway
+
+      - uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+          cache-dependency-glob: python/uv.lock
+          python-version: "3.12"
+      - run: uv sync --frozen
+        working-directory: python
+      - run: uv run --with pip-audit pip-audit
+        working-directory: python

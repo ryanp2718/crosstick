@@ -5,14 +5,15 @@ Hot-path invariants enforced after every mutation:
     2. best_bid < best_ask
     3. no zero-size levels persist
 
-On any violation, raise BookInvariantError — caller's responsibility to mark
+On any violation, raise BookInvariantError - caller's responsibility to mark
 the symbol STALE (via SymbolContext.state) and trigger a resync.
 We do NOT silently patch.
 
 State ownership: BookState was removed.  All lifecycle state lives in
-SymbolContext.state (SymbolState enum in base_ingester.py) — a single
+SymbolContext.state (SymbolState enum in base_ingester.py) - a single
 source of truth that prevents the two state machines from diverging.
 """
+
 from __future__ import annotations
 
 import zlib
@@ -68,7 +69,7 @@ class OrderBook:
 
     def top_n(self, side: Side, n: int) -> list[Level]:
         # SortedItemsView supports O(log k) indexed access and yields (price, size)
-        # tuples directly — one tree walk per item instead of two (key then value).
+        # tuples directly - one tree walk per item instead of two (key then value).
         if side is Side.BID:
             items = self._bids.items()
             count = min(n, len(items))
@@ -93,7 +94,7 @@ class OrderBook:
         for px, sz in asks:
             if sz > 0:
                 new_asks[px] = sz
-        # Validate before commit — snapshot itself must not be crossed.
+        # Validate before commit - snapshot itself must not be crossed.
         if new_bids and new_asks:
             bid_top = new_bids.peekitem(-1)[0]
             ask_top = new_asks.peekitem(0)[0]
@@ -144,7 +145,7 @@ class OrderBook:
 
         Depth-limited feeds (Kraken v2 book) only track the top N levels. When a
         level falls out of that window the exchange drops it WITHOUT sending an
-        explicit delete, so we must discard it ourselves — otherwise a stale deep
+        explicit delete, so we must discard it ourselves - otherwise a stale deep
         level resurfaces into our top-N when better levels are removed and the
         book silently diverges from the exchange's (failing the checksum).
 
@@ -154,7 +155,7 @@ class OrderBook:
         evicted_bids: list[Decimal] = []
         evicted_asks: list[Decimal] = []
         while len(self._bids) > depth:
-            evicted_bids.append(self._bids.popitem(0)[0])   # lowest bid = worst
+            evicted_bids.append(self._bids.popitem(0)[0])  # lowest bid = worst
         while len(self._asks) > depth:
             evicted_asks.append(self._asks.popitem(-1)[0])  # highest ask = worst
         return evicted_bids, evicted_asks
@@ -171,7 +172,7 @@ class OrderBook:
 #
 # Per the v2 spec: concatenate the top-10 ask price-and-qty fields, then the
 # top-10 bid price-and-qty fields. For each value, strip the decimal point and
-# any leading zeros — produce the raw significant digits. CRC32 of that ASCII
+# any leading zeros - produce the raw significant digits. CRC32 of that ASCII
 # string, compared as unsigned 32-bit int to the `checksum` field.
 # ---------------------------------------------------------------------------
 

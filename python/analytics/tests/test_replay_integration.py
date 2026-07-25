@@ -1,7 +1,7 @@
 """Integration: replay the golden corpus into an ephemeral Redpanda and read it
 back, asserting a faithful round-trip.
 
-This is the foundation of the integration harness — it proves ephemeral infra +
+This is the foundation of the integration harness - it proves ephemeral infra +
 deterministic replay work end-to-end. The gateway-in-the-loop NBBO assertion
 (Phase 0b) builds on the same fixtures.
 
@@ -9,6 +9,7 @@ Requires Docker; excluded from the default suite. Run with:
 
     uv run python -m pytest -m integration
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -41,9 +42,7 @@ def brokers(redpanda, monkeypatch: pytest.MonkeyPatch) -> str:
 
 
 async def _consume_all(topics: list[str], expected: int, timeout_sec: float = 30.0) -> list:
-    consumer = await make_consumer(
-        *topics, group_id="test-consume", auto_offset_reset="earliest"
-    )
+    consumer = await make_consumer(*topics, group_id="test-consume", auto_offset_reset="earliest")
     loop = asyncio.get_running_loop()
     deadline = loop.time() + timeout_sec
     out: list = []

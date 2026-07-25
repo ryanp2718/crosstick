@@ -4,6 +4,7 @@ The quotes/NBBO reconstruction folds bronze book through the same OrderBook the
 scorecard uses; the oracle pins it against the captured `bbo` (reconstruction ==
 the live gateway's derived BBO) on the golden corpus.
 """
+
 from __future__ import annotations
 
 from collections import defaultdict
@@ -112,9 +113,9 @@ def test_nbbo_evicts_stale_quiet_venue() -> None:
     # evicted, not carried into a crossed/wide NBBO (the basis +491bps tail).
     s = 1_000_000_000
     quotes = [
-        _q("BTC-USD", "coinbase", 1 * s, "100", "101"),   # coinbase quotes once, then quiet
+        _q("BTC-USD", "coinbase", 1 * s, "100", "101"),  # coinbase quotes once, then quiet
         _q("BTC-USD", "kraken", 2 * s, "99", "100"),
-        _q("BTC-USD", "kraken", 20 * s, "90", "91"),       # market drops ~10%, coinbase frozen
+        _q("BTC-USD", "kraken", 20 * s, "90", "91"),  # market drops ~10%, coinbase frozen
     ]
     last = _build_nbbo(quotes, [], max_age_ns=5 * s)[-1]
     assert last["ts_ns"] == 20 * s
@@ -126,7 +127,7 @@ def test_nbbo_evicts_stale_quiet_venue() -> None:
 
 
 def test_nbbo_keeps_quiet_venue_within_max_age() -> None:
-    # A leg quiet but within max_age is still valid — it must be carried forward.
+    # A leg quiet but within max_age is still valid - it must be carried forward.
     s = 1_000_000_000
     quotes = [
         _q("BTC-USD", "coinbase", 1 * s, "100", "101"),

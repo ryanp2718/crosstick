@@ -1,9 +1,10 @@
 """Component tests for Materializer chunk/commit behaviour.
 
-The Parquet PUT is monkeypatched to a recorder — the real S3 path is covered
+The Parquet PUT is monkeypatched to a recorder - the real S3 path is covered
 by the integration test. Here we pin the cut rules (size-dominant, UTC date
 boundary, age), the start-offset key naming, and commit-after-PUT offsets.
 """
+
 from __future__ import annotations
 
 import time
@@ -128,12 +129,14 @@ async def test_refresh_metrics_sets_lag_and_flush_age() -> None:
     await mat.refresh_metrics()
 
     reg = service_mod.REGISTRY
-    assert reg.get_sample_value(
-        "bronze_consumer_lag_messages", {"topic": TP.topic, "partition": "0"}
-    ) == 400
-    assert reg.get_sample_value(
-        "bronze_consumer_lag_messages", {"topic": tp2.topic, "partition": "1"}
-    ) == 0
+    assert (
+        reg.get_sample_value("bronze_consumer_lag_messages", {"topic": TP.topic, "partition": "0"})
+        == 400
+    )
+    assert (
+        reg.get_sample_value("bronze_consumer_lag_messages", {"topic": tp2.topic, "partition": "1"})
+        == 0
+    )
     age = reg.get_sample_value("bronze_flush_age_seconds", {"dataset": "trades"})
     assert 25 <= age <= 90
 

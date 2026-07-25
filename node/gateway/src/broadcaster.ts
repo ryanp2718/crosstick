@@ -14,7 +14,7 @@ const OPEN = 1; // ws.WebSocket.OPEN
 // Fans self-contained messages out to WS clients with a close+resync
 // backpressure policy (HANDOFF defended decision): a client whose socket buffer
 // grows past maxBufferedBytes is closed and dropped rather than fed stale data
-// — it reconnects and gets a fresh BBO. Dropping would be safe too (each
+// - it reconnects and gets a fresh BBO. Dropping would be safe too (each
 // message is self-contained), but closing keeps memory strictly bounded and
 // matches the project-wide policy.
 export class Broadcaster {

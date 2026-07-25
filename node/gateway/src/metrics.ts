@@ -96,7 +96,7 @@ export const nbboCrossedMaterial = new Counter({
 
 // Per-venue INTERNAL crossed top-of-book (ask < bid within one exchange's book).
 // Distinct from nbboCrossed (cross-venue): this catches book-reconstruction
-// corruption — the 06-12 warm-start failure that was entirely unobserved.
+// corruption - the 06-12 warm-start failure that was entirely unobserved.
 export const bboCrossed = new Counter({
   name: "gateway_bbo_crossed_total",
   help: "Per-exchange BBO emissions with a crossed book (ask < bid within the venue)",

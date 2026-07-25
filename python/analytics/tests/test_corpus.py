@@ -1,4 +1,5 @@
 """Round-trip tests for the corpus format (no Docker, no network)."""
+
 from __future__ import annotations
 
 from pathlib import Path

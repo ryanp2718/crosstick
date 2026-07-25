@@ -2,7 +2,7 @@
 
 Split from the serving/refresh loop (`service.py`) so the row->metric mapping is
 unit-testable with plain dicts and the I/O is integration-tested over MinIO. This
-exporter only *reads* the already-derived gold rollups + lists object metadata —
+exporter only *reads* the already-derived gold rollups + lists object metadata -
 it computes nothing new (a gold mart reads silver, never bronze; this reads gold).
 
 Metric taxonomy (domain-prefixed, matching `md_*` / `bronze_*` / `gateway_*`):
@@ -14,6 +14,7 @@ Metric taxonomy (domain-prefixed, matching `md_*` / `bronze_*` / `gateway_*`):
   - gold_scorecard_date_seconds             UTC midnight of the reported date
   - gold_basis_bps{base,stat}  /  gold_basis_obs{base}
 """
+
 from __future__ import annotations
 
 import json
@@ -54,19 +55,23 @@ def freshness_families(
 
 def scorecard_families(rows: list[dict], date: str | None) -> list[GaugeMetricFamily]:
     viol = GaugeMetricFamily(
-        "gold_dq_violations", "Gold scorecard violations per check",
+        "gold_dq_violations",
+        "Gold scorecard violations per check",
         labels=["check", "exchange", "symbol"],
     )
     rec = GaugeMetricFamily(
-        "gold_dq_records", "Records evaluated per scorecard check",
+        "gold_dq_records",
+        "Records evaluated per scorecard check",
         labels=["check", "exchange", "symbol"],
     )
     lat = GaugeMetricFamily(
-        "gold_dq_latency_ms", "Exchange->recv latency percentiles from the gold scorecard",
+        "gold_dq_latency_ms",
+        "Exchange->recv latency percentiles from the gold scorecard",
         labels=["exchange", "symbol", "dataset", "quantile"],
     )
     clk = GaugeMetricFamily(
-        "gold_dq_clock_worst_ms", "Worst intra-epoch backward recv-clock step (ms)",
+        "gold_dq_clock_worst_ms",
+        "Worst intra-epoch backward recv-clock step (ms)",
         labels=["exchange", "symbol"],
     )
     for r in rows:
@@ -74,7 +79,7 @@ def scorecard_families(rows: list[dict], date: str | None) -> list[GaugeMetricFa
         viol.add_metric([chk, ex, sym], float(r["n_violations"]))
         rec.add_metric([chk, ex, sym], float(r["n_records"]))
         if chk.startswith("latency."):
-            dataset = chk[len("latency."):]
+            dataset = chk[len("latency.") :]
             for q in ("p50", "p95", "p99"):
                 v = r.get(f"{q}_ms")
                 if v is not None:
@@ -99,11 +104,14 @@ def scorecard_families(rows: list[dict], date: str | None) -> list[GaugeMetricFa
 
 def basis_families(rows: list[dict]) -> list[GaugeMetricFamily]:
     bps = GaugeMetricFamily(
-        "gold_basis_bps", "Daily stablecoin basis (bps) per base",
+        "gold_basis_bps",
+        "Daily stablecoin basis (bps) per base",
         labels=["base", "stat"],
     )
     obs = GaugeMetricFamily(
-        "gold_basis_obs", "Basis observations behind the daily summary", labels=["base"],
+        "gold_basis_obs",
+        "Basis observations behind the daily summary",
+        labels=["base"],
     )
     for r in rows:
         for stat in ("mean", "std", "min", "max"):
@@ -181,8 +189,12 @@ def _gold_rows(
 
 
 def build_families(
-    bronze_fs: pafs.FileSystem, derived_fs: pafs.FileSystem,
-    lake_bucket: str, silver_bucket: str, gold_bucket: str, now_s: float
+    bronze_fs: pafs.FileSystem,
+    derived_fs: pafs.FileSystem,
+    lake_bucket: str,
+    silver_bucket: str,
+    gold_bucket: str,
+    now_s: float,
 ) -> list[GaugeMetricFamily]:
     # Bronze lives on its own endpoint (bronze_fs) and stays on the LIST walk (local
     # MinIO, free). Silver/gold are the derived layers (derived_fs): freshness comes

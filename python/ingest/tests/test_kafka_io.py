@@ -1,4 +1,5 @@
 """Smoke tests for topic naming and header helpers (no network)."""
+
 from __future__ import annotations
 
 import pytest
@@ -36,9 +37,7 @@ def test_topic_names() -> None:
     assert liquidation_topic("binance-futures", "BTCUSDT") == (
         "md.liquidations.binance-futures.BTCUSDT"
     )
-    assert markprice_topic("binance-futures", "ETHUSDT") == (
-        "md.markprice.binance-futures.ETHUSDT"
-    )
+    assert markprice_topic("binance-futures", "ETHUSDT") == ("md.markprice.binance-futures.ETHUSDT")
     assert openinterest_topic("binance-futures", "BTCUSDT") == (
         "md.openinterest.binance-futures.BTCUSDT"
     )

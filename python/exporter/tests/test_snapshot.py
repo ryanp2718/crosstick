@@ -1,9 +1,10 @@
 """Unit tests for the lake-exporter metric mapping + I/O orchestration.
 
 The pure mappers are tested with plain dicts; `build_families` is exercised over a
-LocalFileSystem (real read/write path, no Docker) — the S3 path is in
+LocalFileSystem (real read/write path, no Docker) - the S3 path is in
 test_exporter_integration.py.
 """
+
 from __future__ import annotations
 
 import os
@@ -27,23 +28,67 @@ from gold.scorecard import scorecard_table
 DATE = "2026-06-19"
 
 SCORECARD_ROWS = [
-    {"exchange": "kraken", "canonical_symbol": "BTC-USD", "date": DATE, "check": "sequence_gap",
-     "n_records": 100, "n_violations": 2, "p50_ms": None, "p95_ms": None, "p99_ms": None,
-     "detail": '{"max_gap": 3, "total_missing": 2}'},
-    {"exchange": "kraken", "canonical_symbol": "BTC-USD", "date": DATE, "check": "clock_monotonic",
-     "n_records": 100, "n_violations": 5, "p50_ms": None, "p95_ms": None, "p99_ms": None,
-     "detail": '{"inter_epoch_steps": 1, "worst_lateness_ms": 1234.5}'},
-    {"exchange": "kraken", "canonical_symbol": "BTC-USD", "date": DATE, "check": "latency.trades",
-     "n_records": 100, "n_violations": 0, "p50_ms": 1.0, "p95_ms": 5.0, "p99_ms": 12.0,
-     "detail": None},
-    {"exchange": "kraken", "canonical_symbol": None, "date": DATE, "check": "status",
-     "n_records": 3, "n_violations": 0, "p50_ms": None, "p95_ms": None, "p99_ms": None,
-     "detail": '{"downs": 0}'},
+    {
+        "exchange": "kraken",
+        "canonical_symbol": "BTC-USD",
+        "date": DATE,
+        "check": "sequence_gap",
+        "n_records": 100,
+        "n_violations": 2,
+        "p50_ms": None,
+        "p95_ms": None,
+        "p99_ms": None,
+        "detail": '{"max_gap": 3, "total_missing": 2}',
+    },
+    {
+        "exchange": "kraken",
+        "canonical_symbol": "BTC-USD",
+        "date": DATE,
+        "check": "clock_monotonic",
+        "n_records": 100,
+        "n_violations": 5,
+        "p50_ms": None,
+        "p95_ms": None,
+        "p99_ms": None,
+        "detail": '{"inter_epoch_steps": 1, "worst_lateness_ms": 1234.5}',
+    },
+    {
+        "exchange": "kraken",
+        "canonical_symbol": "BTC-USD",
+        "date": DATE,
+        "check": "latency.trades",
+        "n_records": 100,
+        "n_violations": 0,
+        "p50_ms": 1.0,
+        "p95_ms": 5.0,
+        "p99_ms": 12.0,
+        "detail": None,
+    },
+    {
+        "exchange": "kraken",
+        "canonical_symbol": None,
+        "date": DATE,
+        "check": "status",
+        "n_records": 3,
+        "n_violations": 0,
+        "p50_ms": None,
+        "p95_ms": None,
+        "p99_ms": None,
+        "detail": '{"downs": 0}',
+    },
 ]
 
 BASIS_ROWS = [
-    {"base": "BTC", "date": DATE, "n_obs": 1000, "basis_bps_mean": -4.1, "basis_bps_std": 1.2,
-     "basis_bps_min": -9.0, "basis_bps_max": 1.0, "coverage_ns": 1},
+    {
+        "base": "BTC",
+        "date": DATE,
+        "n_obs": 1000,
+        "basis_bps_mean": -4.1,
+        "basis_bps_std": 1.2,
+        "basis_bps_min": -9.0,
+        "basis_bps_max": 1.0,
+        "coverage_ns": 1,
+    },
 ]
 
 
@@ -66,17 +111,38 @@ def test_scorecard_families_maps_each_check() -> None:
     idx = _index(scorecard_families(SCORECARD_ROWS, DATE))
     k = (("check", "sequence_gap"), ("exchange", "kraken"), ("symbol", "BTC-USD"))
     assert idx[("gold_dq_violations", k)] == 2
-    assert idx[("gold_dq_records", (("check", "latency.trades"), ("exchange", "kraken"),
-                                    ("symbol", "BTC-USD")))] == 100
+    assert (
+        idx[
+            (
+                "gold_dq_records",
+                (("check", "latency.trades"), ("exchange", "kraken"), ("symbol", "BTC-USD")),
+            )
+        ]
+        == 100
+    )
     # latency percentiles fan out by quantile, labelled with the source dataset.
-    assert idx[("gold_dq_latency_ms", (("dataset", "trades"), ("exchange", "kraken"),
-                                       ("quantile", "p99"), ("symbol", "BTC-USD")))] == 12.0
+    assert (
+        idx[
+            (
+                "gold_dq_latency_ms",
+                (
+                    ("dataset", "trades"),
+                    ("exchange", "kraken"),
+                    ("quantile", "p99"),
+                    ("symbol", "BTC-USD"),
+                ),
+            )
+        ]
+        == 12.0
+    )
     # clock worst-step parsed out of the detail JSON.
     clock = ("gold_dq_clock_worst_ms", (("exchange", "kraken"), ("symbol", "BTC-USD")))
     assert idx[clock] == 1234.5
     # venue-wide check (canonical_symbol None) -> empty symbol label, not a crash.
-    assert idx[("gold_dq_violations", (("check", "status"), ("exchange", "kraken"),
-                                       ("symbol", "")))] == 0
+    assert (
+        idx[("gold_dq_violations", (("check", "status"), ("exchange", "kraken"), ("symbol", "")))]
+        == 0
+    )
     expect = datetime(2026, 6, 19, tzinfo=UTC).timestamp()
     assert idx[("gold_scorecard_date_seconds", ())] == expect
 
@@ -124,7 +190,9 @@ def test_newest_per_dataset_across_layouts(tmp_path) -> None:
     _seed(fs, bucket, "scorecard/date=2026-06-28/part.parquet", 250.0)
 
     assert _newest_per_dataset(fs, bucket) == {
-        "bbo": 100.0, "status_events": 200.0, "scorecard": 250.0,
+        "bbo": 100.0,
+        "status_events": 200.0,
+        "scorecard": 250.0,
     }
 
 
@@ -148,15 +216,30 @@ def test_build_families_over_local_fs(tmp_path) -> None:
     fs = pafs.LocalFileSystem()
     lake, silver, gold = (str(tmp_path / b) for b in ("lake", "silver", "gold"))
 
-    write_object(fs, lake, f"book_deltas/exchange=kraken/symbol=BTC-USD/date={DATE}/part.parquet",
-                 pa.table({"x": [1]}))
+    write_object(
+        fs,
+        lake,
+        f"book_deltas/exchange=kraken/symbol=BTC-USD/date={DATE}/part.parquet",
+        pa.table({"x": [1]}),
+    )
     write_object(fs, gold, partition_key("scorecard", date=DATE), scorecard_table(SCORECARD_ROWS))
-    write_object(fs, gold, partition_key("basis_summary", date=DATE),
-                 pa.Table.from_pylist(BASIS_ROWS, schema=BASIS_SUMMARY_SCHEMA))
+    write_object(
+        fs,
+        gold,
+        partition_key("basis_summary", date=DATE),
+        pa.Table.from_pylist(BASIS_ROWS, schema=BASIS_SUMMARY_SCHEMA),
+    )
 
     idx = _index(build_families(fs, fs, lake, silver, gold, now_s=2_000_000_000.0))
-    assert idx[("gold_dq_violations", (("check", "sequence_gap"), ("exchange", "kraken"),
-                                       ("symbol", "BTC-USD")))] == 2
+    assert (
+        idx[
+            (
+                "gold_dq_violations",
+                (("check", "sequence_gap"), ("exchange", "kraken"), ("symbol", "BTC-USD")),
+            )
+        ]
+        == 2
+    )
     assert ("gold_basis_bps", (("base", "BTC"), ("stat", "mean"))) in idx
     # freshness present for the seeded bronze dataset, and a real positive age.
     assert idx[("lake_freshness_seconds", (("dataset", "book_deltas"), ("layer", "bronze")))] > 0
@@ -170,8 +253,9 @@ def test_build_families_freshness_from_markers(tmp_path) -> None:
     lake, silver, gold = (str(tmp_path / b) for b in ("lake", "silver", "gold"))
     write_object(fs, gold, partition_key("scorecard", date=DATE), scorecard_table(SCORECARD_ROWS))
     os.utime(f"{gold}/{partition_key('scorecard', date=DATE)}", (1_000.0, 1_000.0))
-    write_freshness_marker(fs, gold, "scorecard", date=DATE, row_count=4,
-                           written_at_epoch=1_999_000.0)
+    write_freshness_marker(
+        fs, gold, "scorecard", date=DATE, row_count=4, written_at_epoch=1_999_000.0
+    )
 
     idx = _index(build_families(fs, fs, lake, silver, gold, now_s=2_000_000.0))
     gold_fresh = ("lake_freshness_seconds", (("dataset", "scorecard"), ("layer", "gold")))
@@ -184,10 +268,10 @@ def test_audit_families_reports_marker_skew(tmp_path) -> None:
     key = partition_key("scorecard", date=DATE)
     write_object(fs, gold, key, scorecard_table(SCORECARD_ROWS))
     os.utime(f"{gold}/{key}", (1_000.0, 1_000.0))  # actual newest mtime
-    write_freshness_marker(fs, gold, "scorecard", date=DATE, row_count=4,
-                           written_at_epoch=1_030.0)  # marker 30s off the object
+    write_freshness_marker(
+        fs, gold, "scorecard", date=DATE, row_count=4, written_at_epoch=1_030.0
+    )  # marker 30s off the object
 
     idx = _index(audit_families(fs, silver, gold))
-    skew = ("lake_freshness_marker_skew_seconds",
-            (("dataset", "scorecard"), ("layer", "gold")))
+    skew = ("lake_freshness_marker_skew_seconds", (("dataset", "scorecard"), ("layer", "gold")))
     assert idx[skew] == 30.0
