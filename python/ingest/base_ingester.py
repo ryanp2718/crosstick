@@ -209,7 +209,7 @@ class BaseIngester(ABC):
         # bootstrap/resync, so any consumer warming up from the log would have
         # to replay an unbounded delta tail. Re-emitting the local book every
         # snapshot_interval_s bounds that tail to one interval - the keystone
-        # of the gateway's warm restart (D2) and of bounded replay seeks.
+        # of the gateway's warm restart and of bounded replay seeks.
         # None disables (book-less connections, e.g. the binance-futures
         # market-streams instance, have nothing to re-emit).
         self.snapshot_interval_s = snapshot_interval_s

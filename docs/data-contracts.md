@@ -10,9 +10,8 @@ cross-language map:
   `node/gateway/src/messages.ts`.
 - **Corpus format:** `python/analytics/corpus.py`.
 
-A divergence between the Python and Node mirrors is a bug. D5 in
-`ARCHITECTURE.md` tracks the missing cross-language oracle that would catch it
-mechanically.
+A divergence between the Python and Node mirrors is a bug. A cross-language
+oracle that would catch it mechanically is a known gap, not yet built.
 
 The log is the source of truth; bronze mirrors it verbatim, and every silver and
 gold table is a batch projection of bronze:
@@ -68,7 +67,7 @@ flowchart LR
   (never as a clock); pre-epoch records decode as `0`.
 - `NBBOMsg.local_ts_ns` and per-leg `leg_age_ms` are **stream time** (the max
   event-time across the gateway's consumed messages at compute, not wall
-  clock), so `md.nbbo.*` replays byte-for-byte (D1 in `ARCHITECTURE.md`). In
+  clock), so `md.nbbo.*` replays byte-for-byte (see ADR-0001). In
   live operation stream time tracks wall clock within consumer lag (ms).
 
 ## Retention
@@ -86,7 +85,7 @@ days** (matching `log_retention_ms`); verify with `mc ilm rule ls local/lake`.
 On the dev box this is generous (~200 GB free is months of headroom), and it
 deletes nothing until objects age past 30 days. The horizon is the
 raw-history-vs-disk tradeoff; the durable layer's real fix is off-box object
-storage with tiered lifecycle (`scale-out.md`), where the identical S3 lifecycle
+storage with tiered lifecycle, where the identical S3 lifecycle
 API applies unchanged.
 
 ## Payload encoding
@@ -94,7 +93,7 @@ API applies unchanged.
 - msgspec-tagged JSON; the tag field is `t` (`snap` / `delta` / `trade` /
   `bbo` / `spread` / `status` / `nbbo` / `liq` / `mark` / `oi`).
 - Prices and sizes are decimal **strings** end-to-end (no float drift);
-  convert at the boundary where math is needed (D3 in `ARCHITECTURE.md`).
+  convert at the boundary where math is needed.
 - Book levels are `[price, size]` string arrays (`BookLevel` is `array_like`).
 - Timestamps are epoch **nanoseconds** (`*_ts_ns`). They exceed 2^53, so
   Node's `JSON.parse` rounds them to ~200ns granularity (see the NOTE in
@@ -120,8 +119,8 @@ Status and gateway-derived records (bbo/nbbo) carry no headers.
 ## Bronze lake (materializer)
 
 The materializer (`python/materializer`) projects every `md.*` topic verbatim
-to Parquet on the `lake` bucket, the insurance layer of the medallion plan
-(`DESIGN_analytics.md`). Object paths are Hive-partitioned, canonical-resolved
+to Parquet on the `lake` bucket, the insurance layer of the medallion plan.
+Object paths are Hive-partitioned, canonical-resolved
 via `ops/instruments.yml`:
 
 | Dataset | Source topics | Path |
@@ -161,8 +160,7 @@ via `ops/instruments.yml`:
 ## Silver datasets
 
 `python -m silver.main <date>` reads bronze and writes the validated/reconstructed
-silver datasets (`DESIGN_analytics.md` Phase 2 data-quality slice + Phase 4 basis
-slice) to the `silver` bucket. Values are decoded once (`common.models.decode`) and books reconstructed
+silver datasets (the data-quality and basis slices) to the `silver` bucket. Values are decoded once (`common.models.decode`) and books reconstructed
 through the real `ingest.book.OrderBook`, the same engine as live ingest, so the
 facts agree with the gateway's live metrics by construction. Hive-partitioned,
 canonical-resolved; **one overwrite-keyed `part.parquet` per partition** (a layer
@@ -190,9 +188,9 @@ discipline as bronze's start-offset keys, but at date grain).
 - **`latency`** skips locally-generated records (`exchange_ts_ns == 0`:
   re-emitted snapshots, binance(-futures) snapshots, with no exchange clock behind
   them). Cross-venue `exchange_ts_ns` comparisons inherit the clock-domain caveat
-  (`ARCHITECTURE.md` D4). `bbo`/`nbbo` carry no headers and are validated live by
+  (ingest and gateway share one clock). `bbo`/`nbbo` carry no headers and are validated live by
   the gateway, so they are not re-checked here.
-- **`quotes`/`nbbo`** are the basis-slice additions (`DESIGN_analytics.md` Phase 4).
+- **`quotes`/`nbbo`** are the basis-slice additions.
   `quotes` is per-venue top-of-1 from the *same* OrderBook fold as `book_quality`
   (crossed/one-sided events skipped); `nbbo` is the per-canonical max-bid/min-ask
   across a canonical's venues (strict per-quote bucketing), evicting a venue's leg
@@ -235,7 +233,7 @@ two-sided NBBO. Two overwrite-keyed objects per date:
 | `basis_summary` | `basis_summary/date={d}/` | one base/day | `n_obs`, `basis_bps_mean`/`std`/`median`/`min`/`max`/`p1`/`p99`, `coverage_ns` |
 
 `basis_abs = usd_mid - usdt_mid`; `basis_bps = basis_abs / usd_mid * 1e4`. This is
-the first signal driven through the full research spine (`RESEARCH_thesis.md` §5);
+the first signal driven through the full research spine;
 the later ladder rungs (price-discovery, carry, OFI) reuse the same as-of join.
 
 ## Corpus format (replay harness)
@@ -254,7 +252,7 @@ Replay (`analytics/replay.py`) sends every record to **partition 0** of its
 original topic; the broker assigns fresh offsets `0..N-1`. Per-topic order is
 preserved exactly; **cross-topic order is not**, but the gateway no longer
 needs it imposed: a delta arriving before its stream's snapshot is buffered
-and drained in order (D2 in `ARCHITECTURE.md`). Replay determinism is asserted
+and drained in order (see ADR-0001). Replay determinism is asserted
 end-to-end in `analytics/tests/test_gateway_integration.py`: an adversarial
 all-deltas-first replay converges to the same end state, and the same replay
 run twice produces byte-identical `md.bbo.*` / `md.nbbo.*` streams.

@@ -839,7 +839,7 @@ async def test_base_emit_callback_does_not_cross_connections() -> None:
     )
 
 
-# ─── periodic snapshot re-emission (bounds the D2 warm-start delta tail) ───
+# ─── periodic snapshot re-emission (bounds the warm-start delta tail) ───
 
 
 def _book_snaps(producer: FakeProducer) -> list[dict]:

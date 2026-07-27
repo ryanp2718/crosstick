@@ -94,7 +94,7 @@ describe("routeMessage", () => {
     expect(r.nbboBroadcast).toBe(r.nbboPublish);
   });
 
-  it("stamps NBBO from the caller's stream time, not wall clock (D1)", () => {
+  it("stamps NBBO from the caller's stream time, not wall clock", () => {
     const agg = new Aggregator();
     const nbboAgg = new NBBOAggregator();
     const tsNs = 1_700_000_000_000_000_000;

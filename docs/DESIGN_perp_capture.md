@@ -8,8 +8,8 @@ tag `oi`), perp L2 book + aggTrade tape (slice 3), all in
 ## Goal
 
 Start the clocks on perpetual-futures data that cannot be backfilled later.
-`RESEARCH_thesis.md` §6 established the ranking: with the spot materializer
-shipped (DESIGN_analytics.md Phases 0-1), perp *microstructure* is the only
+The unbackfillability ranking (below) drives the slices: with the spot materializer
+shipped, perp *microstructure* is the only
 data still decaying daily. Funding settlements and mark/index history are
 REST-backfillable, so they justify zero urgency on their own; they ride along
 here only because the same WS connection delivers them for free.
@@ -116,7 +116,7 @@ connection re-bootstraps from a fresh REST snapshot like any resync).
   price, `X` status, `z` filled qty, `T` trade time (ms).
   **Sampled, not a tape:** only the *largest* liquidation per symbol per
   1000ms is pushed. Research must treat this as a lower bound / sampling of
-  liquidation flow, never a complete record (RESEARCH_thesis.md §4).
+  liquidation flow, never a complete record.
 - `<symbol>@markPrice@1s`: `e=markPriceUpdate`: `p` mark, `i` index, `P`
   estimated settle, `r` funding rate, `T` next funding time (ms), `E` event
   time (ms). 1s cadence chosen (vs 3s default): trivial volume, and it doubles

@@ -3,7 +3,7 @@
 Pure (no I/O): everything here operates on an iterable of `CorpusRecord`s and a
 `CanonicalMap`, so the *same* code runs in CI against the golden corpus and in
 the batch job over the lake (silver/main.py). This is the validated/reconstructed
-slice of silver (`DESIGN_analytics.md`): the remaining Phase-4 silver products
+slice of silver: the remaining Phase-4 silver products
 (full-depth cadence book-state, as-of-joined enriched trades, the full 3-way
 oracle, checksum verification) extend the same layer.
 
@@ -482,8 +482,8 @@ def _status_transitions(exchange: str, recs: list[CorpusRecord]) -> list[dict]:
     return rows
 
 
-# Typed silver output contract. DECIMAL(38,18) is the portable canonical scale
-# (DESIGN_analytics.md); ns timestamps and offsets are int64.
+# Typed silver output contract. DECIMAL(38,18) is the portable canonical scale;
+# ns timestamps and offsets are int64.
 _PRICE = pa.decimal128(38, 18)
 
 BOOK_QUALITY_SCHEMA = pa.schema(
