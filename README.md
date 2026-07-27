@@ -27,34 +27,56 @@ docker compose -f demo/docker-compose.yml up --build
 docker compose -f demo/docker-compose.yml down
 ```
 
-A one-shot replay service seeds an ephemeral Redpanda with the topics from
-`demo/corpus.jsonl.gz` (a ~5-minute verbatim capture of the live `md.*` feed,
-shipped as a short test fixture), waits for the gateway's warm-start plan, then
-replays the corpus at its original inter-arrival times. The same gateway image
-that serves production derives BBO and NBBO live off the replay, so the
-dashboard renders exactly like a live market; the captured window includes real
-cross-venue dislocations, which show up red in the spread column. When the
-corpus runs out the dashboard reports the feed stall, and `down` discards all
-broker state, so every `up` starts fresh. The demo project is fully isolated
-from the main `docker-compose.yml` stack (own project name, own broker, no
-shared volumes).
+The demo plays back a real five-minute recording of the live market feed
+(saved in `demo/corpus.jsonl.gz`) as if it were arriving right now, keeping the
+original timing between messages. The exact same software that runs in
+production reads this playback and works out, on the fly, each exchange's best
+price and the single best price across all three exchanges, so the dashboard
+looks and behaves just like a live market. The recording captures real moments
+where the exchanges disagreed on price, which show up in red in the spread
+column. When the recording runs out, the dashboard shows that the feed has
+stalled, and shutting the demo down wipes everything, so the next start is
+completely fresh. The demo also runs in full isolation from the main system, so
+it can't touch or depend on anything else.
 
-The determinism badge at the top of this README is the same replay machinery
-under CI: a corpus replayed twice through fresh broker and gateway state must
-produce byte-identical `md.bbo.*` / `md.nbbo.*` streams.
+The determinism badge at the top of this README runs this same playback
+automatically on every code change: playing the recording twice, each time from
+a clean slate, has to produce identical results down to the last byte. That is
+the proof that the system is fully reproducible.
 
 ## Architecture
 
 ```mermaid
 flowchart TD
-    CB[Coinbase] --> ING
-    BN["Binance (+ perps)"] --> ING
-    KR[Kraken] --> ING
-    ING["Python ingesters<br/>L2 reconstruction · CRC32 · gap detection and resync"] --> RP
-    RP["Redpanda: replayable source-of-truth log (Kafka API)<br/>md.book · md.trades · md.bbo · md.nbbo · md.status"] --> GW & MAT
-    GW["Node/TS gateway<br/>live BBO · cross-exchange NBBO · per-client backpressure"] --> DASH[Browser dashboard]
-    MAT["Materializer (streaming)<br/>bronze Parquet on MinIO"] --> SG["silver + gold (batch, per UTC date)<br/>DQ facts · as-of NBBO · basis mart · scorecard"]
-    GW -.-> OBS["Prometheus · Grafana (ops)"]
+    subgraph ingest["Ingest · Python"]
+        CB[Coinbase]
+        BN["Binance (+ perps)"]
+        KR[Kraken]
+        ING["ingesters<br/>L2 reconstruction · CRC32 · gap detect + resync"]
+        CB --> ING
+        BN --> ING
+        KR --> ING
+    end
+    subgraph transport["Transport"]
+        RP["Redpanda: replayable source-of-truth log (Kafka API)<br/>md.book · md.trades · md.bbo · md.nbbo · md.status"]
+    end
+    subgraph serving["Serving · Node/TS"]
+        GW["gateway<br/>live BBO · cross-exchange NBBO · per-client backpressure"]
+        DASH[Browser dashboard]
+        GW --> DASH
+    end
+    subgraph lake["Lake · Python"]
+        MAT["materializer (streaming)<br/>bronze Parquet on MinIO"]
+        SG["silver + gold (batch, per UTC date)<br/>DQ facts · as-of NBBO · basis mart · scorecard"]
+        MAT --> SG
+    end
+    subgraph obs["Observability"]
+        OBS["Prometheus · Grafana"]
+    end
+    ING --> RP
+    RP --> GW
+    RP --> MAT
+    GW -.-> OBS
     MAT -.-> OBS
 ```
 
@@ -207,6 +229,9 @@ of this README reflects their current state.
 
 The *why* behind the architecture lives in [`docs/`](docs/):
 
+- [`DESIGN_orderbook.md`](docs/DESIGN_orderbook.md): order-book reconstruction on
+  both paths, the ingester state machine, gap detection and resync, the gateway's
+  order-insensitive rebuild and crossed-book heal, and snapshot-on-connect.
 - [`DESIGN_nbbo.md`](docs/DESIGN_nbbo.md): cross-exchange NBBO, with strict quote
   bucketing, tie-breaks, per-leg staleness, and connection-state venue eviction.
 - [`DESIGN_perp_capture.md`](docs/DESIGN_perp_capture.md): perp capture on Binance
