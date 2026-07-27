@@ -9,8 +9,8 @@ mart reads *silver*, never bronze.
   - `basis`         : the event-grain series (the research artifact).
   - `basis_summary` : the daily rollup per base (the queryable mart row).
 
-The basis is the first signal driven through the full spine (`RESEARCH_thesis.md`
-§5/§7.3); it is deliberately a near-trivial transform so the engineering effort
+The basis is the first signal driven through the full spine; it is deliberately
+a near-trivial transform so the engineering effort
 lands on the reusable spine (as-of join, mart conventions, PIT), not the signal.
 """
 

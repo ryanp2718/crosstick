@@ -33,7 +33,7 @@ const ONSET_RING = 250;
 // Returns a BBOMsg only when top-of-book actually changed (dedup), so md.bbo
 // volume tracks L1 changes rather than every depth update.
 //
-// Order-insensitive across the snapshot/delta topic pair (D2): a delta that
+// Order-insensitive across the snapshot/delta topic pair: a delta that
 // arrives before its stream's snapshot is buffered, not dropped, and drained
 // in order once the snapshot lands (the monotonic sequence guard discards the
 // ones the snapshot already covers). Cross-topic consumption order - replay,

@@ -9,7 +9,7 @@ import type { BBOMsg, NBBOLeg, NBBOMsg } from "./messages.js";
 // nowMs is always caller-supplied (no Date.now() default): the server passes
 // stream time - the max event-time across consumed messages - so every NBBO
 // timestamp and leg age is a pure function of the log and replays byte-for-
-// byte (D1 in ARCHITECTURE.md).
+// byte (see ADR-0001).
 //
 // Semantics:
 //   - leg storage: latest BBOMsg per (canonical_id, exchange); a leg never

@@ -107,8 +107,8 @@ explicit `down` or after `NBBO_LIVENESS_TIMEOUT_MS` (default 5s) with no
 heartbeat, which covers a crash/kill that emits no `down`. The missed-heartbeat
 timeout is measured in **log time** (the gateway's stream clock vs. the last
 heartbeat's `ts_ns`), evaluated as messages are consumed (never wall clock), so
-a replayed log reproduces the same evictions at the same points (D1 in
-`ARCHITECTURE.md`). This is driven by real connection state, not a time-threshold
+a replayed log reproduces the same evictions at the same points (see
+ADR-0001). This is driven by real connection state, not a time-threshold
 on quotes, so it does not reintroduce the arbitrary gating rejected above. Evicted
 legs stay in the aggregator and rejoin automatically when the venue comes back.
 Consumers still get `leg_age_ms` for their own finer-grained freshness calls.
@@ -177,7 +177,7 @@ interface NBBOMsg {
 
 `local_ts_ns` and `leg_age_ms` are **stream time**: the max event-time across
 the gateway's consumed messages at compute, not wall clock, so `md.nbbo.*` is a
-pure function of the log and replays byte-for-byte (D1). In live operation
+pure function of the log and replays byte-for-byte (see ADR-0001). In live operation
 stream time tracks wall clock within consumer lag (milliseconds).
 
 ### Venue-health status (v1.1)

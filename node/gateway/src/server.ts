@@ -74,7 +74,7 @@ const TOPIC_PATTERNS = [/^md\.book\..+/, /^md\.trades\..+/, /^md\.status\..+/];
 // A venue is evicted from NBBO when the stream clock moves more than this far
 // past its last md.status heartbeat ts_ns (covers an ingester crash/kill that
 // sends no graceful "down"). Measured in log time, not wall clock, so eviction
-// replays deterministically (D1). Ingesters heartbeat every 2s.
+// replays deterministically (see ADR-0001). Ingesters heartbeat every 2s.
 const LIVENESS_TIMEOUT_MS = Number(process.env.NBBO_LIVENESS_TIMEOUT_MS ?? 5000);
 // A crossed NBBO only increments gateway_nbbo_crossed_total when both winning
 // legs are no older than this (stream time). Older than this and the cross is a
@@ -88,7 +88,7 @@ const NBBO_CROSS_MAX_LEG_AGE_MS = Number(process.env.NBBO_CROSS_MAX_LEG_AGE_MS ?
 // the raw counter stays noisy by design; 10 bps sits ~2x above that benign
 // envelope while still catching a real tens-of-bps inversion.
 const NBBO_CROSS_MIN_BPS = Number(process.env.NBBO_CROSS_MIN_BPS ?? 10);
-// Warm-start lookback (D2b): how far back to search for a book snapshot on
+// Warm-start lookback: how far back to search for a book snapshot on
 // restart. Must exceed the ingesters' snapshot_interval_s (300s) so a healthy
 // stream always has one inside the window; 2x gives slack for a venue that
 // missed an interval. See src/warmstart.ts for the per-topic-class seek rules.
@@ -149,7 +149,7 @@ async function main(): Promise<void> {
 
   // Stream clock: max event-time (ns→ms) across consumed messages. Every NBBO
   // timestamp, leg age, and liveness-eviction decision derives from it instead
-  // of Date.now(), so md.nbbo.* is a pure function of the log (D1). Tradeoff:
+  // of Date.now(), so md.nbbo.* is a pure function of the log (see ADR-0001). Tradeoff:
   // if ALL ingesters go silent the clock freezes and nothing is evicted - but
   // then nothing is emitted either; per-leg ages are the consumer's staleness
   // signal, and ingester liveness is alerted on independently via Prometheus.
@@ -391,19 +391,19 @@ async function main(): Promise<void> {
     },
   });
 
-  // Warm-start seeks (D2b): re-derive in-memory state from the log instead of
+  // Warm-start seeks: re-derive in-memory state from the log instead of
   // resuming at committed group offsets with empty books. Must run after
   // consumer.run() - kafkajs only accepts seek() on a running consumer. A few
   // messages may consume from the old position before the seeks land; the
-  // aggregator's order-insensitivity (D2a) makes that prefix harmless.
+  // aggregator's order-insensitivity makes that prefix harmless.
   const warmTopics = (await admin.listTopics()).filter((t) =>
     TOPIC_PATTERNS.some((re) => re.test(t)),
   );
   const seeks = await planWarmStart(admin, warmTopics, Date.now(), WARMSTART_LOOKBACK_MS);
   for (const s of seeks) consumer.seek(s);
   // Arm the gate only after the seeks land (no await between): the pre-seek
-  // prefix consumed from the committed edge is the existing harmless replay
-  // (D2a), but its offsets sit at/after the backlog targets and would open the
+  // prefix consumed from the committed edge is the existing harmless replay,
+  // but its offsets sit at/after the backlog targets and would open the
   // gate spuriously - so observe() must run only against the post-seek backlog.
   gate = new DrainGate(seeks);
   warmstartPlanned.set(1);

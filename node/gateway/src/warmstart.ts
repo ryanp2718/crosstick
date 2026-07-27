@@ -1,4 +1,4 @@
-// Warm-start seek planning (D2b in ARCHITECTURE.md).
+// Warm-start seek planning.
 //
 // The gateway's books and NBBO state live nowhere but memory. On restart,
 // committed group offsets resume at the live edge, so every book would sit
@@ -11,8 +11,8 @@
 //   *.deltas    - first offset at/after (now - lookback). A snapshot inside
 //                 the lookback is by definition newer than the cutoff, so this
 //                 covers every delta past it; the surplus prefix is absorbed
-//                 by the aggregator's pre-snapshot buffering + sequence guard
-//                 (D2a). No snapshot inside the lookback degrades to waiting
+//                 by the aggregator's pre-snapshot buffering + sequence guard.
+//                 No snapshot inside the lookback degrades to waiting
 //                 for the next periodic one, exactly like a cold start.
 //   md.trades.* - live edge; trades are events, not state to rebuild.
 //   md.status.* - first offset at/after (now - lookback), same as deltas:

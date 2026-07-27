@@ -88,7 +88,7 @@ class CanonicalMap:
     instrument, not each venue's native spelling. Unmapped pairs fall back to
     the normalized topic symbol (warn once) - bronze never drops data over
     missing reference data; curated-vs-discovered symbology at 50+ is
-    DESIGN_analytics.md open concern #1.
+    a known open concern.
     """
 
     def __init__(

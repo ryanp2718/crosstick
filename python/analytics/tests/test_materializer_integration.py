@@ -10,7 +10,7 @@ materializer against an ephemeral MinIO, and asserts:
   * crash-recovery exactly-once: simulate "PUT landed, commit lost" by
     rewinding the group's committed offset for the busiest topic and
     restarting - the rerun rewrites the *same* start-offset keys, so the
-    row count is unchanged (the DESIGN_analytics.md Phase 1 property test).
+    row count is unchanged (the bronze exactly-once property test).
 
 Requires Docker; excluded from the default suite. Run with:
 

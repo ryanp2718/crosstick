@@ -8,16 +8,16 @@ venue) - closing the integration gap end-to-end across the language seam.
 Three tests:
 
   1. **In-order replay** → exact golden BBO sequences + NBBO end-state. Single
-     shot: the aggregator buffers pre-snapshot deltas (D2a), so the pre-D2
+     shot: the aggregator buffers pre-snapshot deltas, so the old
      two-phase snapshot-then-delta barrier is gone.
   2. **Adversarial order** - every delta and trade replayed BEFORE any
      snapshot or status - converges to the same end state, with each stream's
      buffered deltas drained and coalesced into a single BBO. End-to-end proof
-     of the D2a order-insensitivity through a real broker and gateway.
+     of the order-insensitivity through a real broker and gateway.
   3. **Byte-identical determinism** - the same paced replay run twice against
      fresh state must produce byte-identical md.bbo.* and md.nbbo.* streams.
-     The Phase 3 acceptance test (DESIGN_analytics.md): any wall-clock leakage
-     into NBBO timestamps, leg ages, or eviction (D1) differs across runs and
+     The byte-identical replay guarantee (see ADR-0001): any wall-clock leakage
+     into NBBO timestamps, leg ages, or eviction differs across runs and
      fails this.
 
 Harness mechanics worth knowing:
@@ -27,7 +27,7 @@ Harness mechanics worth knowing:
     no cross-topic consumption order, so pacing is what pins the gateway's
     merge order to replay order - making the exact-sequence and byte-identity
     assertions deterministic rather than racy.
-  * Replay starts only after the gateway logs its warm-start seek plan (D2b).
+  * Replay starts only after the gateway logs its warm-start seek plan.
     Corpus timestamps are years old, so a record produced before the
     live-edge seek executes would be skipped by it.
   * md.* topic names are fixed by contract, so every gateway session deletes
@@ -35,7 +35,7 @@ Harness mechanics worth knowing:
     execution order within the shared Redpanda container.
   * The corpus's synthetic md.bbo records are excluded from replay: the
     gateway derives BBO from books, it does not consume md.bbo. The binance
-    "down" status IS replayed (pre-D2a it was excluded as order-racy): binance
+    "down" status IS replayed (previously excluded as order-racy): binance
     holds the only BTC-USDT leg, so evicting it emits nothing and the
     compacted NBBO end-state stays the planted crossed book.
 
@@ -169,7 +169,7 @@ def _start_gateway(bootstrap: str, group_id: str, ws_port: int, log_path: Path):
     node = shutil.which("node")
     assert node is not None
     # No NBBO_LIVENESS_TIMEOUT_MS override: eviction is measured in log time
-    # (D1), and the corpus spans ~20ms of stream time - far under the 5s
+    # and the corpus spans ~20ms of stream time - far under the 5s
     # default - so wall-clock pacing delays can't evict anything spuriously.
     env = {
         **os.environ,
@@ -368,7 +368,7 @@ async def test_gateway_derives_bbo_and_nbbo_from_replay(
 async def test_gateway_converges_from_adversarial_replay_order(
     brokers: str, gateway_built: Path, golden_records: list[CorpusRecord], tmp_path: Path
 ) -> None:
-    """D2a end-to-end: every delta and trade arrives before any snapshot or
+    """Order-insensitivity end-to-end: every delta and trade arrives before any snapshot or
     status. The gateway buffers the orphan deltas, drains them when each
     snapshot lands, and must converge to the same end state as in-order."""
     records = [r for r in golden_records if _is_gateway_input(r)]
@@ -396,9 +396,9 @@ async def test_gateway_converges_from_adversarial_replay_order(
 async def test_replayed_nbbo_is_byte_identical_across_runs(
     brokers: str, gateway_built: Path, golden_records: list[CorpusRecord], tmp_path: Path
 ) -> None:
-    """Phase 3 acceptance (DESIGN_analytics.md): the same replay run twice
+    """Byte-identical replay guarantee (see ADR-0001): the same replay run twice
     against fresh state produces byte-identical derived streams. NBBO
-    timestamps, leg ages, and eviction all derive from the stream clock (D1) -
+    timestamps, leg ages, and eviction all derive from the stream clock -
     any Date.now() leakage would differ between runs and fail here."""
     records = [r for r in golden_records if _is_gateway_input(r)]
     runs: list[dict[str, list[tuple[bytes, bytes]]]] = []

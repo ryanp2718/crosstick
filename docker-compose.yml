@@ -10,8 +10,7 @@ name: crosstick
 # reboot the daemon restarts every `unless-stopped` container at once, ignoring it.
 # Redpanda's --memory cap (below) is what keeps it from reserving most of the VM
 # and leaving the RAM-tight box with no headroom for a new container to start; the
-# reboot herd and the measured budget are analyzed in docs/scale-out.md
-# "Local stack startup".
+# reboot herd and the measured memory budget are a known single-box constraint.
 
 services:
   # ─── source of truth ──────────────────────────────────────────────────────
@@ -30,7 +29,7 @@ services:
       - --schema-registry-addr=internal://0.0.0.0:8081,external://0.0.0.0:18081
       - --mode=dev-container
       - --smp=1
-      # Cap Seastar's reservation; without it Redpanda grabs most of the VM (scale-out.md).
+      # Cap Seastar's reservation; without it Redpanda grabs most of the VM.
       - --memory=1536M
       - --default-log-level=warn
     ports:
@@ -129,7 +128,7 @@ services:
     # version fallback. Non-blocking (|| WARN to stderr) so a retention hiccup never
     # fails minio-init (materializer waits on it) yet stays visible in the logs;
     # retention is non-critical here (~200 GB free). Verify: mc ilm rule ls local/lake.
-    # Durable-layer's real fix is off-box object storage (docs/scale-out.md); the
+    # Durable-layer's real fix is off-box object storage; the
     # same S3 lifecycle API applies there unchanged.
     entrypoint: >
       /bin/sh -c "
@@ -254,7 +253,7 @@ services:
       INSTRUMENTS_FILE: /app/ops/instruments.yml
       METRICS_PORT: "9110"
       # Size-dominant flush: the interval is the bronze-lag bound for cold
-      # topics, not the primary trigger (DESIGN_analytics.md → Partitioning).
+      # topics, not the primary trigger.
       FLUSH_INTERVAL_SEC: "900"
       FLUSH_BYTES: "16777216"   # 16 MiB
     volumes:

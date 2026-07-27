@@ -100,7 +100,7 @@ describe("Aggregator", () => {
     expect(a.snapshot()).toEqual([]);
   });
 
-  describe("pre-snapshot delta buffering (D2)", () => {
+  describe("pre-snapshot delta buffering", () => {
     it("drains buffered deltas on snapshot arrival, in order", () => {
       const a = new Aggregator();
       // Deltas arrive first (cross-topic race / unordered replay).
