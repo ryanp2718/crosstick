@@ -22,7 +22,10 @@ from research.features import (
     _book_features,
     _flow_features,
     _grid,
+    _liq_features,
+    _mark_features,
     _ofi,
+    _oi_features,
     _quote_legs,
     _returns,
     build_features,
@@ -320,3 +323,148 @@ def test_a_venue_without_depth_loads_beside_one_with_it() -> None:
     without = _book_features(df.filter(pl.col("exchange") == "old"), "v")
     assert without["v_depth_imb_10"][0] is None
     assert without["v_bid_span_bps"][0] is None
+
+
+# ── perp microstructure ─────────────────────────────────────────────────────
+
+
+def _mark(rows: list[tuple[int, float, float, float, int]]) -> pl.DataFrame:
+    return pl.DataFrame(
+        rows,
+        schema=["ts_ns", "mark_price", "index_price", "funding_rate", "next_funding_ts_ns"],
+        orient="row",
+    )
+
+
+def test_basis_is_the_premium_to_the_index() -> None:
+    mark = _mark([(0, 100.10, 100.00, 0.0001, 10 * BAR_NS)])
+    got = _mark_features(mark, _grid(0, 0), "p")
+    assert got["p_basis_bps"][0] == pytest.approx(10.0)  # 0.10 on 100 == 10bps
+    assert got["p_funding_rate"][0] == pytest.approx(0.0001)
+
+
+def test_a_zero_index_price_is_unknown_basis_not_infinity() -> None:
+    """A venue publishing a zero index must not poison the column with inf."""
+    mark = _mark([(0, 100.0, 0.0, 0.0001, 10 * BAR_NS)])
+    assert _mark_features(mark, _grid(0, 0), "p")["p_basis_bps"][0] is None
+
+
+def test_funding_countdown_runs_on_the_grid_clock() -> None:
+    """Time to funding decays between mark ticks. Carrying the tick-time value forward
+    would freeze the countdown at whatever it was when the venue last spoke."""
+    mark = _mark([(0, 100.0, 100.0, 0.0, 10 * BAR_NS)])  # one tick, then silence
+    got = _mark_features(mark, _grid(0, 3 * BAR_NS), "p").sort("ts_ns")
+    assert got["p_funding_in_s"].to_list() == [10.0, 9.0, 8.0, 7.0]
+    assert got["p_mark_age_ms"].to_list() == [0.0, 1000.0, 2000.0, 3000.0]
+
+
+def test_open_interest_yields_change_not_level() -> None:
+    """The level is a non-stationary stock and must not survive into the frame."""
+    oi = pl.DataFrame({"ts_ns": [0, BAR_NS], "open_interest": [1000.0, 1010.0]})
+    got = _oi_features(oi, _grid(0, BAR_NS), "p").sort("ts_ns")
+    assert "_oi_level" not in got.columns
+    assert not [c for c in got.columns if c == "p_oi"]
+    # 1000 -> 1010 over one bar is +100bps; the 5-bar window has no history yet.
+    assert got["p_oi_chg_bps_5"].to_list() == [None, None]
+
+
+def test_a_long_liquidation_signs_negative() -> None:
+    """`side` is the forced order's own side: an ASK is a long being sold out, which
+    pushes price down and must sign like aggressive selling."""
+    liq = pl.DataFrame(
+        {
+            "ts_ns": [1, 2],
+            "side": ["ask", "bid"],
+            "filled_size": [3.0, 1.0],
+        }
+    )
+    got = _liq_features(liq, _grid(0, BAR_NS), "p").sort("ts_ns")
+    assert got["p_liq_flow"].to_list() == [0.0, -2.0]  # -3 long + 1 short, one bar
+    assert got["p_n_liqs"].to_list() == [0, 2]
+
+
+def test_a_bar_with_no_liquidation_is_a_real_zero() -> None:
+    """Most bars hold no forced flow. That is measured absence, not missing data - a
+    null would make the model impute a cascade where there was none."""
+    liq = pl.DataFrame({"ts_ns": [1], "side": ["ask"], "filled_size": [3.0]})
+    got = _liq_features(liq, _grid(0, 3 * BAR_NS), "p").sort("ts_ns")
+    assert got["p_liq_flow"].to_list() == [0.0, -3.0, 0.0, 0.0]
+
+
+def test_a_perp_leg_joins_without_disturbing_the_grid() -> None:
+    """End to end: the perp tape must widen the frame, never lengthen it.
+
+    Each perp stream runs on its own clock and is joined separately, so a duplicate key
+    in any one of them would multiply rows - and a matrix that quietly grew rows would
+    still train, still score, and be wrong about how much data it had.
+    """
+    bars = [0, BAR_NS, 2 * BAR_NS, 3 * BAR_NS]
+    spot = pl.DataFrame(
+        {
+            "ts_ns": bars,
+            "exchange": ["coinbase"] * 4,
+            "best_bid": [100.0, 100.1, 100.2, 100.3],
+            "best_ask": [100.02, 100.12, 100.22, 100.32],
+            "bid_sz": [1.0] * 4,
+            "ask_sz": [1.0] * 4,
+        }
+    )
+    perp = spot.with_columns(pl.lit("binance-futures").alias("exchange"))
+    nbbo = pl.DataFrame(
+        {
+            "ts_ns": bars,
+            "best_bid": [100.0, 100.1, 100.2, 100.3],
+            "best_ask": [100.02, 100.12, 100.22, 100.32],
+            "n_venues": [2] * 4,
+        }
+    )
+    perp_only = {"BTC-USDT-PERP"}
+    mark = pl.DataFrame(
+        {
+            "ts_ns": bars,
+            "exchange": ["binance-futures"] * 4,
+            "mark_price": [100.01, 100.11, 100.21, 100.31],
+            "index_price": [100.0, 100.1, 100.2, 100.3],
+            "funding_rate": [0.0001] * 4,
+            "next_funding_ts_ns": [10 * BAR_NS] * 4,
+        }
+    )
+    oi = pl.DataFrame(
+        {"ts_ns": bars, "exchange": ["binance-futures"] * 4, "open_interest": [10.0] * 4}
+    )
+    liq = pl.DataFrame(
+        {"ts_ns": [1], "exchange": ["binance-futures"], "side": ["ask"], "filled_size": [2.0]}
+    )
+
+    def _for_perp(df):
+        return lambda _fs, _bucket, _date, symbol: df if symbol in perp_only else None
+
+    with (
+        mock.patch(
+            "research.features.load_quotes",
+            side_effect=lambda _f, _b, _d, s: perp if s in perp_only else spot,
+        ),
+        mock.patch("research.features.load_nbbo", return_value=nbbo),
+        mock.patch("research.features.load_trades", return_value=None),
+        mock.patch("research.features.load_mark_price", side_effect=_for_perp(mark)),
+        mock.patch("research.features.load_open_interest", side_effect=_for_perp(oi)),
+        mock.patch("research.features.load_liquidations", side_effect=_for_perp(liq)),
+    ):
+        got = build_features(None, "silver", "2026-06-30", "BTC-USD", ("BTC-USDT-PERP",))
+
+    assert got is not None
+    assert got.height == len(bars)  # widened, not lengthened
+    assert got["ts_ns"].n_unique() == len(bars)
+    for col in (
+        "binance_futures_basis_bps",
+        "binance_futures_funding_rate",
+        "binance_futures_funding_in_s",
+        "binance_futures_oi_chg_bps_5",
+        "binance_futures_liq_flow",
+        "binance_futures_mark_age_ms",
+        "binance_futures_oi_age_ms",
+    ):
+        assert col in got.columns, col
+    # the spot venue publishes no perp tape, so it gets no perp columns at all
+    assert not [c for c in got.columns if c.startswith("coinbase_basis")]
+    assert got["binance_futures_basis_bps"][0] == pytest.approx(1.0)  # 0.01 on 100 == 1bps

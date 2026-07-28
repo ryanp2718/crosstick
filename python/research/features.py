@@ -16,6 +16,12 @@ Two silver facts make this honest rather than approximate:
   - `trades.side` is the taker direction as the venue reported it, so order-flow sign
     is measured, not inferred by a Lee-Ready tick rule.
 
+A derivatives venue also contributes perp microstructure - basis to the index, funding,
+open-interest change and forced-liquidation flow - on the same grid and the same PIT
+rules. Those streams run on their own much slower clocks (open interest is a 10s poll),
+so they carry their own `_age_ms` columns and `model.clean` holds them to a separate
+tolerance; only a venue's book may claim the bare `{venue}_age_ms` name.
+
 Staleness is explicit: `{venue}_age_ms` is how old the book was at `t`, and callers
 drop rows past a tolerance rather than silently modelling a flat-lined quote (Kraken
 runs ~10-minute quote gaps in this capture).
@@ -45,7 +51,7 @@ RETURN_WINDOWS = (1, 5, 30, 300)
 # Forward horizons (in bars) the target is computed at.
 HORIZONS = (1, 5, 30)
 # Silver datasets a feature matrix is derived from (the cache keys on their mtimes).
-SOURCE_DATASETS = ("quotes", "nbbo", "trades")
+SOURCE_DATASETS = ("quotes", "nbbo", "trades", "mark_price", "open_interest", "liquidations")
 # Depth rungs to build imbalance from; mirrors silver.dq.DEPTH_LEVELS. Dates whose
 # silver predates the depth columns simply produce nulls (see _depth_features).
 DEPTH_RUNGS = (5, 10)
@@ -112,6 +118,31 @@ def load_trades(fs: pafs.FileSystem, bucket: str, date: str, symbol: str) -> pl.
 
 def load_nbbo(fs: pafs.FileSystem, bucket: str, date: str, symbol: str) -> pl.DataFrame | None:
     df = _to_polars(_read_symbol(fs, bucket, "nbbo", date, symbol), ("best_bid", "best_ask"))
+    return None if df is None else df.sort("ts_ns")
+
+
+MARK_DECIMALS = ("mark_price", "index_price", "est_settle_price", "funding_rate")
+
+
+def load_mark_price(
+    fs: pafs.FileSystem, bucket: str, date: str, symbol: str
+) -> pl.DataFrame | None:
+    df = _to_polars(_read_symbol(fs, bucket, "mark_price", date, symbol), MARK_DECIMALS)
+    return None if df is None else df.sort("ts_ns")
+
+
+def load_open_interest(
+    fs: pafs.FileSystem, bucket: str, date: str, symbol: str
+) -> pl.DataFrame | None:
+    df = _to_polars(_read_symbol(fs, bucket, "open_interest", date, symbol), ("open_interest",))
+    return None if df is None else df.sort("ts_ns")
+
+
+def load_liquidations(
+    fs: pafs.FileSystem, bucket: str, date: str, symbol: str
+) -> pl.DataFrame | None:
+    decimals = ("price", "avg_price", "orig_size", "filled_size")
+    df = _to_polars(_read_symbol(fs, bucket, "liquidations", date, symbol), decimals)
     return None if df is None else df.sort("ts_ns")
 
 
@@ -248,16 +279,145 @@ def _flow_features(trades: pl.DataFrame, grid: pl.DataFrame, prefix: str) -> pl.
     return out.with_columns(rolls).drop("_notional")
 
 
-def _align(grid: pl.DataFrame, series: pl.DataFrame, prefix: str) -> pl.DataFrame:
+def _mark_features(mark: pl.DataFrame, grid: pl.DataFrame, prefix: str) -> pl.DataFrame:
+    """Perp basis and funding state, as-of the grid.
+
+    `basis_bps` is the perp's premium to the index it settles against. It is the
+    cleanest read on directional pressure in a perpetual: the contract has no expiry to
+    pull it back, so leveraged demand shows up as the mark drifting off the index and is
+    paid for through funding rather than arbitraged away instantly.
+
+    `funding_in_s` is computed on the grid clock rather than at the mark tick, because
+    time to the next funding stamp decays continuously between ticks - carrying a
+    tick-time value forward would freeze a countdown.
+    """
+    index = pl.col("index_price")
+    series = mark.select(
+        pl.col("ts_ns"),
+        pl.when(index > 0)
+        .then((pl.col("mark_price") - index) / index * 1e4)
+        .alias(f"{prefix}_basis_bps"),
+        pl.col("funding_rate").alias(f"{prefix}_funding_rate"),
+        pl.col("next_funding_ts_ns"),
+        pl.col("ts_ns").alias(f"{prefix}_mark_ts"),
+    )
+    out = _asof(grid, series, f"{prefix}_mark_ts", f"{prefix}_mark_age_ms")
+    basis = pl.col(f"{prefix}_basis_bps")
+    return out.with_columns(
+        ((pl.col("next_funding_ts_ns") - pl.col("ts_ns")) / NS_PER_S).alias(
+            f"{prefix}_funding_in_s"
+        ),
+        *[(basis - basis.shift(w)).alias(f"{prefix}_basis_chg_{w}") for w in FLOW_WINDOWS],
+    ).drop("next_funding_ts_ns")
+
+
+def _oi_features(oi: pl.DataFrame, grid: pl.DataFrame, prefix: str) -> pl.DataFrame:
+    """Open-interest *changes*, never the level.
+
+    The level is a non-stationary stock that a tree would happily memorise; the flow is
+    the microstructure signal. Rising OI into a rising price is new leveraged longs
+    opening, whereas falling OI into the same move is shorts closing out - the same
+    price path with opposite implications for what happens next.
+    """
+    series = oi.select(
+        pl.col("ts_ns"),
+        pl.col("open_interest").alias("_oi_level"),
+        pl.col("ts_ns").alias(f"{prefix}_oi_ts"),
+    )
+    out = _asof(grid, series, f"{prefix}_oi_ts", f"{prefix}_oi_age_ms")
+    level = pl.col("_oi_level")
+    return out.with_columns(
+        *[
+            pl.when(level.shift(w) > 0)
+            .then((level / level.shift(w) - 1) * 1e4)
+            .alias(f"{prefix}_oi_chg_bps_{w}")
+            for w in FLOW_WINDOWS
+        ]
+    ).drop("_oi_level")
+
+
+def _liq_features(liq: pl.DataFrame, grid: pl.DataFrame, prefix: str) -> pl.DataFrame:
+    """Forced-liquidation flow per bar, signed like taker flow.
+
+    `side` is the side of the forced order, so an ASK is a long being sold out and signs
+    negative - the same convention as `_flow_features`, and the direction the flow
+    actually pushes price. `filled_size` is used rather than the order size because only
+    the filled part ever reached the book.
+
+    SAMPLED, and the feature name cannot say so: Binance publishes only the largest
+    liquidation per symbol per second (common.models.Liquidation), so these columns are
+    a lower bound on forced flow and their magnitude is not comparable to `_signed_vol`.
+    They are deliberately NOT named `_signed_vol`, which would pull them into
+    `model.MONOTONE_POSITIVE` - a cascade overshooting and reverting within seconds is
+    exactly the case where the sign is an open question rather than a prior.
+    """
+    size = pl.col("filled_size")
+    signed = pl.when(pl.col("side") == "bid").then(size).otherwise(-size)
+    per_bar = (
+        liq.with_columns(_bar_index(pl.col("ts_ns")).alias("ts_ns"), signed.alias("_signed"))
+        .group_by("ts_ns")
+        .agg(
+            pl.col("_signed").sum().alias(f"{prefix}_liq_flow"),
+            pl.len().alias(f"{prefix}_n_liqs"),
+        )
+        .sort("ts_ns")
+    )
+    out = grid.join(per_bar, on="ts_ns", how="left").with_columns(
+        pl.col(f"{prefix}_liq_flow").fill_null(0.0),
+        pl.col(f"{prefix}_n_liqs").fill_null(0),
+    )
+    rolls = []
+    for w in FLOW_WINDOWS:
+        rolls += [
+            pl.col(f"{prefix}_liq_flow").rolling_sum(w).alias(f"{prefix}_liq_flow_{w}"),
+            pl.col(f"{prefix}_n_liqs").rolling_sum(w).alias(f"{prefix}_n_liqs_{w}"),
+        ]
+    return out.with_columns(rolls)
+
+
+def _perp_features(
+    fs: pafs.FileSystem, bucket: str, date: str, symbol: str, grid: pl.DataFrame
+) -> list[pl.DataFrame]:
+    """Grid-aligned perp frames, one per venue publishing any of the perp tape.
+
+    Only a derivatives venue publishes these datasets, so a spot symbol contributes
+    nothing and the columns are simply absent - the same shape the model already handles
+    for a venue that was down all date. A venue publishing one stream but not another
+    gets nulls for the missing one rather than being dropped entirely.
+    """
+    mark = load_mark_price(fs, bucket, date, symbol)
+    oi = load_open_interest(fs, bucket, date, symbol)
+    liq = load_liquidations(fs, bucket, date, symbol)
+    frames: list[pl.DataFrame] = []
+    for venue in sorted({v for df in (mark, oi, liq) if df is not None for v in df["exchange"]}):
+        prefix = leg_prefix(venue)
+        for df, build in ((mark, _mark_features), (oi, _oi_features), (liq, _liq_features)):
+            if df is None:
+                continue
+            rows = df.filter(pl.col("exchange") == venue)
+            if not rows.is_empty():
+                frames.append(build(rows, grid, prefix))
+    return frames
+
+
+def _asof(grid: pl.DataFrame, series: pl.DataFrame, stamp: str, age: str) -> pl.DataFrame:
     """Backward as-of join: at each grid time, the last observation at or before it.
 
     This is the PIT primitive - `strategy="backward"` cannot see the future - and it
-    carries a `_age_ms` column so a caller can tell a fresh quote from a stale one.
+    turns the observation's own timestamp into an explicit staleness column, so a caller
+    can always tell a fresh value from one carried forward across a gap.
     """
     joined = grid.join_asof(series, on="ts_ns", strategy="backward")
-    return joined.with_columns(
-        ((pl.col("ts_ns") - pl.col(f"{prefix}_quote_ts")) / 1e6).alias(f"{prefix}_age_ms")
-    ).drop(f"{prefix}_quote_ts")
+    return joined.with_columns(((pl.col("ts_ns") - pl.col(stamp)) / 1e6).alias(age)).drop(stamp)
+
+
+def _align(grid: pl.DataFrame, series: pl.DataFrame, prefix: str) -> pl.DataFrame:
+    """As-of join a venue's book onto the grid, aged as `{prefix}_age_ms`.
+
+    That exact name is what `model.clean` treats as a *book* age and holds to the tight
+    freshness tolerance, so only a venue's quotes may claim it.
+    """
+    return _asof(grid, series, f"{prefix}_quote_ts", f"{prefix}_age_ms")
 
 
 def _returns(prefix: str) -> list[pl.Expr]:
@@ -382,6 +542,10 @@ def build_features(
         for venue in sorted(trades["exchange"].unique()):
             vt = trades.filter(pl.col("exchange") == venue).sort("ts_ns")
             out = out.join(_flow_features(vt, grid, leg_prefix(venue)), on="ts_ns", how="left")
+
+    for sym in (symbol, *extra_symbols):
+        for frame in _perp_features(fs, bucket, date, sym, grid):
+            out = out.join(frame, on="ts_ns", how="left")
 
     return _add_targets(out, _align(grid, _nbbo_series(nbbo), "nbbo"), [p for p, _s, _q in legs])
 

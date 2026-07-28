@@ -257,3 +257,11 @@ def test_a_stale_book_still_drops_the_row() -> None:
 def test_a_genuinely_dead_tape_drops_the_row() -> None:
     """Minutes of carried-forward open interest is an outage, not a slow feed."""
     assert clean(_aged(book_ms=100.0, tape_ms=600_000.0), "y_ret_bps_5").is_empty()
+
+
+def test_liquidation_flow_is_not_constrained_monotone() -> None:
+    """Forced flow must not inherit the taker-flow prior by name. A cascade that
+    overshoots and reverts within seconds is the case where the sign is the open
+    question - `_signed_vol` as a substring would have legislated an answer."""
+    names = ["binance_futures_liq_flow_5", "binance_futures_signed_vol_5", "coinbase_ofi"]
+    assert monotonic_constraints(names) == [0, 1, 1]
