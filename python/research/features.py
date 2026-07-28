@@ -50,6 +50,9 @@ FLOW_WINDOWS = (5, 30, 300)
 RETURN_WINDOWS = (1, 5, 30, 300)
 # Forward horizons (in bars) the target is computed at.
 HORIZONS = (1, 5, 30)
+# Half-spreads of forward move required before a bar counts as a real direction rather
+# than the flat class. Half a spread is the cost of crossing to get in (see `_dead_zone`).
+DEAD_ZONE_SPREADS = 0.5
 # Silver datasets a feature matrix is derived from (the cache keys on their mtimes).
 SOURCE_DATASETS = ("quotes", "nbbo", "trades", "mark_price", "open_interest", "liquidations")
 # Depth rungs to build imbalance from; mirrors silver.dq.DEPTH_LEVELS. Dates whose
@@ -561,6 +564,35 @@ def _nbbo_series(nbbo: pl.DataFrame) -> pl.DataFrame:
     )
 
 
+def _dead_zone(ret: pl.Expr, spread_bps: pl.Expr) -> pl.Expr:
+    """Forward return -> {-1, 0, +1}, flat inside half the spread prevailing at `t`.
+
+    A 5s forward mid move is mostly quote noise, and scoring direction on it counts
+    sub-tick wiggles as wins. Half the spread is the smallest move worth calling: it is
+    what crossing to get in costs, so anything smaller is not a signal that could be
+    acted on however well it is predicted.
+
+    The threshold is the spread at `t`, which is knowable at `t` - it is a feature, not
+    a property of the future. Scaling by the spread also keeps the target comparable
+    across venues and across the day, which a fixed bps cut would not: the same 1bps
+    move is tradeable in a tight book and inside the noise in a wide one.
+
+    A null return stays null rather than collapsing into the flat class, which would
+    otherwise turn every row past the end of the date into a confident "no move".
+    """
+    threshold = spread_bps * DEAD_ZONE_SPREADS
+    return (
+        pl.when(ret.is_null() | spread_bps.is_null())
+        .then(None)
+        .when(ret > threshold)
+        .then(1)
+        .when(ret < -threshold)
+        .then(-1)
+        .otherwise(0)
+        .cast(pl.Int8)
+    )
+
+
 def _add_targets(
     features: pl.DataFrame, nbbo_grid: pl.DataFrame, venues: list[str]
 ) -> pl.DataFrame:
@@ -580,15 +612,21 @@ def _add_targets(
     `y_binance_ret_bps_5` is a well-posed target to predict from Coinbase and Kraken.
     Only the NBBO target is confined to the primary symbol, since that is the only
     consolidated book being built.
+
+    Each return also gets a `y_..._dz_{h}` three-class sibling (see `_dead_zone`), so a
+    caller can ask "did it move enough to be worth trading" rather than "did it move".
     """
     out = features.join(nbbo_grid, on="ts_ns", how="left")
-    targets = [
-        ((pl.col("nbbo_mid").shift(-h) / pl.col("nbbo_mid") - 1) * 1e4).alias(f"y_ret_bps_{h}")
-        for h in HORIZONS
-    ]
-    for venue in venues:
-        mid = pl.col(f"{venue}_mid")
-        targets += [
-            ((mid.shift(-h) / mid - 1) * 1e4).alias(f"y_{venue}_ret_bps_{h}") for h in HORIZONS
-        ]
+    targets = []
+    for prefix, mid_col, spread_col in [
+        ("y", "nbbo_mid", "nbbo_spread_bps"),
+        *((f"y_{v}", f"{v}_mid", f"{v}_spread_bps") for v in venues),
+    ]:
+        mid = pl.col(mid_col)
+        for h in HORIZONS:
+            ret = (mid.shift(-h) / mid - 1) * 1e4
+            targets += [
+                ret.alias(f"{prefix}_ret_bps_{h}"),
+                _dead_zone(ret, pl.col(spread_col)).alias(f"{prefix}_dz_{h}"),
+            ]
     return out.with_columns(targets)

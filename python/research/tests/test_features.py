@@ -20,6 +20,7 @@ from research.features import (
     _align,
     _bar_index,
     _book_features,
+    _dead_zone,
     _flow_features,
     _grid,
     _liq_features,
@@ -179,7 +180,10 @@ def test_targets_look_forward_and_run_off_the_end() -> None:
 def test_per_venue_targets_track_that_venue_not_the_nbbo() -> None:
     """The cross-venue test needs a target with no NBBO term in it at all."""
     grid = _grid(0, 2 * BAR_NS)
-    feats = grid.with_columns(pl.Series("v_mid", [100.0, 110.0, 121.0]))
+    feats = grid.with_columns(
+        pl.Series("v_mid", [100.0, 110.0, 121.0]),
+        pl.Series("v_spread_bps", [1.0, 1.0, 1.0]),  # a leg always carries both
+    )
     out = _add_targets(feats, _nbbo_grid(grid, [100.0, 100.0, 100.0]), ["v"]).sort("ts_ns")
     assert out["y_ret_bps_1"].to_list()[0] == 0.0  # the NBBO did not move
     assert out["y_v_ret_bps_1"].to_list()[0] == (110.0 / 100.0 - 1) * 1e4  # the venue did
@@ -468,3 +472,45 @@ def test_a_perp_leg_joins_without_disturbing_the_grid() -> None:
     # the spot venue publishes no perp tape, so it gets no perp columns at all
     assert not [c for c in got.columns if c.startswith("coinbase_basis")]
     assert got["binance_futures_basis_bps"][0] == pytest.approx(1.0)  # 0.01 on 100 == 1bps
+
+
+# ── dead-zone target ────────────────────────────────────────────────────────
+
+
+def test_dead_zone_flattens_a_move_inside_half_the_spread() -> None:
+    """A 2bps book cannot be traded on a 0.5bps move: crossing to get in costs more
+    than the move is worth, so it is the flat class however confidently it is called."""
+    df = pl.DataFrame({"ret": [0.5, -0.5, 2.0, -2.0], "spread": [2.0] * 4})
+    got = df.select(_dead_zone(pl.col("ret"), pl.col("spread")).alias("dz"))["dz"].to_list()
+    assert got == [0, 0, 1, -1]  # +/-0.5 is inside the 1.0 half-spread, +/-2.0 clears it
+
+
+def test_dead_zone_scales_with_the_prevailing_spread() -> None:
+    """The same move is a signal in a tight book and noise in a wide one - which is the
+    whole reason the threshold is not a fixed bps cut."""
+    df = pl.DataFrame({"ret": [1.0, 1.0], "spread": [0.5, 10.0]})
+    got = df.select(_dead_zone(pl.col("ret"), pl.col("spread")).alias("dz"))["dz"].to_list()
+    assert got == [1, 0]
+
+
+def test_dead_zone_keeps_a_null_return_null() -> None:
+    """The tail of every date has no forward window. Collapsing that into the flat class
+    would hand the model a confident "no move" for rows whose future is unknown, on
+    every date, and nothing downstream would flag it."""
+    df = pl.DataFrame({"ret": [None, 1e9], "spread": [2.0, None]})
+    got = df.select(_dead_zone(pl.col("ret"), pl.col("spread")).alias("dz"))["dz"].to_list()
+    assert got == [None, None]
+
+
+def test_targets_carry_a_dead_zone_sibling_per_horizon() -> None:
+    grid = _grid(0, 3 * BAR_NS)
+    feats = grid.with_columns(
+        pl.Series("v_mid", [100.0, 100.0, 100.0, 100.0]),
+        pl.Series("v_spread_bps", [1.0] * 4),
+    )
+    out = _add_targets(feats, _nbbo_grid(grid, [100.0, 100.0, 100.0, 100.0]), ["v"])
+    for h in (1, 5, 30):
+        assert f"y_dz_{h}" in out.columns
+        assert f"y_v_dz_{h}" in out.columns
+    # a perfectly flat series is the flat class, never a direction
+    assert set(out["y_dz_1"].drop_nulls().to_list()) == {0}

@@ -14,7 +14,9 @@ from research.model import (
     VAL_FRAC,
     _hit_rate,
     _r2_vs_zero,
+    class_report,
     clean,
+    dead_zone_classes,
     edge_summary,
     evaluate,
     feature_columns,
@@ -265,3 +267,45 @@ def test_liquidation_flow_is_not_constrained_monotone() -> None:
     question - `_signed_vol` as a substring would have legislated an answer."""
     names = ["binance_futures_liq_flow_5", "binance_futures_signed_vol_5", "coinbase_ofi"]
     assert monotonic_constraints(names) == [0, 1, 1]
+
+
+# ── dead-zone scoring ───────────────────────────────────────────────────────
+
+
+def test_dead_zone_classes_need_to_clear_the_threshold() -> None:
+    vals = np.array([2.0, -2.0, 0.4, -0.4, 0.0])
+    thr = np.full(5, 1.0)
+    assert list(dead_zone_classes(vals, thr)) == [1.0, -1.0, 0.0, -0.0, 0.0]
+
+
+def test_a_view_that_never_clears_the_cost_trades_nothing() -> None:
+    """The strict reading: a model whose predictions all sit inside the dead zone has no
+    tradeable opinion, however well its sign lines up. That has to show as zero traded
+    share rather than as a flattering precision on calls it would never have made."""
+    y = np.array([5.0, -5.0, 5.0, -5.0])
+    pred = np.array([0.1, -0.1, 0.1, -0.1])  # right sign every time, far inside the zone
+    got = class_report(y, pred, np.full(4, 1.0), stride=1)
+    assert got["traded_share"] == 0.0
+    assert got["movable_share"] == 1.0
+    assert np.isnan(got["up_precision"])  # no calls made, so precision is undefined
+    assert got["up_recall"] == 0.0  # the opportunity was there and was missed
+
+
+def test_precision_and_recall_split_the_two_failure_modes() -> None:
+    y = np.array([5.0, 5.0, -5.0, 0.0])
+    pred = np.array([5.0, 0.1, 5.0, 5.0])  # 1 right up-call, 2 wrong, 1 up missed
+    got = class_report(y, pred, np.full(4, 1.0), stride=1)
+    assert got["up_precision"] == 1 / 3  # three up-calls, one correct
+    assert got["up_recall"] == 1 / 2  # two real ups, one caught
+    assert got["up_support"] == 2.0
+    assert got["traded_share"] == 3 / 4
+
+
+def test_class_report_honours_the_stride() -> None:
+    """Overlapping targets are scored on non-overlapping rows, exactly as `evaluate` is,
+    or the class counts inherit the same 30x double counting."""
+    y = np.array([5.0, -5.0, 5.0, -5.0])
+    pred = np.array([5.0, 5.0, 5.0, 5.0])
+    got = class_report(y, pred, np.full(4, 1.0), stride=2)
+    assert got["up_support"] == 2.0  # rows 0 and 2 only
+    assert got["up_precision"] == 1.0

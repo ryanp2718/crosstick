@@ -29,7 +29,15 @@ from dataclasses import dataclass, field
 import numpy as np
 import polars as pl
 
-from research.model import METRICS, Split, fit_models, split_on_dates, venue_importance
+from research.model import (
+    CLASS_METRICS,
+    METRICS,
+    Split,
+    dead_zone_classes,
+    fit_models,
+    split_on_dates,
+    venue_importance,
+)
 
 log = logging.getLogger(__name__)
 
@@ -66,6 +74,9 @@ class OutOfSample:
     dates: np.ndarray
     y: np.ndarray
     pred: np.ndarray
+    # Half-spread at each row, when dead-zone scoring was asked for. Travels with the
+    # rows so a resampled draw keeps each row's own threshold (see `as_classes`).
+    threshold: np.ndarray | None = None
 
 
 @dataclass
@@ -86,6 +97,7 @@ def walk_forward(
     test_size: int = TEST_DATES,
     step: int = STEP_DATES,
     exclude_venue: str | None = None,
+    spread_col: str | None = None,
 ) -> list[Split]:
     """Expanding-window splits over the dates present in `df`.
 
@@ -103,7 +115,13 @@ def walk_forward(
     splits = []
     for start in range(min_train, len(dates) - test_size + 1, step):
         split = split_on_dates(
-            df, target, horizon, dates[:start], dates[start : start + test_size], exclude_venue
+            df,
+            target,
+            horizon,
+            dates[:start],
+            dates[start : start + test_size],
+            exclude_venue,
+            spread_col=spread_col,
         )
         if split is None:
             log.warning("fold at date index %d produced no usable split", start)
@@ -133,18 +151,39 @@ def placebo_target(df: pl.DataFrame, target: str, lag_bars: int = PLACEBO_LAG_BA
 
 def _strided(split: Split, pred: np.ndarray, horizon: int) -> OutOfSample:
     """One fold's test rows, thinned to non-overlapping forward windows."""
+    thr = split.test_threshold_bps
     return OutOfSample(
         dates=split.test_row_dates[::horizon],
         y=split.y_test[::horizon],
         pred=pred[::horizon],
+        threshold=None if thr is None else thr[::horizon],
     )
 
 
 def _concat(parts: list[OutOfSample]) -> OutOfSample:
+    have_threshold = all(p.threshold is not None for p in parts)
     return OutOfSample(
         dates=np.concatenate([p.dates for p in parts]),
         y=np.concatenate([p.y for p in parts]),
         pred=np.concatenate([p.pred for p in parts]),
+        threshold=np.concatenate([p.threshold for p in parts]) if have_threshold else None,
+    )
+
+
+def as_classes(oos: OutOfSample) -> OutOfSample:
+    """The same pooled rows relabelled into dead-zone classes, y and pred alike.
+
+    Reducing both sides to {-1, 0, +1} up front is what lets precision and recall reuse
+    `bootstrap_ci` untouched: once classified they are ordinary two-argument metrics, so
+    they get the same whole-date resampling as R2 rather than a parallel code path with
+    its own subtly different notion of a block.
+    """
+    if oos.threshold is None:
+        raise ValueError("dead-zone scoring needs a threshold; pass spread_col to walk_forward")
+    return OutOfSample(
+        dates=oos.dates,
+        y=dead_zone_classes(oos.y, oos.threshold),
+        pred=dead_zone_classes(oos.pred, oos.threshold),
     )
 
 
@@ -217,14 +256,30 @@ def bootstrap_ci(
     return float(lo), float(hi)
 
 
+def _intervals(oos: OutOfSample, metrics: dict, n_boot: int, seed: int):
+    return {
+        name: (metric(oos.y, oos.pred), *bootstrap_ci(oos, metric, n_boot, seed))
+        for name, metric in metrics.items()
+    }
+
+
 def confidence_intervals(
     oos: OutOfSample, n_boot: int = N_BOOT, seed: int = 0
 ) -> dict[str, tuple[float, float, float]]:
     """Every reported metric as (point estimate, lo, hi)."""
-    return {
-        name: (metric(oos.y, oos.pred), *bootstrap_ci(oos, metric, n_boot, seed))
-        for name, metric in METRICS.items()
-    }
+    return _intervals(oos, METRICS, n_boot, seed)
+
+
+def class_confidence_intervals(
+    oos: OutOfSample, n_boot: int = N_BOOT, seed: int = 0
+) -> dict[str, tuple[float, float, float]]:
+    """Dead-zone precision and recall as (point estimate, lo, hi), same date blocks.
+
+    Precision on a thin high-conviction slice is exactly where a point estimate flatters
+    itself, because the denominator can be a handful of bars on a handful of days - so
+    it gets the same interval discipline as R2 rather than being quoted bare.
+    """
+    return _intervals(as_classes(oos), CLASS_METRICS, n_boot, seed)
 
 
 def fold_spread(fold_metrics: list[dict[str, dict[str, float]]], model: str, key: str):
