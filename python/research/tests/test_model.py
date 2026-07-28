@@ -14,6 +14,7 @@ from research.model import (
     VAL_FRAC,
     _hit_rate,
     _r2_vs_zero,
+    clean,
     edge_summary,
     evaluate,
     feature_columns,
@@ -225,3 +226,34 @@ def test_trailing_returns_survive_into_the_feature_set() -> None:
     cols = feature_columns(_binance_frame())
     assert "binance_ret_bps_5" in cols
     assert "binance_futures_ret_bps_5" in cols
+
+
+# ── staleness tolerances ────────────────────────────────────────────────────
+
+
+def _aged(book_ms: float, tape_ms: float) -> pl.DataFrame:
+    """One venue leg (its `_ofi` is what makes it a venue) plus a perp tape age."""
+    return pl.DataFrame(
+        {
+            "coinbase_ofi": [1.0],
+            "coinbase_age_ms": [book_ms],
+            "binance_futures_oi_age_ms": [tape_ms],
+            "y_ret_bps_5": [1.0],
+        }
+    )
+
+
+def test_a_tape_age_is_not_held_to_the_book_tolerance() -> None:
+    """Open interest is a 10s poll, so it is routinely older than the 5s a book may be.
+    Judging it by the book's tolerance would drop nearly every row of every date - a
+    silent near-total data loss that still produces a plausible-looking model."""
+    assert clean(_aged(book_ms=100.0, tape_ms=9_000.0), "y_ret_bps_5").height == 1
+
+
+def test_a_stale_book_still_drops_the_row() -> None:
+    assert clean(_aged(book_ms=99_000.0, tape_ms=100.0), "y_ret_bps_5").is_empty()
+
+
+def test_a_genuinely_dead_tape_drops_the_row() -> None:
+    """Minutes of carried-forward open interest is an outage, not a slow feed."""
+    assert clean(_aged(book_ms=100.0, tape_ms=600_000.0), "y_ret_bps_5").is_empty()

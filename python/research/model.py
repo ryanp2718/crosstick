@@ -47,6 +47,12 @@ log = logging.getLogger(__name__)
 # dropped rather than modelled (Kraken runs multi-minute quote gaps in this capture).
 MAX_AGE_MS = 5_000
 
+# The same discipline for the perp tape, at the cadence that tape actually runs at.
+# Open interest is a 10s REST poll and mark price a 1s push, so a book-grade 5s
+# tolerance would reject most of the day for being exactly as fresh as it ever gets.
+# This bounds a real outage instead: minutes of carried-forward basis, not seconds.
+MAX_TAPE_AGE_MS = 60_000
+
 # Share of the training period held back, as its latest rows, to stop boosting early.
 VAL_FRAC = 0.15
 
@@ -148,7 +154,12 @@ def feature_columns(df: pl.DataFrame, exclude_venue: str | None = None) -> list[
     ]
 
 
-def clean(df: pl.DataFrame, target: str, max_age_ms: int = MAX_AGE_MS) -> pl.DataFrame:
+def clean(
+    df: pl.DataFrame,
+    target: str,
+    max_age_ms: int = MAX_AGE_MS,
+    max_tape_age_ms: int = MAX_TAPE_AGE_MS,
+) -> pl.DataFrame:
     """Drop rows the model must not see: stale books, and rows with no target (the
     tail of each date, where the forward window runs off the end).
 
@@ -156,11 +167,19 @@ def clean(df: pl.DataFrame, target: str, max_age_ms: int = MAX_AGE_MS) -> pl.Dat
     "predicts" venue B because B's book is lagging and has not caught up yet, the edge
     dies once both books are required to be fresh; if it is real price discovery, it
     survives.
+
+    Two tolerances, because two clocks. A book age is exactly `{venue}_age_ms`; anything
+    else ending `_age_ms` times a tape stream that legitimately updates far slower, and
+    holding it to the book's tolerance would throw the day away for a staleness that is
+    the feed's normal cadence rather than an outage.
     """
-    age_cols = [c for c in df.columns if c.endswith("_age_ms")]
+    book_ages = {v + "_age_ms" for v in venue_prefixes(df)}
     out = df.filter(pl.col(target).is_not_null())
-    for c in age_cols:
-        out = out.filter(pl.col(c).is_null() | (pl.col(c) <= max_age_ms))
+    for c in df.columns:
+        if not c.endswith("_age_ms"):
+            continue
+        tol = max_age_ms if c in book_ages else max_tape_age_ms
+        out = out.filter(pl.col(c).is_null() | (pl.col(c) <= tol))
     return out
 
 
