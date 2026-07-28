@@ -19,6 +19,11 @@ Five fact streams, each canonical-resolved:
   - nbbo         : per-canonical reconstructed NBBO (max-bid/min-ask across a
                    canonical's venues, evicting a venue while its status is down).
 
+Plus the four tape datasets (TAPE_DATASETS): trades, liquidations, mark_price,
+open_interest, carried over from bronze verbatim rather than derived. They are
+market-data content, not quality facts, and they exist ONLY in bronze upstream -
+which expires on a lifecycle rule - so silver is what makes them durable.
+
 Sequence-gap policy is per-exchange and *grounded in each driver* (cry-wolf is
 worse than a miss for a quality floor):
   - kraken synthesizes a per-book counter (`seq = last_seq + 1`, kraken.py), so a
@@ -50,7 +55,17 @@ import pyarrow as pa
 from analytics.corpus import CorpusRecord
 from common.asof import MAX_LEG_AGE_NS, merge_latest
 from common.kafka_io import header_value
-from common.models import BookDelta, BookSnapshot, Side, Status, decode
+from common.models import (
+    BookDelta,
+    BookSnapshot,
+    Liquidation,
+    MarkPrice,
+    OpenInterest,
+    Side,
+    Status,
+    Trade,
+    decode,
+)
 from ingest.book import BookInvariantError, Level, OrderBook
 from materializer.bronze import CanonicalMap, parse_topic, record_date
 
@@ -79,6 +94,13 @@ MAX_DEPTH = 10
 DEPTH_LEVELS = (5, 10)
 
 
+# Bronze tape datasets lifted into silver verbatim, canonical-resolved and on the
+# quotes clock. The facts above *describe* the feed; these ARE the feed, and bronze
+# expires on a lifecycle rule, so anything not lifted here is unrecoverable.
+# Silver keeps the bronze dataset names (the funding rate is mark_price.funding_rate).
+TAPE_DATASETS = ("trades", "liquidations", "mark_price", "open_interest")
+
+
 @dataclass
 class SilverFacts:
     """The silver fact streams produced from a slice of bronze."""
@@ -88,6 +110,10 @@ class SilverFacts:
     status_events: list[dict] = field(default_factory=list)
     quotes: list[dict] = field(default_factory=list)
     nbbo: list[dict] = field(default_factory=list)
+    trades: list[dict] = field(default_factory=list)
+    mark_price: list[dict] = field(default_factory=list)
+    open_interest: list[dict] = field(default_factory=list)
+    liquidations: list[dict] = field(default_factory=list)
 
 
 @dataclass
@@ -151,6 +177,10 @@ def build_silver(records: Iterable[CorpusRecord], canonical: CanonicalMap) -> Si
         )
         if lat is not None:
             facts.latency.append(lat)
+
+        if meta.dataset in _TAPE_ROW:
+            base = _tape_base(exchange, canon, date, rec.offset, msg, recv)
+            getattr(facts, meta.dataset).append(_TAPE_ROW[meta.dataset](base, msg))
 
         if meta.dataset in BOOK_DATASETS:
             bids, asks = _levels(msg)
@@ -324,25 +354,31 @@ def book_latency_row(r: _BookRec) -> dict | None:
     )
 
 
-def latency_rows(records: Iterable[CorpusRecord], canonical: CanonicalMap) -> Iterator[dict]:
-    """Latency facts for a non-book latency dataset (trades/liquidations/
-    mark_price/open_interest), streamed per partition by the driver."""
+def tape_and_latency_rows(
+    records: Iterable[CorpusRecord], canonical: CanonicalMap, dataset: str
+) -> Iterator[tuple[dict, dict | None]]:
+    """One decode pass over a non-book partition -> `(tape row, latency row)`, the
+    latency row None where there is no exchange clock. The tape datasets are exactly
+    the non-book latency datasets, so the driver writes both from one bronze read."""
+    build = _TAPE_ROW[dataset]
     for rec in records:
         meta = parse_topic(rec.topic)
         msg = decode(rec.value)
         exchange = meta.exchange or ""
+        canon = canonical.resolve(exchange, msg.symbol)
+        date = record_date(rec.timestamp_ms)
+        recv = _recv_ns(rec)
         lat = _latency_dict(
             exchange,
-            canonical.resolve(exchange, msg.symbol),
-            record_date(rec.timestamp_ms),
+            canon,
+            date,
             meta.dataset,
             rec.offset,
             msg.exchange_ts_ns,
             msg.local_ts_ns,
-            _recv_ns(rec),
+            recv,
         )
-        if lat is not None:
-            yield lat
+        yield build(_tape_base(exchange, canon, date, rec.offset, msg, recv), msg), lat
 
 
 def _latency_dict(
@@ -369,6 +405,68 @@ def _latency_dict(
         "exchange_to_recv_ns": recv - exchange_ts_ns,
         "exchange_to_emit_ns": local_ts_ns - exchange_ts_ns,
     }
+
+
+def _tape_base(exchange: str, canon: str, date: str, offset: int, msg, recv: int | None) -> dict:
+    """Identity + the clock every tape row shares with `quotes`: local_recv_ts_ns
+    (one gateway clock, so cross-venue joins are valid) falling back to the emit
+    clock. `exchange_ts_ns` stays for reference under the clock-domain caveat."""
+    return {
+        "exchange": exchange,
+        "canonical_symbol": canon,
+        "date": date,
+        "ts_ns": recv if recv is not None else msg.local_ts_ns,
+        "offset": offset,
+        "exchange_ts_ns": msg.exchange_ts_ns,
+        "local_ts_ns": msg.local_ts_ns,
+    }
+
+
+def _trades_row(base: dict, msg: Trade) -> dict:
+    # `side` is the taker/aggressor direction in every driver (BID = buyer-initiated),
+    # so order-flow sign needs no Lee-Ready inference.
+    return {
+        **base,
+        "trade_id": msg.trade_id,
+        "price": Decimal(msg.price),
+        "size": Decimal(msg.size),
+        "side": str(msg.side),
+    }
+
+
+def _mark_price_row(base: dict, msg: MarkPrice) -> dict:
+    return {
+        **base,
+        "mark_price": Decimal(msg.mark_price),
+        "index_price": Decimal(msg.index_price),
+        "est_settle_price": Decimal(msg.est_settle_price),
+        "funding_rate": Decimal(msg.funding_rate),
+        "next_funding_ts_ns": msg.next_funding_ts_ns,
+    }
+
+
+def _open_interest_row(base: dict, msg: OpenInterest) -> dict:
+    return {**base, "open_interest": Decimal(msg.open_interest)}
+
+
+def _liquidations_row(base: dict, msg: Liquidation) -> dict:
+    return {
+        **base,
+        "side": str(msg.side),
+        "price": Decimal(msg.price),
+        "avg_price": Decimal(msg.avg_price),
+        "orig_size": Decimal(msg.orig_size),
+        "filled_size": Decimal(msg.filled_size),
+        "status": msg.status,
+    }
+
+
+_TAPE_ROW = {
+    "trades": _trades_row,
+    "mark_price": _mark_price_row,
+    "open_interest": _open_interest_row,
+    "liquidations": _liquidations_row,
+}
 
 
 def _book_quality_row(ev: _BookEvent) -> dict:
@@ -614,3 +712,57 @@ NBBO_SCHEMA = pa.schema(
         ("n_venues", pa.int64()),
     ]
 )
+
+# Tape schemas. The leading seven columns are `_tape_base` and are identical across
+# all four, so a feature build can join any tape to `quotes` on (exchange, symbol, ts_ns).
+_TAPE_BASE_FIELDS = [
+    ("exchange", pa.string()),
+    ("canonical_symbol", pa.string()),
+    ("date", pa.string()),
+    ("ts_ns", pa.int64()),
+    ("offset", pa.int64()),
+    ("exchange_ts_ns", pa.int64()),
+    ("local_ts_ns", pa.int64()),
+]
+
+TRADES_SCHEMA = pa.schema(
+    [
+        *_TAPE_BASE_FIELDS,
+        ("trade_id", pa.string()),
+        ("price", _PRICE),
+        ("size", _PRICE),
+        ("side", pa.string()),
+    ]
+)
+
+MARK_PRICE_SCHEMA = pa.schema(
+    [
+        *_TAPE_BASE_FIELDS,
+        ("mark_price", _PRICE),
+        ("index_price", _PRICE),
+        ("est_settle_price", _PRICE),
+        ("funding_rate", _PRICE),
+        ("next_funding_ts_ns", pa.int64()),
+    ]
+)
+
+OPEN_INTEREST_SCHEMA = pa.schema([*_TAPE_BASE_FIELDS, ("open_interest", _PRICE)])
+
+LIQUIDATIONS_SCHEMA = pa.schema(
+    [
+        *_TAPE_BASE_FIELDS,
+        ("side", pa.string()),
+        ("price", _PRICE),
+        ("avg_price", _PRICE),
+        ("orig_size", _PRICE),
+        ("filled_size", _PRICE),
+        ("status", pa.string()),
+    ]
+)
+
+TAPE_SCHEMAS = {
+    "trades": TRADES_SCHEMA,
+    "mark_price": MARK_PRICE_SCHEMA,
+    "open_interest": OPEN_INTEREST_SCHEMA,
+    "liquidations": LIQUIDATIONS_SCHEMA,
+}
