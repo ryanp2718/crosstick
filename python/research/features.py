@@ -33,6 +33,9 @@ outage reports hours of price move as a 5-minute return - or, worse, as a 5-bar 
 `model.clean` cannot see it, since that row's own book is perfectly fresh. Point-to-point
 changes are guarded at their far endpoint by `_at_offset` and rolling sums across their
 whole window by `_captured`; either way the feature goes null rather than fictional.
+
+What counts as too stale scales with the window (`_window_tol`), because a fixed cut
+lands unevenly across venues and this matrix exists to compare venues.
 """
 
 from __future__ import annotations
@@ -68,6 +71,9 @@ MAX_AGE_MS = 5_000
 # reject most of the day for being exactly as fresh as it ever gets. This bounds a real
 # outage instead: minutes of carried-forward basis, not seconds.
 MAX_TAPE_AGE_MS = 60_000
+# Share of its own window a point-to-point change will tolerate at the far endpoint (see
+# `_window_tol`). Only ever loosens the stream tolerance above, never tightens it.
+WINDOW_STALENESS_FRAC = 0.10
 # Grid-local marker for bars the capture was recording, carried on the grid so every
 # builder can reach it and dropped before the matrix is returned (see `_captured`).
 _LIVE_COL = "_capture_live"
@@ -348,9 +354,10 @@ def _mark_features(mark: pl.DataFrame, grid: pl.DataFrame, prefix: str) -> pl.Da
             f"{prefix}_funding_in_s"
         ),
         *[
-            (basis - _at_offset(basis, f"{prefix}_mark_age_ms", w, MAX_TAPE_AGE_MS)).alias(
-                f"{prefix}_basis_chg_{w}"
-            )
+            (
+                basis
+                - _at_offset(basis, f"{prefix}_mark_age_ms", w, _window_tol(w, MAX_TAPE_AGE_MS))
+            ).alias(f"{prefix}_basis_chg_{w}")
             for w in FLOW_WINDOWS
         ],
     ).drop("next_funding_ts_ns", _LIVE_COL)
@@ -371,7 +378,8 @@ def _oi_features(oi: pl.DataFrame, grid: pl.DataFrame, prefix: str) -> pl.DataFr
     )
     out = _asof(grid, series, f"{prefix}_oi_ts", f"{prefix}_oi_age_ms")
     level = pl.col("_oi_level")
-    lagged = [_at_offset(level, f"{prefix}_oi_age_ms", w, MAX_TAPE_AGE_MS) for w in FLOW_WINDOWS]
+    age = f"{prefix}_oi_age_ms"
+    lagged = [_at_offset(level, age, w, _window_tol(w, MAX_TAPE_AGE_MS)) for w in FLOW_WINDOWS]
     return out.with_columns(
         *[
             pl.when(prev > 0).then((level / prev - 1) * 1e4).alias(f"{prefix}_oi_chg_bps_{w}")
@@ -472,10 +480,32 @@ def _at_offset(value: pl.Expr, age: str, k: int, tol: int = MAX_AGE_MS) -> pl.Ex
 
     A point-to-point change needs only its two endpoints real - what the price did in
     between does not enter the arithmetic - so this checks the far endpoint alone. `tol`
-    is the book tolerance by default; perp streams pass `MAX_TAPE_AGE_MS`, since holding
-    a 10s open-interest poll to a book-grade 5s would null it on every bar.
+    is the book tolerance by default; callers pass `_window_tol` to scale it to the
+    window, and perp streams floor that at `MAX_TAPE_AGE_MS`, since holding a 10s
+    open-interest poll to a book-grade 5s would null it on every bar.
     """
     return pl.when(pl.col(age).shift(k) <= tol).then(value.shift(k))
+
+
+def _window_tol(w: int, floor: int = MAX_AGE_MS) -> int:
+    """Staleness a `w`-bar window accepts at its far endpoint, in ms.
+
+    A flat tolerance asks the wrong question of a long window. Five seconds of staleness
+    is 500% of a 1-bar return and 1.7% of a 300-bar one, so one number cannot be right
+    for both, and the flat rule is wrong in the direction that discards good data.
+
+    Worse, it discards it unevenly. Only a slow-quoting venue ever goes seconds without
+    an update, so the cut lands almost entirely on that venue: on 2026-07-26 Kraken had
+    393 inter-quote gaps past the book tolerance and Coinbase none, which nulled 1% of
+    Kraken's 300-bar returns and 0% of Coinbase's. In a study whose whole question is
+    which venue leads, that is a venue-correlated hole in the comparison itself.
+
+    So the endpoint may be stale by a share of the window it anchors, floored at the
+    stream's own tolerance so this can only ever loosen. Capture holes run minutes to
+    hours and are still caught at every window length; a burst-publishing venue's normal
+    cadence is not. None of Kraken's 393 gaps that day exceeded 30s.
+    """
+    return max(floor, int(w * (BAR_NS // 1_000_000) * WINDOW_STALENESS_FRAC))
 
 
 def _captured(w: int) -> pl.Expr:
@@ -519,7 +549,7 @@ def _returns(prefix: str) -> list[pl.Expr]:
     mid = pl.col(f"{prefix}_mid")
     age = f"{prefix}_age_ms"
     return [
-        ((mid / _at_offset(mid, age, w) - 1) * 1e4).alias(f"{prefix}_ret_bps_{w}")
+        ((mid / _at_offset(mid, age, w, _window_tol(w)) - 1) * 1e4).alias(f"{prefix}_ret_bps_{w}")
         for w in RETURN_WINDOWS
     ]
 
@@ -720,7 +750,7 @@ def _add_targets(
     ]:
         mid = pl.col(mid_col)
         for h in HORIZONS:
-            ret = (_at_offset(mid, age_col, -h) / mid - 1) * 1e4
+            ret = (_at_offset(mid, age_col, -h, _window_tol(h)) / mid - 1) * 1e4
             targets += [
                 ret.alias(f"{prefix}_ret_bps_{h}"),
                 _dead_zone(ret, pl.col(spread_col)).alias(f"{prefix}_dz_{h}"),

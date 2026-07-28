@@ -18,6 +18,7 @@ from research.features import (
     _LIVE_COL,
     BAR_NS,
     MAX_AGE_MS,
+    MAX_TAPE_AGE_MS,
     _add_targets,
     _align,
     _bar_index,
@@ -31,6 +32,7 @@ from research.features import (
     _oi_features,
     _quote_legs,
     _returns,
+    _window_tol,
     build_features,
     leg_prefix,
 )
@@ -335,6 +337,35 @@ def test_ofi_does_not_book_a_capture_hole_as_a_single_tick() -> None:
     quotes = _quotes([(0, 100.0, 101.0, 5.0, 5.0), (gap_ns, 100.0, 101.0, 50.0, 5.0)])
     got = _ofi(quotes, "v")["v_ofi"].to_list()
     assert got[1] == 0.0  # not +45 of depth that appeared while nobody was watching
+
+
+def test_the_staleness_a_window_accepts_scales_with_the_window() -> None:
+    """A flat tolerance is wrong for long windows and wrong unevenly: only a slow-quoting
+    venue ever goes seconds without an update, so it alone loses its long-horizon
+    features. The floor keeps short windows exactly as strict as they were."""
+    assert _window_tol(1) == MAX_AGE_MS
+    assert _window_tol(30) == MAX_AGE_MS  # 3s of window, floored
+    assert _window_tol(300) == 30_000  # 10% of 300s, past the floor
+    assert _window_tol(300, MAX_TAPE_AGE_MS) == MAX_TAPE_AGE_MS  # never tightens a stream
+
+
+def test_a_long_window_tolerates_a_burst_quoters_gap_but_not_a_hole() -> None:
+    """Kraken publishes in bursts: 393 inter-quote gaps past the book tolerance on
+    2026-07-26, none of them past 30s, against zero for Coinbase. A 6s-stale endpoint is
+    2% of a 300-bar window and the return off it is sound; a capture hole is not."""
+    n = 301
+    ages = [0.0] * n
+    ages[0] = 6_000.0  # a burst gap: past the book tolerance, inside the window's
+    grid = _grid(0, 300 * BAR_NS).with_columns(
+        pl.Series("v_mid", [100.0] * 300 + [101.0]),
+        pl.Series("v_age_ms", ages),
+    )
+    got = grid.with_columns(_returns("v")).sort("ts_ns")["v_ret_bps_300"].to_list()
+    assert got[300] == pytest.approx(100.0)
+
+    ages[0] = float(_window_tol(300) + 1)  # a real hole is still refused
+    holed = grid.with_columns(pl.Series("v_age_ms", ages))
+    assert holed.with_columns(_returns("v")).sort("ts_ns")["v_ret_bps_300"].to_list()[300] is None
 
 
 def test_the_perp_tape_keeps_its_own_lookback_tolerance() -> None:
