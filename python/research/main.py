@@ -18,12 +18,15 @@ from __future__ import annotations
 import argparse
 import logging
 import os
+from functools import lru_cache
+from hashlib import blake2b
 from pathlib import Path
 
 import numpy as np
 import polars as pl
 
 from common.lake import filesystem_from_env, list_partitions, partition_key
+from research import features
 from research.features import HORIZONS, SOURCE_DATASETS, build_features
 from research.model import MAX_AGE_MS, clean, venue_prefixes
 from research.validation import (
@@ -65,6 +68,22 @@ def source_fingerprint(fs, bucket: str, date: str, symbols: tuple[str, ...]) -> 
     return str(int(newest))
 
 
+@lru_cache(maxsize=1)
+def builder_fingerprint() -> str:
+    """Short digest of `research/features.py`, as part of every cache key.
+
+    The source mtime says when the DATA last changed and nothing about what was computed
+    from it. Adding a feature family changes the frame without touching a single silver
+    object, so an mtime-only key happily serves a matrix built before the columns existed
+    - the run then trains on a narrower feature set than it reports and nothing fails.
+
+    Hashing the builder is deliberately blunt: any edit here rebuilds, including one that
+    only moved a comment. A needless rebuild costs a silver read; the alternative costs a
+    wrong answer that looks right.
+    """
+    return blake2b(Path(features.__file__).read_bytes(), digest_size=4).hexdigest()
+
+
 def cache_name(date: str, symbol: str, extra_symbols: tuple[str, ...], fingerprint: str) -> str:
     """Cache filename for one date's feature matrix.
 
@@ -73,7 +92,7 @@ def cache_name(date: str, symbol: str, extra_symbols: tuple[str, ...], fingerpri
     would serve a two-venue frame to a four-venue run.
     """
     legs = "+".join(("", *extra_symbols))
-    return f"{symbol}{legs}_{date}_{fingerprint}.parquet"
+    return f"{symbol}{legs}_{date}_{fingerprint}-{builder_fingerprint()}.parquet"
 
 
 def cached_features(
