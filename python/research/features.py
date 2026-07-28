@@ -25,6 +25,14 @@ tolerance; only a venue's book may claim the bare `{venue}_age_ms` name.
 Staleness is explicit: `{venue}_age_ms` is how old the book was at `t`, and callers
 drop rows past a tolerance rather than silently modelling a flat-lined quote (Kraken
 runs ~10-minute quote gaps in this capture).
+
+That tolerance governs the row's own bar. A second rule governs the bars a window
+reaches to: no trailing or forward window may cross a capture hole. The grid is uniform
+and the as-of join carries the last quote forward, so without it a row on the lip of an
+outage reports hours of price move as a 5-minute return - or, worse, as a 5-bar target.
+`model.clean` cannot see it, since that row's own book is perfectly fresh. Point-to-point
+changes are guarded at their far endpoint by `_at_offset` and rolling sums across their
+whole window by `_captured`; either way the feature goes null rather than fictional.
 """
 
 from __future__ import annotations
@@ -50,6 +58,19 @@ FLOW_WINDOWS = (5, 30, 300)
 RETURN_WINDOWS = (1, 5, 30, 300)
 # Forward horizons (in bars) the target is computed at.
 HORIZONS = (1, 5, 30)
+# A venue's book is unusable once it is this stale. Two consumers, one meaning: `model.clean`
+# drops the row outright, and `_at_offset` nulls any window reaching back to a bar this
+# stale, since a hole is minutes to hours wide while a live book is fresh in milliseconds.
+# Defined here rather than in `model` because model imports this module, not the reverse.
+MAX_AGE_MS = 5_000
+# The same discipline for the perp tape, at the cadence that tape actually runs at. Open
+# interest is a 10s REST poll and mark price a 1s push, so a book-grade 5s tolerance would
+# reject most of the day for being exactly as fresh as it ever gets. This bounds a real
+# outage instead: minutes of carried-forward basis, not seconds.
+MAX_TAPE_AGE_MS = 60_000
+# Grid-local marker for bars the capture was recording, carried on the grid so every
+# builder can reach it and dropped before the matrix is returned (see `_captured`).
+_LIVE_COL = "_capture_live"
 # Half-spreads of forward move required before a bar counts as a real direction rather
 # than the flat class. Half a spread is the cost of crossing to get in (see `_dead_zone`).
 DEAD_ZONE_SPREADS = 0.5
@@ -151,11 +172,16 @@ def load_liquidations(
 
 def _grid(start_ns: int, end_ns: int) -> pl.DataFrame:
     """Uniform grid of bar-close times covering [start, end], aligned to BAR_NS so
-    grids from different dates concatenate without a seam."""
+    grids from different dates concatenate without a seam.
+
+    Carries `_LIVE_COL`, since capture liveness is a property of the clock and every
+    rolling window needs it. It starts True and `build_features` narrows it to what the
+    NBBO actually recorded - a bare grid is a synthetic one with no holes in it.
+    """
     first = (start_ns // BAR_NS) * BAR_NS
     last = (end_ns // BAR_NS) * BAR_NS
     return pl.DataFrame({"ts_ns": range(first, last + BAR_NS, BAR_NS)}).with_columns(
-        pl.col("ts_ns").cast(pl.Int64)
+        pl.col("ts_ns").cast(pl.Int64), pl.lit(True).alias(_LIVE_COL)
     )
 
 
@@ -238,9 +264,15 @@ def _ofi(quotes: pl.DataFrame, prefix: str) -> pl.DataFrame:
     pbs, pas = bs.shift(1), as_.shift(1)
     bid_term = pl.when(b > pb).then(bs).when(b < pb).then(-pbs).otherwise(bs - pbs)
     ask_term = pl.when(a < pa_).then(as_).when(a > pa_).then(-pas).otherwise(as_ - pas)
+    # In event time, not on the grid: the first quote after a capture hole would otherwise
+    # book hours of unobserved book evolution as one tick's imbalance.
+    contiguous = (pl.col("ts_ns") - pl.col("ts_ns").shift(1)) <= MAX_AGE_MS * 1_000_000
     return quotes.select(
         pl.col("ts_ns"),
-        (bid_term - ask_term).fill_null(0.0).alias(f"{prefix}_ofi"),
+        pl.when(contiguous)
+        .then((bid_term - ask_term).fill_null(0.0))
+        .otherwise(0.0)
+        .alias(f"{prefix}_ofi"),
     )
 
 
@@ -275,11 +307,16 @@ def _flow_features(trades: pl.DataFrame, grid: pl.DataFrame, prefix: str) -> pl.
     )
     rolls = []
     for w in FLOW_WINDOWS:
+        live = _captured(w)
         rolls += [
-            pl.col(f"{prefix}_signed_vol").rolling_sum(w).alias(f"{prefix}_signed_vol_{w}"),
-            pl.col(f"{prefix}_volume").rolling_sum(w).alias(f"{prefix}_volume_{w}"),
+            pl.when(live)
+            .then(pl.col(f"{prefix}_signed_vol").rolling_sum(w))
+            .alias(f"{prefix}_signed_vol_{w}"),
+            pl.when(live)
+            .then(pl.col(f"{prefix}_volume").rolling_sum(w))
+            .alias(f"{prefix}_volume_{w}"),
         ]
-    return out.with_columns(rolls).drop("_notional")
+    return out.with_columns(rolls).drop("_notional", _LIVE_COL)
 
 
 def _mark_features(mark: pl.DataFrame, grid: pl.DataFrame, prefix: str) -> pl.DataFrame:
@@ -310,8 +347,13 @@ def _mark_features(mark: pl.DataFrame, grid: pl.DataFrame, prefix: str) -> pl.Da
         ((pl.col("next_funding_ts_ns") - pl.col("ts_ns")) / NS_PER_S).alias(
             f"{prefix}_funding_in_s"
         ),
-        *[(basis - basis.shift(w)).alias(f"{prefix}_basis_chg_{w}") for w in FLOW_WINDOWS],
-    ).drop("next_funding_ts_ns")
+        *[
+            (basis - _at_offset(basis, f"{prefix}_mark_age_ms", w, MAX_TAPE_AGE_MS)).alias(
+                f"{prefix}_basis_chg_{w}"
+            )
+            for w in FLOW_WINDOWS
+        ],
+    ).drop("next_funding_ts_ns", _LIVE_COL)
 
 
 def _oi_features(oi: pl.DataFrame, grid: pl.DataFrame, prefix: str) -> pl.DataFrame:
@@ -329,14 +371,13 @@ def _oi_features(oi: pl.DataFrame, grid: pl.DataFrame, prefix: str) -> pl.DataFr
     )
     out = _asof(grid, series, f"{prefix}_oi_ts", f"{prefix}_oi_age_ms")
     level = pl.col("_oi_level")
+    lagged = [_at_offset(level, f"{prefix}_oi_age_ms", w, MAX_TAPE_AGE_MS) for w in FLOW_WINDOWS]
     return out.with_columns(
         *[
-            pl.when(level.shift(w) > 0)
-            .then((level / level.shift(w) - 1) * 1e4)
-            .alias(f"{prefix}_oi_chg_bps_{w}")
-            for w in FLOW_WINDOWS
+            pl.when(prev > 0).then((level / prev - 1) * 1e4).alias(f"{prefix}_oi_chg_bps_{w}")
+            for w, prev in zip(FLOW_WINDOWS, lagged, strict=True)
         ]
-    ).drop("_oi_level")
+    ).drop("_oi_level", _LIVE_COL)
 
 
 def _liq_features(liq: pl.DataFrame, grid: pl.DataFrame, prefix: str) -> pl.DataFrame:
@@ -371,11 +412,16 @@ def _liq_features(liq: pl.DataFrame, grid: pl.DataFrame, prefix: str) -> pl.Data
     )
     rolls = []
     for w in FLOW_WINDOWS:
+        live = _captured(w)
         rolls += [
-            pl.col(f"{prefix}_liq_flow").rolling_sum(w).alias(f"{prefix}_liq_flow_{w}"),
-            pl.col(f"{prefix}_n_liqs").rolling_sum(w).alias(f"{prefix}_n_liqs_{w}"),
+            pl.when(live)
+            .then(pl.col(f"{prefix}_liq_flow").rolling_sum(w))
+            .alias(f"{prefix}_liq_flow_{w}"),
+            pl.when(live)
+            .then(pl.col(f"{prefix}_n_liqs").rolling_sum(w))
+            .alias(f"{prefix}_n_liqs_{w}"),
         ]
-    return out.with_columns(rolls)
+    return out.with_columns(rolls).drop(_LIVE_COL)
 
 
 def _perp_features(
@@ -414,6 +460,39 @@ def _asof(grid: pl.DataFrame, series: pl.DataFrame, stamp: str, age: str) -> pl.
     return joined.with_columns(((pl.col("ts_ns") - pl.col(stamp)) / 1e6).alias(age)).drop(stamp)
 
 
+def _at_offset(value: pl.Expr, age: str, k: int, tol: int = MAX_AGE_MS) -> pl.Expr:
+    """`value.shift(k)`, but null unless that bar held a real observation.
+
+    The grid is uniform, so `shift(k)` is exactly k bars of wall clock - but `_asof`
+    carries the last quote forward through a capture hole, so the value k bars away can
+    be an observation from hours earlier wearing this bar's timestamp. Without this a
+    row on either lip of a hole reports the hole's entire price move as a k-bar move,
+    and `model.clean` cannot catch it: that row's own book is fresh, only the bar it
+    reaches to is stale. Negative k reaches forward, which is how targets are guarded.
+
+    A point-to-point change needs only its two endpoints real - what the price did in
+    between does not enter the arithmetic - so this checks the far endpoint alone. `tol`
+    is the book tolerance by default; perp streams pass `MAX_TAPE_AGE_MS`, since holding
+    a 10s open-interest poll to a book-grade 5s would null it on every bar.
+    """
+    return pl.when(pl.col(age).shift(k) <= tol).then(value.shift(k))
+
+
+def _captured(w: int) -> pl.Expr:
+    """True when capture was live for every bar of the trailing w-bar window.
+
+    The counterpart to `_at_offset` for rolling sums, which count every bar they cover
+    rather than just the endpoints - one hole in the middle is enough to make the total
+    a sum over bars nobody recorded. It also asks a different question, deliberately.
+    Flow bars are filled with zero when nothing traded, and that zero is only honest if
+    the tape was running: a venue quoting nothing for ten minutes really did see no
+    flow, whereas a dead capture saw nothing at all. So the test is whether the
+    consolidated book was ticking (`_LIVE_COL`, from the NBBO), not whether one venue's
+    own book was fresh, which would throw away every quiet venue as if it were an outage.
+    """
+    return pl.col(_LIVE_COL).cast(pl.Int8).rolling_min(w) == 1
+
+
 def _align(grid: pl.DataFrame, series: pl.DataFrame, prefix: str) -> pl.DataFrame:
     """As-of join a venue's book onto the grid, aged as `{prefix}_age_ms`.
 
@@ -427,7 +506,8 @@ def _returns(prefix: str) -> list[pl.Expr]:
     """Trailing realised return over each window, in bps, from the grid-aligned mid.
 
     Backward-looking by construction - `shift(w)` reaches into the past - and computed
-    within one date's grid, so no window spans a date boundary.
+    within one date's grid, so no window spans a date boundary. `_at_offset` handles the
+    holes inside a date, which a date-boundary rule alone would walk straight into.
 
     This is also what makes a leg on a different quote asset usable at all. BTC-USDT's
     *price* is not comparable to BTC-USD's, since the USDT basis sits between them, but
@@ -437,7 +517,11 @@ def _returns(prefix: str) -> list[pl.Expr]:
     a prior to impose on it.
     """
     mid = pl.col(f"{prefix}_mid")
-    return [((mid / mid.shift(w) - 1) * 1e4).alias(f"{prefix}_ret_bps_{w}") for w in RETURN_WINDOWS]
+    age = f"{prefix}_age_ms"
+    return [
+        ((mid / _at_offset(mid, age, w) - 1) * 1e4).alias(f"{prefix}_ret_bps_{w}")
+        for w in RETURN_WINDOWS
+    ]
 
 
 def leg_prefix(exchange: str) -> str:
@@ -515,6 +599,11 @@ def build_features(
         min(q["ts_ns"].min() for q in primary_legs),
         max(q["ts_ns"].max() for q in primary_legs),
     )
+    # The NBBO doubles as the capture clock: if the consolidated book was ticking then the
+    # tape was running, whatever any single venue happened to be doing. Every rolling
+    # window keys its contiguity off this (see `_captured`).
+    nbbo_grid = _align(grid, _nbbo_series(nbbo), "nbbo").drop(_LIVE_COL)
+    grid = grid.with_columns((nbbo_grid["nbbo_age_ms"] <= MAX_AGE_MS).alias(_LIVE_COL))
     out = grid
 
     for prefix, _sym, vq in legs:
@@ -532,7 +621,9 @@ def build_features(
         out = out.with_columns(
             *_returns(prefix),
             *[
-                pl.col(f"{prefix}_ofi").rolling_sum(w).alias(f"{prefix}_ofi_{w}")
+                pl.when(_captured(w))
+                .then(pl.col(f"{prefix}_ofi").rolling_sum(w))
+                .alias(f"{prefix}_ofi_{w}")
                 for w in FLOW_WINDOWS
             ],
         )
@@ -550,7 +641,7 @@ def build_features(
         for frame in _perp_features(fs, bucket, date, sym, grid):
             out = out.join(frame, on="ts_ns", how="left")
 
-    return _add_targets(out, _align(grid, _nbbo_series(nbbo), "nbbo"), [p for p, _s, _q in legs])
+    return _add_targets(out.drop(_LIVE_COL), nbbo_grid, [p for p, _s, _q in legs])
 
 
 def _nbbo_series(nbbo: pl.DataFrame) -> pl.DataFrame:
@@ -615,16 +706,21 @@ def _add_targets(
 
     Each return also gets a `y_..._dz_{h}` three-class sibling (see `_dead_zone`), so a
     caller can ask "did it move enough to be worth trading" rather than "did it move".
+
+    The forward reach is guarded exactly like the trailing ones (`_at_offset` with a
+    negative offset). A label is the one column that must never be fiction: a bar sitting
+    just before a capture hole has a fresh book and would otherwise be handed the whole
+    outage's move as its h-bar answer, teaching the model on a move nobody could see.
     """
     out = features.join(nbbo_grid, on="ts_ns", how="left")
     targets = []
-    for prefix, mid_col, spread_col in [
-        ("y", "nbbo_mid", "nbbo_spread_bps"),
-        *((f"y_{v}", f"{v}_mid", f"{v}_spread_bps") for v in venues),
+    for prefix, mid_col, spread_col, age_col in [
+        ("y", "nbbo_mid", "nbbo_spread_bps", "nbbo_age_ms"),
+        *((f"y_{v}", f"{v}_mid", f"{v}_spread_bps", f"{v}_age_ms") for v in venues),
     ]:
         mid = pl.col(mid_col)
         for h in HORIZONS:
-            ret = (mid.shift(-h) / mid - 1) * 1e4
+            ret = (_at_offset(mid, age_col, -h) / mid - 1) * 1e4
             targets += [
                 ret.alias(f"{prefix}_ret_bps_{h}"),
                 _dead_zone(ret, pl.col(spread_col)).alias(f"{prefix}_dz_{h}"),

@@ -41,19 +41,12 @@ from sklearn.linear_model import Ridge
 from sklearn.pipeline import make_pipeline
 from sklearn.preprocessing import StandardScaler
 
-from research.features import DEAD_ZONE_SPREADS
+# Re-exported: the staleness tolerances live with the builder that stamps the age columns,
+# so `clean` dropping a row and a feature window refusing to reach across a hole cannot
+# disagree about what "stale" means.
+from research.features import DEAD_ZONE_SPREADS, MAX_AGE_MS, MAX_TAPE_AGE_MS
 
 log = logging.getLogger(__name__)
-
-# A venue's book is unusable as a feature once it is this stale; rows past it are
-# dropped rather than modelled (Kraken runs multi-minute quote gaps in this capture).
-MAX_AGE_MS = 5_000
-
-# The same discipline for the perp tape, at the cadence that tape actually runs at.
-# Open interest is a 10s REST poll and mark price a 1s push, so a book-grade 5s
-# tolerance would reject most of the day for being exactly as fresh as it ever gets.
-# This bounds a real outage instead: minutes of carried-forward basis, not seconds.
-MAX_TAPE_AGE_MS = 60_000
 
 # Share of the training period held back, as its latest rows, to stop boosting early.
 VAL_FRAC = 0.15

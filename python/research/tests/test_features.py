@@ -15,7 +15,9 @@ import pyarrow as pa
 import pytest
 
 from research.features import (
+    _LIVE_COL,
     BAR_NS,
+    MAX_AGE_MS,
     _add_targets,
     _align,
     _bar_index,
@@ -157,13 +159,16 @@ def test_vwap_is_null_only_where_there_is_no_volume() -> None:
 # ── targets ─────────────────────────────────────────────────────────────────
 
 
-def _nbbo_grid(grid: pl.DataFrame, mids: list[float]) -> pl.DataFrame:
+def _nbbo_grid(
+    grid: pl.DataFrame, mids: list[float], ages: list[float] | None = None
+) -> pl.DataFrame:
     return pl.DataFrame(
         {
             "ts_ns": grid["ts_ns"],
             "nbbo_mid": mids,
             "nbbo_spread_bps": [1.0] * len(mids),
             "nbbo_n_venues": [2] * len(mids),
+            "nbbo_age_ms": ages if ages is not None else [0.0] * len(mids),
         }
     )
 
@@ -183,6 +188,7 @@ def test_per_venue_targets_track_that_venue_not_the_nbbo() -> None:
     feats = grid.with_columns(
         pl.Series("v_mid", [100.0, 110.0, 121.0]),
         pl.Series("v_spread_bps", [1.0, 1.0, 1.0]),  # a leg always carries both
+        pl.Series("v_age_ms", [0.0, 0.0, 0.0]),
     )
     out = _add_targets(feats, _nbbo_grid(grid, [100.0, 100.0, 100.0]), ["v"]).sort("ts_ns")
     assert out["y_ret_bps_1"].to_list()[0] == 0.0  # the NBBO did not move
@@ -252,7 +258,10 @@ def test_trailing_returns_look_backward_only() -> None:
     """The one feature family derived from the mid, so it is the one most likely to
     be accidentally forward-looking. A rising series must report positive trailing
     returns, and the first bar of a window has no history to measure against."""
-    grid = _grid(0, 3 * BAR_NS).with_columns(pl.Series("v_mid", [100.0, 101.0, 102.0, 103.0]))
+    grid = _grid(0, 3 * BAR_NS).with_columns(
+        pl.Series("v_mid", [100.0, 101.0, 102.0, 103.0]),
+        pl.Series("v_age_ms", [0.0, 0.0, 0.0, 0.0]),
+    )
     out = grid.with_columns(_returns("v")).sort("ts_ns")
     assert out["v_ret_bps_1"].to_list()[0] is None  # nothing precedes the first bar
     assert out["v_ret_bps_1"].to_list()[1] == pytest.approx((101.0 / 100.0 - 1) * 1e4)
@@ -261,10 +270,83 @@ def test_trailing_returns_look_backward_only() -> None:
 
 def test_a_trailing_return_never_reaches_forward() -> None:
     """A jump at the last bar must not show up in any earlier bar's trailing return."""
-    grid = _grid(0, 3 * BAR_NS).with_columns(pl.Series("v_mid", [100.0, 100.0, 100.0, 200.0]))
+    grid = _grid(0, 3 * BAR_NS).with_columns(
+        pl.Series("v_mid", [100.0, 100.0, 100.0, 200.0]),
+        pl.Series("v_age_ms", [0.0, 0.0, 0.0, 0.0]),
+    )
     out = grid.with_columns(_returns("v")).sort("ts_ns")
     assert out["v_ret_bps_1"].to_list()[1:3] == [0.0, 0.0]
     assert out["v_ret_bps_1"].to_list()[3] > 0
+
+
+# ── capture holes ───────────────────────────────────────────────────────────
+#
+# 2026-07-08 holds 13 gaps over a minute, the longest 5.9h, and 07-09 another 10. The
+# grid is uniform and `_asof` carries the last quote across them, so every window that
+# reaches over a hole measures unobserved time. `model.clean` cannot catch any of it:
+# the rows on the lips of a hole have perfectly fresh books of their own.
+
+
+def _holed(grid: pl.DataFrame, dead: set[int]) -> pl.DataFrame:
+    """The same grid, with those bar indices marked as capture downtime."""
+    return grid.with_columns(pl.Series(_LIVE_COL, [i not in dead for i in range(grid.height)]))
+
+
+def test_a_trailing_return_will_not_reach_across_a_capture_hole() -> None:
+    stale = float(MAX_AGE_MS + 1)
+    grid = _grid(0, 3 * BAR_NS).with_columns(
+        pl.Series("v_mid", [100.0, 100.0, 100.0, 200.0]),
+        pl.Series("v_age_ms", [0.0, 0.0, stale, 0.0]),  # bar 2 is inside the hole
+    )
+    got = grid.with_columns(_returns("v")).sort("ts_ns")["v_ret_bps_1"].to_list()
+    assert got[3] is None  # would have been +10000bps of move nobody recorded
+    assert got[1] == 0.0  # a lookback that stays on live bars is untouched
+
+
+def test_a_target_will_not_reach_forward_across_a_capture_hole() -> None:
+    """Worse than a contaminated feature: a fabricated label trains the model on a move
+    that was never observed, and the bar it lands on looks pristine."""
+    grid = _grid(0, 2 * BAR_NS)
+    ages = [0.0, float(MAX_AGE_MS + 1), 0.0]
+    out = _add_targets(grid, _nbbo_grid(grid, [100.0, 100.0, 500.0], ages), []).sort("ts_ns")
+    assert out["y_ret_bps_1"].to_list()[0] is None
+    assert out["y_dz_1"].to_list()[0] is None  # and the class sibling does not go flat
+
+
+def test_a_flow_roll_spans_a_quiet_venue_but_not_a_dead_capture() -> None:
+    """Two ways to see no trades in a bar, and they are not the same fact. A venue that
+    printed nothing really did see no flow; a capture that was down saw nothing at all,
+    and summing its zeros invents a quiet market that was never measured."""
+    trades = _trades([(5 * BAR_NS + 1, 100.0, 2.0, "bid")])  # lands in bar 6
+    grid = _grid(0, 9 * BAR_NS)
+
+    quiet = _flow_features(trades, grid, "v").sort("ts_ns")["v_signed_vol_5"].to_list()
+    assert quiet[6] == 2.0  # eight silent bars around one trade is a real, measured 2.0
+
+    got = _flow_features(trades, _holed(grid, {4}), "v").sort("ts_ns")["v_signed_vol_5"].to_list()
+    assert got[6] is None  # the trailing 5 bars cover the dead one
+    assert got[9] == 2.0  # by here the window has cleared it
+
+
+def test_ofi_does_not_book_a_capture_hole_as_a_single_tick() -> None:
+    """`_ofi` differences consecutive quote *events*, not grid bars, so it needs its own
+    guard: the first quote back would otherwise charge hours of book evolution to one tick."""
+    gap_ns = (MAX_AGE_MS + 1) * 1_000_000
+    quotes = _quotes([(0, 100.0, 101.0, 5.0, 5.0), (gap_ns, 100.0, 101.0, 50.0, 5.0)])
+    got = _ofi(quotes, "v")["v_ofi"].to_list()
+    assert got[1] == 0.0  # not +45 of depth that appeared while nobody was watching
+
+
+def test_the_perp_tape_keeps_its_own_lookback_tolerance() -> None:
+    """Open interest is a 10s poll, so it is never fresh by book standards. Holding its
+    change features to the 5s book tolerance would null them on every bar of every date -
+    the guard has to bound a real outage, not the stream's normal cadence."""
+    oi = pl.DataFrame({"ts_ns": [0, 8 * BAR_NS], "open_interest": [100.0, 110.0]})
+    got = _oi_features(oi, _grid(0, 12 * BAR_NS), "p").sort("ts_ns")
+    # bar 12 looks back 5 bars to bar 7, which is 7s stale: past the book tolerance,
+    # well inside the tape's, and a genuine observation of the poll before last.
+    assert got["p_oi_age_ms"].to_list()[7] == 7000.0
+    assert got["p_oi_chg_bps_5"].to_list()[12] == pytest.approx(1000.0)
 
 
 def test_leg_prefix_is_the_exchange_not_the_symbol() -> None:
@@ -472,6 +554,9 @@ def test_a_perp_leg_joins_without_disturbing_the_grid() -> None:
     # the spot venue publishes no perp tape, so it gets no perp columns at all
     assert not [c for c in got.columns if c.startswith("coinbase_basis")]
     assert got["binance_futures_basis_bps"][0] == pytest.approx(1.0)  # 0.01 on 100 == 1bps
+    # every builder takes the grid and so sees `_LIVE_COL`; any that forgets to drop it
+    # leaks a constant column the model would happily take as a feature.
+    assert not [c for c in got.columns if c.startswith("_")], "private column leaked"
 
 
 # ── dead-zone target ────────────────────────────────────────────────────────
@@ -507,6 +592,7 @@ def test_targets_carry_a_dead_zone_sibling_per_horizon() -> None:
     feats = grid.with_columns(
         pl.Series("v_mid", [100.0, 100.0, 100.0, 100.0]),
         pl.Series("v_spread_bps", [1.0] * 4),
+        pl.Series("v_age_ms", [0.0] * 4),
     )
     out = _add_targets(feats, _nbbo_grid(grid, [100.0, 100.0, 100.0, 100.0]), ["v"])
     for h in (1, 5, 30):
