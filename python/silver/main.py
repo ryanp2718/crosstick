@@ -20,6 +20,7 @@ import logging
 import os
 from collections import defaultdict
 from collections.abc import Callable, Iterable
+from contextlib import ExitStack
 
 import pyarrow as pa
 from pyarrow import fs as pafs
@@ -237,11 +238,15 @@ def _process_partition(
     bq_key = partition_key("book_quality", exchange=exchange, symbol=canon, date=date)
     qt_key = partition_key("quotes", exchange=exchange, symbol=canon, date=date)
     lat_key = partition_key("latency", exchange=exchange, symbol=canon, date=date)
-    bq = PartitionWriter(derived_fs, silver_bucket, bq_key, BOOK_QUALITY_SCHEMA)
-    qt = PartitionWriter(derived_fs, silver_bucket, qt_key, QUOTES_SCHEMA)
-    lat = PartitionWriter(derived_fs, silver_bucket, lat_key, LATENCY_SCHEMA)
-    bqb, qtb, latb = _Batch(bq), _Batch(qt), _Batch(lat)
-    try:
+    with ExitStack() as stack:
+
+        def _writer(key: str, schema: pa.Schema) -> PartitionWriter:
+            return stack.enter_context(PartitionWriter(derived_fs, silver_bucket, key, schema))
+
+        bq = _writer(bq_key, BOOK_QUALITY_SCHEMA)
+        qt = _writer(qt_key, QUOTES_SCHEMA)
+        lat = _writer(lat_key, LATENCY_SCHEMA)
+        bqb, qtb, latb = _Batch(bq), _Batch(qt), _Batch(lat)
         if present & set(BOOK_DATASETS):
             snap_recs = _iter_records(bronze_fs, lake_bucket, "book_snapshots", date, bron)
             delta_recs = _iter_records(bronze_fs, lake_bucket, "book_deltas", date, bron)
@@ -273,10 +278,6 @@ def _process_partition(
         bqb.flush()
         qtb.flush()
         latb.flush()
-    finally:
-        bq.close()
-        qt.close()
-        lat.close()
 
 
 def _write_rows(
