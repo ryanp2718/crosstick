@@ -72,6 +72,12 @@ erDiagram
         decimal best_ask
         decimal bid_sz
         decimal ask_sz
+        decimal bid_depth_5
+        decimal ask_depth_5
+        decimal bid_depth_10
+        decimal ask_depth_10
+        decimal bid_px_10
+        decimal ask_px_10
     }
     nbbo {
         int ts_ns
@@ -252,7 +258,7 @@ discipline as bronze's start-offset keys, but at date grain).
 | `book_quality` | `book_quality/exchange={ex}/symbol={canon}/date={d}/` | one book event | `kind` (snap/delta), `offset`, `sequence`, `epoch`, `exchange_ts_ns`, `local_ts_ns`, `local_recv_ts_ns`, `best_bid`/`best_ask` (`DECIMAL(38,18)`), `seq_gap`, `crossed`, `invariant_kind` |
 | `latency` | `latency/exchange={ex}/symbol={canon}/date={d}/` | one firehose record | `dataset`, `offset`, `exchange_ts_ns`, `exchange_to_recv_ns`, `exchange_to_emit_ns` |
 | `status_events` | `status_events/exchange={ex}/date={d}/` | one venue status | `ts_ns`, `state`, `prev_state`, `is_transition`, `downtime_ns` |
-| `quotes` | `quotes/exchange={ex}/symbol={canon}/date={d}/` | one valid two-sided book event | `ts_ns`, `best_bid`/`best_ask`, `bid_sz`/`ask_sz` (`DECIMAL(38,18)`) |
+| `quotes` | `quotes/exchange={ex}/symbol={canon}/date={d}/` | one valid two-sided book event | `ts_ns`, `best_bid`/`best_ask`, `bid_sz`/`ask_sz`, `bid_depth_5`/`ask_depth_5`, `bid_depth_10`/`ask_depth_10`, `bid_px_10`/`ask_px_10` (`DECIMAL(38,18)`) |
 | `nbbo` | `nbbo/symbol={canon}/date={d}/` | one cross-venue NBBO tick | `ts_ns`, `best_bid`/`best_ask` (`DECIMAL(38,18)`), `bid_venue`, `ask_venue`, `n_venues` |
 
 - **`crossed`/`invariant_kind`** come from the OrderBook fold per
@@ -270,6 +276,15 @@ discipline as bronze's start-offset keys, but at date grain).
   them). Cross-venue `exchange_ts_ns` comparisons inherit the clock-domain caveat
   (ingest and gateway share one clock). `bbo`/`nbbo` carry no headers and are validated live by
   the gateway, so they are not re-checked here.
+- **`quotes` depth** carries cumulative resting size over the best 5 and 10 levels a
+  side, plus the worst price the 10th rung reaches, so size *and* distance are both
+  available (book slope). Ten levels is a venue-symmetry floor, not a tuning knob:
+  Kraken's v2 book channel is subscribed at depth 10 and hard-trims past it, so a
+  deeper rung (or a price-relative window like "size within 25bps", which coinbase
+  and binance could fill and kraken could not) would give three venues a feature the
+  fourth structurally cannot have, and a cross-venue lead-lag model would read that
+  asymmetry as venue skill. Rungs truncate to the levels a side actually holds, so a
+  thin book reports its whole side rather than a null.
 - **`quotes`/`nbbo`** are the basis-slice additions.
   `quotes` is per-venue top-of-1 from the *same* OrderBook fold as `book_quality`
   (crossed/one-sided events skipped); `nbbo` is the per-canonical max-bid/min-ask

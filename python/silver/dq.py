@@ -12,9 +12,10 @@ Five fact streams, each canonical-resolved:
                    real ingest.book.OrderBook) and a sequence-gap count.
   - latency      : per-hop latency (ns) for every firehose record with headers.
   - status_events: typed venue up/down transitions with downtime.
-  - quotes       : per-venue reconstructed top-of-book (best bid/ask + sizes) at
-                   each book event with a valid two-sided book - the same
-                   OrderBook fold as book_quality, one pass.
+  - quotes       : per-venue reconstructed top-of-book (best bid/ask + sizes) plus
+                   cumulative depth at the DEPTH_LEVELS rungs, at each book event
+                   with a valid two-sided book - the same OrderBook fold as
+                   book_quality, one pass.
   - nbbo         : per-canonical reconstructed NBBO (max-bid/min-ask across a
                    canonical's venues, evicting a venue while its status is down).
 
@@ -49,7 +50,7 @@ import pyarrow as pa
 from analytics.corpus import CorpusRecord
 from common.asof import MAX_LEG_AGE_NS, merge_latest
 from common.kafka_io import header_value
-from common.models import BookDelta, BookSnapshot, Status, decode
+from common.models import BookDelta, BookSnapshot, Side, Status, decode
 from ingest.book import BookInvariantError, Level, OrderBook
 from materializer.bronze import CanonicalMap, parse_topic, record_date
 
@@ -63,6 +64,19 @@ LATENCY_DATASETS = frozenset(
     {"book_snapshots", "book_deltas", "trades", "liquidations", "mark_price", "open_interest"}
 )
 CROSSED_KINDS = frozenset({"snapshot_crossed", "crossed_after_delta"})
+
+# Depth rungs carried into `quotes` beyond the touch, as cumulative size over the
+# best N levels a side.
+#
+# Ten is not a tuning choice, it is the floor across venues: Kraken's v2 book
+# channel is subscribed at depth 10 (ingest/kraken.py DEFAULT_DEPTH) and hard-trims
+# past it, so ten is the deepest rung EVERY venue can supply. Going deeper - or
+# using price-relative windows ("size within 25bps"), which coinbase and binance
+# could fill and kraken structurally could not - would hand three venues a feature
+# the fourth cannot have, and a cross-venue lead-lag model reads that asymmetry as
+# venue skill. Symmetry beats resolution here.
+MAX_DEPTH = 10
+DEPTH_LEVELS = (5, 10)
 
 
 @dataclass
@@ -179,13 +193,21 @@ def build_silver(records: Iterable[CorpusRecord], canonical: CanonicalMap) -> Si
 @dataclass
 class _BookEvent:
     """One reconstructed book event - the shared output of the fold that both
-    book_quality (quality flags) and quotes (top-of-book series) derive from."""
+    book_quality (quality flags) and quotes (top-of-book series) derive from.
+
+    `bid_levels`/`ask_levels` are the best `MAX_DEPTH` levels, populated only when
+    the event will produce a quote (valid, two-sided). book_quality is emitted for
+    every event including resyncing ones, so best_bid/best_ask stay separate rather
+    than being derived from the level lists.
+    """
 
     rec: _BookRec
     seq_gap: int
     invariant_kind: str | None
     best_bid: Level | None
     best_ask: Level | None
+    bid_levels: list[Level] = field(default_factory=list)
+    ask_levels: list[Level] = field(default_factory=list)
 
 
 # snap before delta at equal sequence (a re-snapshot replaces the book).
@@ -235,7 +257,19 @@ def _fold(book_recs: Iterable[_BookRec], contiguous: bool) -> Iterator[_BookEven
         except BookInvariantError as e:
             invariant_kind = e.kind
 
-        yield _BookEvent(r, seq_gap, invariant_kind, book.best_bid(), book.best_ask())
+        bb, ba = book.best_bid(), book.best_ask()
+        # Walking depth costs a tree read per level, so only do it on events that
+        # will actually emit a quote (`_quote_row` drops the rest).
+        deep = invariant_kind is None and bb is not None and ba is not None
+        yield _BookEvent(
+            r,
+            seq_gap,
+            invariant_kind,
+            bb,
+            ba,
+            book.top_n(Side.BID, MAX_DEPTH) if deep else [],
+            book.top_n(Side.ASK, MAX_DEPTH) if deep else [],
+        )
         if invariant_kind is not None:
             book.clear()  # resync from the next snapshot, as the ingester does
 
@@ -358,14 +392,27 @@ def _book_quality_row(ev: _BookEvent) -> dict:
     }
 
 
+def _cum_size(levels: list[Level], n: int) -> Decimal:
+    """Cumulative resting size over the best `n` levels, or over the whole side when
+    the book is thinner than that."""
+    return sum((sz for _, sz in levels[:n]), Decimal(0))
+
+
 def _quote_row(ev: _BookEvent) -> dict | None:
     """A quote is the top of a *valid* two-sided book - skip events that raised
-    an invariant (the book is resyncing) or are one-sided."""
+    an invariant (the book is resyncing) or are one-sided.
+
+    Beyond the touch it carries cumulative size at the DEPTH_LEVELS rungs plus the
+    worst price reached, which together give book slope: `bid_depth_10` is how much
+    size is available and `bid_px_10` is how far down you walked to find it. Both
+    are truncated to the levels the side actually has, so a book thinner than a rung
+    reports its whole side rather than a null (and the pair stays consistent).
+    """
     if ev.invariant_kind is not None or ev.best_bid is None or ev.best_ask is None:
         return None
     r = ev.rec
     ts = r.local_recv_ts_ns if r.local_recv_ts_ns is not None else r.local_ts_ns
-    return {
+    row = {
         "exchange": r.exchange,
         "canonical_symbol": r.canonical,
         "date": r.date,
@@ -375,6 +422,12 @@ def _quote_row(ev: _BookEvent) -> dict | None:
         "bid_sz": ev.best_bid[1],
         "ask_sz": ev.best_ask[1],
     }
+    for n in DEPTH_LEVELS:
+        row[f"bid_depth_{n}"] = _cum_size(ev.bid_levels, n)
+        row[f"ask_depth_{n}"] = _cum_size(ev.ask_levels, n)
+    row["bid_px_10"] = ev.bid_levels[:MAX_DEPTH][-1][0] if ev.bid_levels else None
+    row["ask_px_10"] = ev.ask_levels[:MAX_DEPTH][-1][0] if ev.ask_levels else None
+    return row
 
 
 def iter_nbbo(
@@ -541,6 +594,11 @@ QUOTES_SCHEMA = pa.schema(
         ("best_ask", _PRICE),
         ("bid_sz", _PRICE),
         ("ask_sz", _PRICE),
+        # Depth beyond the touch: cumulative size at each DEPTH_LEVELS rung, and the
+        # worst price the deepest rung reaches (size + distance = book slope).
+        *[(f"{side}_depth_{n}", _PRICE) for n in DEPTH_LEVELS for side in ("bid", "ask")],
+        ("bid_px_10", _PRICE),
+        ("ask_px_10", _PRICE),
     ]
 )
 
