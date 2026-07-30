@@ -22,6 +22,8 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 from pyarrow import fs as pafs
 
+from common.schemas import FRESHNESS_SCHEMA
+
 # Base env names + defaults for an S3/MinIO connection. A role prefix (e.g. "LAKE_")
 # selects an override group whose vars fall back to these base names when unset, so a
 # single-endpoint deploy that sets no prefixed vars behaves identically to the base.
@@ -245,15 +247,6 @@ def write_object(fs: pafs.FileSystem, bucket: str, key: str, table: pa.Table) ->
 # R2). A once-daily audit still walks the layer to cross-check the markers.
 FRESHNESS_PREFIX = "_freshness"
 
-_FRESHNESS_SCHEMA = pa.schema(
-    [
-        ("dataset", pa.string()),
-        ("date", pa.string()),
-        ("written_at_epoch", pa.float64()),
-        ("row_count", pa.int64()),
-    ]
-)
-
 
 def write_freshness_marker(
     fs: pafs.FileSystem,
@@ -276,7 +269,7 @@ def write_freshness_marker(
             "written_at_epoch": [float(written_at)],
             "row_count": [int(row_count)],
         },
-        schema=_FRESHNESS_SCHEMA,
+        schema=FRESHNESS_SCHEMA,
     )
     return write_object(fs, bucket, f"{FRESHNESS_PREFIX}/{dataset}.parquet", table)
 

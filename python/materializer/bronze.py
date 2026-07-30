@@ -25,6 +25,7 @@ import yaml
 
 from analytics.corpus import CorpusRecord
 from common.kafka_io import normalize_symbol
+from common.schemas import BRONZE_SCHEMA
 
 log = logging.getLogger(__name__)
 
@@ -173,17 +174,8 @@ def object_key(
     return "/".join(parts)
 
 
-SCHEMA = pa.schema(
-    [
-        ("topic", pa.string()),
-        ("partition", pa.int32()),
-        ("offset", pa.int64()),
-        ("timestamp_ms", pa.int64()),
-        ("key", pa.binary()),
-        ("value", pa.binary()),
-        ("headers", pa.list_(pa.struct([("key", pa.string()), ("value", pa.binary())]))),
-    ]
-)
+# Declared in common.schemas; kept under the local name every caller already uses.
+SCHEMA = BRONZE_SCHEMA
 
 
 def records_to_table(records: Sequence[CorpusRecord]) -> pa.Table:

@@ -22,20 +22,8 @@ import numpy as np
 import pyarrow as pa
 import pyarrow.compute as pc
 
-SCORECARD_SCHEMA = pa.schema(
-    [
-        ("exchange", pa.string()),
-        ("canonical_symbol", pa.string()),
-        ("date", pa.string()),
-        ("check", pa.string()),
-        ("n_records", pa.int64()),
-        ("n_violations", pa.int64()),
-        ("p50_ms", pa.float64()),
-        ("p95_ms", pa.float64()),
-        ("p99_ms", pa.float64()),
-        ("detail", pa.string()),
-    ]
-)
+# Re-exported: declared in common.schemas, imported from here by convention.
+from common.schemas import SCORECARD_SCHEMA
 
 
 def _row(

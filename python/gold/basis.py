@@ -25,41 +25,10 @@ import numpy as np
 import pyarrow as pa
 
 from common.asof import MAX_LEG_AGE_NS, merge_latest
+
+# Re-exported: declared in common.schemas, imported from here by convention.
+from common.schemas import BASIS_SCHEMA, BASIS_SUMMARY_SCHEMA
 from materializer.bronze import record_date
-
-_PRICE = pa.decimal128(38, 18)
-
-BASIS_SCHEMA = pa.schema(
-    [
-        ("base", pa.string()),
-        ("date", pa.string()),
-        ("ts_ns", pa.int64()),
-        ("usd_mid", _PRICE),
-        ("usdt_mid", _PRICE),
-        ("basis_abs", _PRICE),
-        ("basis_bps", pa.float64()),
-        ("usd_bid", _PRICE),
-        ("usd_ask", _PRICE),
-        ("usdt_bid", _PRICE),
-        ("usdt_ask", _PRICE),
-    ]
-)
-
-BASIS_SUMMARY_SCHEMA = pa.schema(
-    [
-        ("base", pa.string()),
-        ("date", pa.string()),
-        ("n_obs", pa.int64()),
-        ("basis_bps_mean", pa.float64()),
-        ("basis_bps_std", pa.float64()),
-        ("basis_bps_median", pa.float64()),
-        ("basis_bps_min", pa.float64()),
-        ("basis_bps_max", pa.float64()),
-        ("basis_bps_p1", pa.float64()),
-        ("basis_bps_p99", pa.float64()),
-        ("coverage_ns", pa.int64()),
-    ]
-)
 
 
 def _by_canonical(nbbo_rows: Iterable[dict]) -> dict[str, list[tuple[int, tuple]]]:
