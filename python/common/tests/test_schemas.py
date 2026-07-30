@@ -17,11 +17,13 @@ from common import schemas
 from common.schemas import (
     BRONZE_SCHEMA,
     DATASETS,
+    FRESHNESS_SCHEMA,
     QUOTES_SCHEMA,
     Dataset,
     dataset,
     datasets,
     decimal_columns,
+    table_from_rows,
 )
 
 LAYERS = ("bronze", "silver", "gold")
@@ -119,6 +121,65 @@ def test_the_dataclass_defaults_suit_the_derived_layers() -> None:
     d = Dataset("x", "silver", QUOTES_SCHEMA, ("exchange",), "one row")
     assert d.filename == "part.parquet"
     assert d.source_topics == ""
+
+
+# ── table_from_rows ──────────────────────────────────────────────────────────
+
+_ROW = {
+    "dataset": "quotes",
+    "date": "2026-07-29",
+    "written_at_epoch": 1.0,
+    "row_count": 2,
+}
+
+
+def test_a_matching_row_set_builds_the_table() -> None:
+    table = table_from_rows([_ROW], FRESHNESS_SCHEMA)
+    assert table.schema == FRESHNESS_SCHEMA
+    assert table.num_rows == 1
+
+
+def test_a_missing_key_raises_instead_of_writing_a_null_column() -> None:
+    """The whole point. from_pylist would have written row_count as all-null."""
+    partial = {k: v for k, v in _ROW.items() if k != "row_count"}
+    with pytest.raises(ValueError, match=r"missing=\['row_count'\]"):
+        table_from_rows([partial], FRESHNESS_SCHEMA)
+
+
+def test_an_extra_key_raises_instead_of_being_dropped() -> None:
+    with pytest.raises(ValueError, match=r"extra=\['surprise'\]"):
+        table_from_rows([{**_ROW, "surprise": 1}], FRESHNESS_SCHEMA)
+
+
+def test_both_directions_are_reported_together() -> None:
+    """One round trip should tell you everything wrong with the row."""
+    wrong = {k: v for k, v in _ROW.items() if k != "date"} | {"dt": "2026-07-29"}
+    with pytest.raises(ValueError) as excinfo:
+        table_from_rows([wrong], FRESHNESS_SCHEMA)
+    assert "missing=['date']" in str(excinfo.value)
+    assert "extra=['dt']" in str(excinfo.value)
+
+
+def test_key_order_does_not_matter() -> None:
+    """from_pylist keys by name, so order drift is harmless and must not be rejected."""
+    reversed_row = dict(reversed(list(_ROW.items())))
+    assert table_from_rows([reversed_row], FRESHNESS_SCHEMA).num_rows == 1
+
+
+def test_no_rows_yields_the_typed_empty_table() -> None:
+    """Callers write zero-row partitions; the schema still has to survive."""
+    table = table_from_rows([], FRESHNESS_SCHEMA)
+    assert table.num_rows == 0
+    assert table.schema == FRESHNESS_SCHEMA
+
+
+def test_only_the_first_row_is_checked() -> None:
+    """Pins the documented trade-off rather than leaving it implicit: validation is
+    per batch, not per row, because every builder emits a fixed key set and a per-row
+    check would cost a set construction per row across a silver date's millions."""
+    table = table_from_rows([_ROW, {**_ROW, "surprise": 1}], FRESHNESS_SCHEMA)
+    assert table.num_rows == 2
+    assert table.column_names == FRESHNESS_SCHEMA.names
 
 
 # ── the layer aliases ────────────────────────────────────────────────────────

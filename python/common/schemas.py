@@ -368,3 +368,25 @@ def decimal_columns(layer: str, name: str) -> tuple[str, ...]:
     """Column names a reader has to cast out of Arrow decimal128."""
     schema = dataset(layer, name).schema
     return tuple(f.name for f in schema if pa.types.is_decimal(f.type))
+
+
+def table_from_rows(rows: list[dict], schema: pa.Schema) -> pa.Table:
+    """`pa.Table.from_pylist` with the row keys asserted rather than coerced.
+
+    from_pylist(rows, schema=...) is lenient in the one direction that matters: a key
+    the schema names but the row omits becomes an all-null column, and a key the row
+    carries but the schema does not is dropped. Only a type-incompatible *value*
+    raises. So a row builder drifting from its schema ships a silently empty column
+    rather than failing, which is exactly the failure a declared schema exists to stop.
+
+    Validates the first row, not every row: every builder in this repo emits a dict
+    literal with a fixed key set, so the head is representative, and a per-row check
+    would cost a set construction per row across the millions a silver date writes.
+    """
+    if not rows:
+        return schema.empty_table()
+    missing = sorted(set(schema.names) - set(rows[0]))
+    extra = sorted(set(rows[0]) - set(schema.names))
+    if missing or extra:
+        raise ValueError(f"row keys do not match the schema: missing={missing} extra={extra}")
+    return pa.Table.from_pylist(rows, schema=schema)

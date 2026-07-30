@@ -40,6 +40,7 @@ from common.lake import (
     write_freshness_markers,
     write_object,
 )
+from common.schemas import table_from_rows
 from materializer.bronze import CanonicalMap, table_to_records
 from silver.dq import (
     BOOK_QUALITY_SCHEMA,
@@ -122,7 +123,7 @@ def _write_grouped(
         groups[key].append(row)
         parts[key] = part
     for key, group in groups.items():
-        table = pa.Table.from_pylist(group, schema=schema)
+        table = table_from_rows(group, schema)
         path = write_object(fs, bucket, partition_key(dataset, **parts[key]), table)
         log.info("silver PUT %s (%d rows)", path, len(group))
 

@@ -14,7 +14,7 @@ from pyarrow import fs as pafs
 from common.asof import LatenessError
 from common.lake import PartitionWriter, partition_key, read_dataset
 from silver import main as silver_main
-from silver.dq import QUOTES_SCHEMA, _build_nbbo
+from silver.dq import DEPTH_LEVELS, QUOTES_SCHEMA, _build_nbbo
 from silver.main import _build_nbbo_streaming
 
 DATE = "2026-06-16"
@@ -22,6 +22,8 @@ S = 1_000_000_000  # 1s in ns
 
 
 def _q(exchange: str, symbol: str, ts: int, bid: str, ask: str) -> dict:
+    """A quotes row. NBBO reads only the touch, so depth is explicitly null rather
+    than omitted: the writer asserts the row carries every column the schema names."""
     return {
         "exchange": exchange,
         "canonical_symbol": symbol,
@@ -31,6 +33,9 @@ def _q(exchange: str, symbol: str, ts: int, bid: str, ask: str) -> dict:
         "best_ask": Decimal(ask),
         "bid_sz": Decimal("1"),
         "ask_sz": Decimal("1"),
+        **{f"{side}_depth_{n}": None for n in DEPTH_LEVELS for side in ("bid", "ask")},
+        "bid_px_10": None,
+        "ask_px_10": None,
     }
 
 

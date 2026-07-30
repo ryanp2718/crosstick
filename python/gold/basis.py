@@ -27,7 +27,7 @@ import pyarrow as pa
 from common.asof import MAX_LEG_AGE_NS, merge_latest
 
 # Re-exported: declared in common.schemas, imported from here by convention.
-from common.schemas import BASIS_SCHEMA, BASIS_SUMMARY_SCHEMA
+from common.schemas import BASIS_SCHEMA, BASIS_SUMMARY_SCHEMA, table_from_rows
 from materializer.bronze import record_date
 
 
@@ -133,8 +133,8 @@ def build_basis_summary(basis_rows: Iterable[dict]) -> list[dict]:
 
 
 def basis_table(rows: list[dict]) -> pa.Table:
-    return pa.Table.from_pylist(rows, schema=BASIS_SCHEMA)
+    return table_from_rows(rows, BASIS_SCHEMA)
 
 
 def basis_summary_table(rows: list[dict]) -> pa.Table:
-    return pa.Table.from_pylist(rows, schema=BASIS_SUMMARY_SCHEMA)
+    return table_from_rows(rows, BASIS_SUMMARY_SCHEMA)

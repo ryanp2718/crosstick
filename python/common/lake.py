@@ -22,7 +22,7 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 from pyarrow import fs as pafs
 
-from common.schemas import FRESHNESS_SCHEMA
+from common.schemas import FRESHNESS_SCHEMA, table_from_rows
 
 # Base env names + defaults for an S3/MinIO connection. A role prefix (e.g. "LAKE_")
 # selects an override group whose vars fall back to these base names when unset, so a
@@ -330,7 +330,7 @@ class PartitionWriter:
             return
         self._ensure_open()
         assert self._writer is not None
-        self._writer.write_table(pa.Table.from_pylist(rows, schema=self._schema))
+        self._writer.write_table(table_from_rows(rows, self._schema))
 
     def _ensure_open(self) -> None:
         if self._writer is not None:

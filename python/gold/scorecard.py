@@ -23,7 +23,7 @@ import pyarrow as pa
 import pyarrow.compute as pc
 
 # Re-exported: declared in common.schemas, imported from here by convention.
-from common.schemas import SCORECARD_SCHEMA
+from common.schemas import SCORECARD_SCHEMA, table_from_rows
 
 
 def _row(
@@ -384,4 +384,4 @@ def build_scorecard(
 
 
 def scorecard_table(rows: list[dict]) -> pa.Table:
-    return pa.Table.from_pylist(rows, schema=SCORECARD_SCHEMA)
+    return table_from_rows(rows, SCORECARD_SCHEMA)
