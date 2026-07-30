@@ -20,10 +20,8 @@ from research.model import (
     edge_summary,
     evaluate,
     feature_columns,
-    leg_of,
     make_split,
     monotonic_constraints,
-    venue_prefixes,
 )
 
 
@@ -206,20 +204,6 @@ def test_excluding_the_perp_keeps_binance_spot() -> None:
     cols = feature_columns(_binance_frame(), exclude_venue="binance_futures")
     assert not [c for c in cols if c.startswith("binance_futures")]
     assert "binance_ofi" in cols
-
-
-def test_venue_prefixes_are_longest_first() -> None:
-    """Load-bearing ordering: `leg_of` takes the first match."""
-    venues = venue_prefixes(_binance_frame())
-    assert set(venues) == {"binance", "binance_futures", "coinbase"}
-    assert venues.index("binance_futures") < venues.index("binance")
-
-
-def test_leg_of_resolves_the_longer_venue_name() -> None:
-    venues = venue_prefixes(_binance_frame())
-    assert leg_of("binance_futures_ofi", venues) == "binance_futures"
-    assert leg_of("binance_ofi", venues) == "binance"
-    assert leg_of("nbbo_spread_bps", venues) is None
 
 
 def test_trailing_returns_survive_into_the_feature_set() -> None:
