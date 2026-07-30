@@ -9,6 +9,10 @@ out-of-sample series that gets bootstrapped by date for confidence intervals. Pr
 the model comparison and per-venue permutation importance - the price-discovery answer,
 with the error bars that say how much of it to believe.
 
+Every run lands a record in ``python/runs/`` (see ``research.runs``) and the printed
+tables are rendered from it, so nothing reaches the terminal that was not saved. The
+functions here format; they compute nothing.
+
 Env matches the batch layers: base ``S3_*`` is the silver endpoint, ``SILVER_BUCKET``
 (default ``silver``). Reads silver only; bronze is never touched.
 """
@@ -26,9 +30,10 @@ import numpy as np
 import polars as pl
 
 from common.lake import filesystem_from_env, list_partitions, partition_key
-from research import features
-from research.features import HORIZONS, SOURCE_DATASETS, build_features
+from research import features, runs
+from research.features import DEAD_ZONE_SPREADS, HORIZONS, SOURCE_DATASETS, build_features
 from research.model import MAX_AGE_MS, clean
+from research.runs import RunRecord, RunSpec
 from research.schema import FeatureSchema
 from research.validation import (
     MIN_BOOTSTRAP_BLOCKS,
@@ -37,12 +42,6 @@ from research.validation import (
     PLACEBO_LAG_BARS,
     STEP_DATES,
     TEST_DATES,
-    WalkForward,
-    as_classes,
-    as_classes_at_coverage,
-    class_confidence_intervals,
-    confidence_intervals,
-    coverage_confidence_intervals,
     evaluate_walk_forward,
     fold_spread,
     placebo_target,
@@ -106,53 +105,80 @@ def cached_features(
     cache: Path,
     refresh: bool = False,
     extra_symbols: tuple[str, ...] = (),
-) -> pl.DataFrame | None:
-    """Feature matrix for one date, materialised locally on first build.
+) -> tuple[pl.DataFrame | None, str]:
+    """Feature matrix for one date and the silver fingerprint it was built from.
 
     A date is a whole silver read plus the joins; caching makes iterating on the model
     cheap without re-deriving features from silver that has not changed.
+
+    The fingerprint is returned rather than recomputed by the caller because deriving it
+    walks every partition of every source dataset, which is most of the cost of a cache
+    hit. It is the data half of a run's provenance: two runs over the same dates whose
+    fingerprints differ read different silver.
     """
     all_symbols = (symbol, *extra_symbols)
     fingerprint = source_fingerprint(fs, bucket, date, all_symbols)
     path = cache / cache_name(date, symbol, extra_symbols, fingerprint)
     if path.exists() and not refresh:
-        return pl.read_parquet(path)
+        return pl.read_parquet(path), fingerprint
     df = build_features(fs, bucket, date, symbol, extra_symbols)
     if df is None:
-        return None
+        return None, fingerprint
     df = df.with_columns(pl.lit(date).alias("date"))
     path.parent.mkdir(parents=True, exist_ok=True)
     df.write_parquet(path)
-    return df
+    return df, fingerprint
 
 
-def _report_folds(wf: WalkForward) -> None:
+CLASS_KEYS = ("up_precision", "up_recall", "down_precision", "down_recall")
+
+
+def _cells(ci: dict[str, tuple[float, float, float]]) -> str:
+    return " ".join(f"{ci[k][0]:>6.3f}[{ci[k][1]:>5.3f},{ci[k][2]:>5.3f}]" for k in CLASS_KEYS)
+
+
+def report(record: RunRecord) -> None:
+    """Print the whole run.
+
+    Formatting only: every number here was computed into the record before anything was
+    printed, so what is on screen and what is on disk cannot disagree.
+    """
+    _report_folds(record)
+    _report_spread(record)
+    _report_pooled(record)
+    _report_dead_zone(record)
+    _report_selectivity(record)
+    _report_importance(record)
+
+
+def _report_folds(record: RunRecord) -> None:
     """Per-fold scores. The point of printing every fold rather than only the mean is
     that a result driven by one unusual week is visible here and nowhere else."""
-    print(f"\nper fold ({len(wf.splits)} folds, expanding window)")
+    print(f"\nper fold ({len(record.folds)} folds, expanding window)")
     print(f"{'fold':>4}  {'train':<24} {'test':<24} {'n':>7} {'gbt R2':>10} {'gbt hit':>9}")
     print("-" * 84)
-    for i, (split, metrics) in enumerate(zip(wf.splits, wf.fold_metrics, strict=True), 1):
-        gbt = metrics["gbt"]
-        train = f"{split.train_dates[0]}..{split.train_dates[-1]}"
-        test = f"{split.test_dates[0]}..{split.test_dates[-1]}"
+    for i, fold in enumerate(record.folds, 1):
+        gbt = fold.metrics["gbt"]
+        train = f"{fold.train_dates[0]}..{fold.train_dates[-1]}"
+        test = f"{fold.test_dates[0]}..{fold.test_dates[-1]}"
         print(
             f"{i:>4}  {train:<24} {test:<24} {gbt['n']:>7.0f} "
             f"{gbt['r2_vs_zero']:>10.5f} {gbt['hit_rate']:>9.4f}"
         )
 
 
-def _report_spread(wf: WalkForward) -> None:
+def _report_spread(record: RunRecord) -> None:
     print("\nacross folds (mean +/- sd)")
     print(f"{'model':<12} {'R2 vs zero':>22} {'hit rate':>22}")
     print("-" * 58)
-    for name in wf.oos:
-        r2, r2_sd = fold_spread(wf.fold_metrics, name, "r2_vs_zero")
-        hit, hit_sd = fold_spread(wf.fold_metrics, name, "hit_rate")
+    fold_metrics = [f.metrics for f in record.folds]
+    for name in record.pooled:
+        r2, r2_sd = fold_spread(fold_metrics, name, "r2_vs_zero")
+        hit, hit_sd = fold_spread(fold_metrics, name, "hit_rate")
         print(f"{name:<12} {r2:>12.5f} +/- {r2_sd:<6.5f} {hit:>12.4f} +/- {hit_sd:<6.4f}")
 
 
-def _report_pooled(wf: WalkForward, n_boot: int) -> None:
+def _report_pooled(record: RunRecord) -> None:
     """The headline, with the interval attached to it.
 
     Every row here was predicted out of sample by a model that had only seen earlier
@@ -160,35 +186,33 @@ def _report_pooled(wf: WalkForward, n_boot: int) -> None:
     that this capture holds a couple of dozen days, not a couple of dozen thousand
     independent observations.
     """
-    n_dates = len(np.unique(wf.oos["gbt"].dates))
     print(
-        f"\npooled out-of-sample: {n_dates} test dates, 95% CI from {n_boot} date-block resamples"
+        f"\npooled out-of-sample: {record.n_test_dates} test dates, "
+        f"95% CI from {record.spec.n_boot} date-block resamples"
     )
-    if n_dates < MIN_BOOTSTRAP_BLOCKS:
+    if record.bootstrap_is_degenerate:
         print(
-            f"  WARNING: {n_dates} blocks is too few to resample. The interval below is\n"
-            f"  degenerate - it collapses onto the per-fold values and understates the\n"
-            f"  uncertainty. Do not quote it; it needs >= {MIN_BOOTSTRAP_BLOCKS} test dates."
+            f"  WARNING: {record.n_test_dates} blocks is too few to resample. The interval\n"
+            f"  below is degenerate - it collapses onto the per-fold values and understates\n"
+            f"  the uncertainty. Do not quote it; it needs >= {MIN_BOOTSTRAP_BLOCKS} test dates."
         )
     print(f"{'model':<12} {'n':>7} {'R2 vs zero':>26} {'hit rate':>24} {'bps/trade':>24}")
     print("-" * 96)
-    for name, oos in wf.oos.items():
-        ci = confidence_intervals(oos, n_boot)
+    for name, ci in record.pooled.items():
         cells = []
         for key, width in (("r2_vs_zero", 5), ("hit_rate", 4), ("gross_bps_per_trade", 4)):
             point, lo, hi = ci[key]
             cells.append(f"{point:>9.{width}f} [{lo:>7.{width}f},{hi:>8.{width}f}]")
-        print(f"{name:<12} {len(oos.y):>7} " + " ".join(cells))
+        print(f"{name:<12} {record.n_oos:>7} " + " ".join(cells))
     print(
         "\n  bps/trade is the gross edge, which IS the break-even round-trip cost: fills at\n"
         "  mid, no slippage, queue or latency. A retail taker round trip on Coinbase/Kraken\n"
         "  is tens of bps and the BTC-USD touch spread alone is ~1-2 bps crossed twice, so\n"
         "  these are upper bounds to compare against a cost, not a P&L."
     )
-    _report_dead_zone(wf, n_boot)
 
 
-def _report_dead_zone(wf: WalkForward, n_boot: int) -> None:
+def _report_dead_zone(record: RunRecord) -> None:
     """Precision and recall once sub-spread wiggles stop counting as wins.
 
     Hit rate is scored on any move at all, so on a 1s grid it is mostly measuring which
@@ -196,21 +220,16 @@ def _report_dead_zone(wf: WalkForward, n_boot: int) -> None:
     than half the prevailing spread, and a prediction only counts as a call if it
     expected the same - which is the version of the question that survives costs.
     """
-    if wf.oos["gbt"].threshold is None:
+    if not record.classes:
         return
-    keys = ("up_precision", "up_recall", "down_precision", "down_recall")
     print("\ndead-zone classes (move > half the spread at t, same date-block resamples)")
-    header = " ".join(f"{k.replace('_', ' '):>19}" for k in keys)
+    header = " ".join(f"{k.replace('_', ' '):>19}" for k in CLASS_KEYS)
     print(f"{'model':<12} {'traded':>7} {header}")
     print("-" * 101)
-    for name, oos in wf.oos.items():
-        ci = class_confidence_intervals(oos, n_boot)
-        traded = float(np.mean(as_classes(oos).pred != 0))
-        cells = [f"{ci[k][0]:>6.3f}[{ci[k][1]:>5.3f},{ci[k][2]:>5.3f}]" for k in keys]
-        print(f"{name:<12} {traded:>7.3f} " + " ".join(cells))
+    for name, ci in record.classes.items():
+        print(f"{name:<12} {record.traded[name]:>7.3f} " + _cells(ci))
 
-    truth = as_classes(wf.oos["gbt"]).y
-    up, down = float(np.mean(truth == 1)), float(np.mean(truth == -1))
+    up, down = record.base_rates["up"], record.base_rates["down"]
     print(
         f"\n  {(up + down) * 100:.1f}% of pooled bars cleared half a spread ({up * 100:.1f}% up, "
         f"{down * 100:.1f}% down). Those two\n"
@@ -219,7 +238,6 @@ def _report_dead_zone(wf: WalkForward, n_boot: int) -> None:
         "  view cleared the same bar on: a model that never clears it has no tradeable\n"
         "  opinion, whatever its hit rate says."
     )
-    _report_selectivity(wf, n_boot)
 
 
 # Traded shares to score the headline model at. Spans two orders of magnitude so the
@@ -227,7 +245,7 @@ def _report_dead_zone(wf: WalkForward, n_boot: int) -> None:
 COVERAGES = (0.02, 0.05, 0.10, 0.25, 0.50)
 
 
-def _report_selectivity(wf: WalkForward, n_boot: int, model: str = "gbt") -> None:
+def _report_selectivity(record: RunRecord, model: str = "gbt") -> None:
     """Precision as the model is forced to call a fixed share of bars.
 
     The row above floats: each model calls whatever share its own output happens to clear
@@ -242,19 +260,14 @@ def _report_selectivity(wf: WalkForward, n_boot: int, model: str = "gbt") -> Non
     the sign: the same placebo scored 0.144/0.147 precision on 0.105/0.100 base rates
     with R2 -0.0001 and hit 0.5035. The base rate is not the null; the placebo is.
     """
-    oos = wf.oos.get(model)
-    if oos is None or oos.threshold is None:
+    if not record.selectivity:
         return
-    keys = ("up_precision", "up_recall", "down_precision", "down_recall")
     print(f"\nselectivity ({model}, precision at a forced traded share)")
-    header = " ".join(f"{k.replace('_', ' '):>19}" for k in keys)
+    header = " ".join(f"{k.replace('_', ' '):>19}" for k in CLASS_KEYS)
     print(f"{'traded':>7} {'n called':>9} {header}")
     print("-" * 98)
-    for coverage in COVERAGES:
-        ci = coverage_confidence_intervals(oos, coverage, n_boot)
-        called = int(np.sum(as_classes_at_coverage(oos, coverage).pred != 0))
-        cells = [f"{ci[k][0]:>6.3f}[{ci[k][1]:>5.3f},{ci[k][2]:>5.3f}]" for k in keys]
-        print(f"{coverage:>7.2f} {called:>9} " + " ".join(cells))
+    for row in record.selectivity:
+        print(f"{row.coverage:>7.2f} {row.n_called:>9} " + _cells(row.metrics))
     print(
         "\n  Compare a row against the SAME row of the placebo run, never against the base\n"
         "  rate: a model that predicts only volatility and not direction still clears the\n"
@@ -263,7 +276,7 @@ def _report_selectivity(wf: WalkForward, n_boot: int, model: str = "gbt") -> Non
     )
 
 
-def _report_coverage(schema: FeatureSchema, by_date: dict[str, list[str]]) -> None:
+def _report_coverage(schema: FeatureSchema, gaps: dict[str, dict[str, int]]) -> None:
     """The pooled column set, and what each date is missing from it.
 
     Dates are unioned with `pl.concat(..., how="diagonal")`, which null-fills a date that
@@ -273,23 +286,22 @@ def _report_coverage(schema: FeatureSchema, by_date: dict[str, list[str]]) -> No
     them; the silence is the problem.
     """
     print(f"\nfeature matrix: {len(schema.names)} columns, venues {schema.venues}")
-    for date, columns in by_date.items():
-        gaps = schema.missing_by_family(columns)
-        if gaps:
-            detail = ", ".join(f"{label} ({len(cols)})" for label, cols in sorted(gaps.items()))
+    for date, missing in gaps.items():
+        if missing:
+            detail = ", ".join(f"{label} ({n})" for label, n in sorted(missing.items()))
             print(f"  {date} carries no {detail}")
 
 
-def _report_importance(wf: WalkForward, venues: list[str]) -> None:
+def _report_importance(record: RunRecord) -> None:
     """Per-venue permutation importance, averaged over folds with its spread.
 
     A venue that leads only in some folds shows up here as a large sd next to its mean,
     which is the difference between a structural result and a lucky week.
     """
-    if not wf.importance:
+    if not record.importance:
         return
-    means = {v: float(np.mean([f[v] for f in wf.importance])) for v in venues}
-    sds = {v: float(np.std([f[v] for f in wf.importance])) for v in venues}
+    means = {v: float(np.mean([f[v] for f in record.importance])) for v in record.venues}
+    sds = {v: float(np.std([f[v] for f in record.importance])) for v in record.venues}
     total = sum(m for m in means.values() if m > 0)
     print("\nper-venue permutation importance (gbt, mean +/- sd over folds)")
     for venue, mean in sorted(means.items(), key=lambda kv: -kv[1]):
@@ -311,14 +323,20 @@ def run(
     n_boot: int = N_BOOT,
     placebo: bool = False,
     extra_symbols: tuple[str, ...] = (),
-) -> None:
+) -> RunRecord | None:
+    """Build, fit, score, report and persist one run.
+
+    Returns the record so a caller that is not a terminal (a notebook, a comparison
+    script) gets the numbers rather than having to parse them back out of stdout.
+    """
     fs = filesystem_from_env()
     bucket = os.environ.get("SILVER_BUCKET", "silver")
 
     frames = []
     columns_by_date: dict[str, list[str]] = {}
+    sources: dict[str, str] = {}
     for date in dates:
-        df = cached_features(fs, bucket, date, symbol, cache, refresh, extra_symbols)
+        df, sources[date] = cached_features(fs, bucket, date, symbol, cache, refresh, extra_symbols)
         if df is None:
             log.warning("skipping %s (no features)", date)
             continue
@@ -332,9 +350,13 @@ def run(
     # Over the union, since a gap only exists relative to what the other dates carry.
     schema = FeatureSchema.from_columns(c for cols in columns_by_date.values() for c in cols)
     venues = schema.venues
+    gaps = {
+        date: {label: len(cols) for label, cols in schema.missing_by_family(columns).items()}
+        for date, columns in columns_by_date.items()
+    }
     if extra_symbols:
         print(f"\nlegs: {symbol} + {list(extra_symbols)}")
-    _report_coverage(schema, columns_by_date)
+    _report_coverage(schema, gaps)
 
     df = pl.concat(frames, how="diagonal").sort("ts_ns")
     if predict_venue:
@@ -385,10 +407,36 @@ def run(
     print(f"features: {len(splits[0].feature_names)}")
 
     wf = evaluate_walk_forward(splits, horizon, venues)
-    _report_folds(wf)
-    _report_spread(wf)
-    _report_pooled(wf, n_boot)
-    _report_importance(wf, venues)
+    spec = RunSpec(
+        dates=tuple(dates),
+        symbol=symbol,
+        extra_symbols=tuple(extra_symbols),
+        horizon=horizon,
+        target=target,
+        spread_col=spread_col,
+        predict_venue=predict_venue,
+        max_age_ms=max_age_ms,
+        min_train=min_train,
+        test_size=test_size,
+        step=step,
+        n_boot=n_boot,
+        placebo=placebo,
+        placebo_lag_bars=PLACEBO_LAG_BARS,
+        coverages=COVERAGES,
+        dead_zone_spreads=DEAD_ZONE_SPREADS,
+    )
+    record = runs.build(
+        spec,
+        runs.provenance(builder_fingerprint(), schema, sources),
+        wf,
+        schema,
+        n_rows=df.height,
+        n_rows_before=before,
+        coverage_gaps=gaps,
+    )
+    report(record)
+    print(f"\nrun record: {record.write()}")
+    return record
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:

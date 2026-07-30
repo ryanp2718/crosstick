@@ -13,7 +13,6 @@ import numpy as np
 import polars as pl
 import pytest
 
-from research.main import _report_pooled
 from research.model import _hit_rate, _r2_vs_zero
 from research.validation import (
     OutOfSample,
@@ -208,16 +207,25 @@ def test_class_intervals_bracket_their_point_estimates() -> None:
             assert 0.0 <= lo <= 1.0 and 0.0 <= hi <= 1.0, name
 
 
-def test_the_dead_zone_report_runs_end_to_end(capsys) -> None:
-    """The report is only ever executed at runtime, so a formatting slip in it would
-    otherwise surface as a crash at the end of a multi-hour run."""
+def test_the_per_fold_edge_and_classes_are_kept() -> None:
+    """`fit_models` scores both on every fold and they used to be dropped on the floor
+    here, so `n_trades` and the per-fold support counts were paid for and never seen."""
     splits = walk_forward(_dz_frame(14), "y_kraken_ret_bps_5", 5, spread_col="kraken_spread_bps")
-    _report_pooled(evaluate_walk_forward(splits, 5), n_boot=20)
-    out = capsys.readouterr().out
-    assert "dead-zone classes" in out
-    assert "up precision" in out and "down recall" in out
-    assert "cleared half a spread" in out
-    assert "selectivity" in out
+    wf = evaluate_walk_forward(splits, 5)
+    assert len(wf.fold_edge) == len(wf.splits)
+    assert len(wf.fold_classes) == len(wf.splits)
+    assert "n_trades" in wf.fold_edge[0]["gbt"]
+    assert "up_support" in wf.fold_classes[0]["gbt"]
+    # `zero` takes no position, so it has an entry in neither.
+    assert "zero" not in wf.fold_edge[0]
+    assert "zero" in wf.fold_metrics[0]
+
+
+def test_no_classes_are_kept_without_a_spread_column() -> None:
+    splits = walk_forward(_dz_frame(14), "y_kraken_ret_bps_5", 5)
+    wf = evaluate_walk_forward(splits, 5)
+    assert wf.fold_classes[0] == {}
+    assert "n_trades" in wf.fold_edge[0]["gbt"]
 
 
 # ── coverage-matched selectivity ────────────────────────────────────────────
