@@ -14,7 +14,7 @@ import numpy as np
 import polars as pl
 import pytest
 
-from research import runs
+from research import infoshare, runs
 from research.main import COVERAGES, report
 from research.runs import Provenance, RunSpec, oos_frame
 from research.schema import FeatureSchema
@@ -234,6 +234,76 @@ def test_models_scored_on_different_rows_are_rejected() -> None:
     other = OutOfSample(dates=dates, y=np.array([9.0, 9.0]), pred=np.array([0.3, 0.4]))
     with pytest.raises(ValueError, match="different rows"):
         oos_frame({"gbt": good, "ridge_all": other})
+
+
+# ── the second analysis ──────────────────────────────────────────────────────
+
+
+def _infoshare_run(stride: int = 1) -> runs.InfoShares:
+    """Two cointegrated venues where the first leads, so the estimate is well posed."""
+    rng = np.random.default_rng(0)
+    n = 6_000
+    efficient = np.cumsum(rng.normal(0, 1e-4, n)) + np.log(100.0)
+    leader = efficient
+    follower = efficient - 0.5 * np.diff(efficient, prepend=efficient[0])
+    frame = pl.DataFrame(
+        {
+            "ts_ns": np.arange(n, dtype=np.int64),
+            "date": ["2026-01-01"] * n,
+            "coinbase_mid": np.exp(leader),
+            "kraken_mid": np.exp(follower),
+            "coinbase_age_ms": np.zeros(n),
+            "kraken_age_ms": np.zeros(n),
+        }
+    )
+    estimates = infoshare.by_date(frame, ("coinbase", "kraken"), stride=stride, min_rows=1_000)
+    return runs.InfoShares(
+        venues=("coinbase", "kraken"),
+        stride=stride,
+        lags=infoshare.DEFAULT_LAGS,
+        estimates=estimates,
+    )
+
+
+def test_the_information_share_block_prints_when_asked_for(capsys) -> None:
+    """It is the second analysis, not a variant of the first: the model says which venue
+    forecasts which, this says which venue the other error-corrects toward."""
+    record = _record()
+    record.infoshare = [_infoshare_run()]
+    report(record)
+    out = capsys.readouterr().out
+    assert "information shares" in out
+    assert "stride 1" in out
+    assert "different questions" in out
+
+
+def test_the_information_share_block_is_absent_by_default(capsys) -> None:
+    report(_record())
+    assert "information shares" not in capsys.readouterr().out
+
+
+def test_every_requested_stride_is_its_own_estimate(capsys) -> None:
+    """Shares depend on sampling frequency: coarse enough and every venue looks
+    simultaneous. A share quoted without its stride is not an answer."""
+    record = _record()
+    record.infoshare = [_infoshare_run(1), _infoshare_run(5)]
+    report(record)
+    out = capsys.readouterr().out
+    assert "stride 1 " in out and "stride 5 " in out
+
+
+def test_the_estimates_survive_into_the_json(tmp_path) -> None:
+    """`InfoShare` carries numpy arrays (alpha, the Hasbrouck bounds), which json.dumps
+    cannot serialise and which would otherwise fail at the very end of a long run."""
+    record = _record()
+    record.infoshare = [_infoshare_run()]
+    out = record.write(tmp_path)
+    parsed = json.loads((out / "record.json").read_text(encoding="utf-8"))
+    block = parsed["infoshare"][0]
+    assert block["venues"] == ["coinbase", "kraken"]
+    assert block["stride"] == 1
+    lo, hi = block["estimates"][0]["bounds"][0]
+    assert 0.0 <= lo <= hi <= 1.0
 
 
 # ── provenance ───────────────────────────────────────────────────────────────

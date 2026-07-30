@@ -30,7 +30,7 @@ import numpy as np
 import polars as pl
 
 from common.lake import filesystem_from_env, list_partitions, partition_key
-from research import features, runs
+from research import features, infoshare, runs
 from research.features import DEAD_ZONE_SPREADS, HORIZONS, SOURCE_DATASETS, build_features
 from research.model import MAX_AGE_MS, clean
 from research.runs import RunRecord, RunSpec
@@ -149,6 +149,7 @@ def report(record: RunRecord) -> None:
     _report_dead_zone(record)
     _report_selectivity(record)
     _report_importance(record)
+    _report_infoshare(record)
 
 
 def _report_folds(record: RunRecord) -> None:
@@ -292,6 +293,19 @@ def _report_coverage(schema: FeatureSchema, gaps: dict[str, dict[str, int]]) -> 
             print(f"  {date} carries no {detail}")
 
 
+def _report_infoshare(record: RunRecord) -> None:
+    """The second analysis, one block per sampling frequency.
+
+    Separate from the model's answer because it answers a different question. The model
+    says which venue's book forecasts which, and cannot tell a venue that discovers price
+    from one that merely requotes slowly: a coarse book is mechanically forecastable from
+    any outside information. This says which venue the other one error-corrects toward.
+    """
+    for run in record.infoshare:
+        print(f"\n{'=' * 72}\nstride {run.stride} ({run.stride}s bars), {run.lags} lags")
+        infoshare.report(run.estimates)
+
+
 def _report_importance(record: RunRecord) -> None:
     """Per-venue permutation importance, averaged over folds with its spread.
 
@@ -309,6 +323,34 @@ def _report_importance(record: RunRecord) -> None:
         print(f"  {venue:<20} {mean:>10.5f} +/- {sds[venue]:<9.5f} {share}")
 
 
+def _information_shares(df: pl.DataFrame, spec: RunSpec, max_age_ms: int) -> list[runs.InfoShares]:
+    """Fit the VECM once per date per requested sampling frequency.
+
+    Fitted on the cleaned frame the model saw, so the two analyses answer their different
+    questions about the same rows. `max_age_ms` is passed through rather than left to
+    `clean`'s filtering alone because `price_panel` drops rather than forward-fills: a
+    carried-forward mid is a fabricated zero return, and zero returns bias an
+    error-correction loading toward "this venue does not adjust", which is the exact
+    quantity being measured.
+    """
+    if not spec.infoshare_venues:
+        return []
+    out = []
+    for stride in spec.infoshare_strides:
+        estimates = infoshare.by_date(
+            df, spec.infoshare_venues, stride=stride, max_age_ms=max_age_ms
+        )
+        out.append(
+            runs.InfoShares(
+                venues=spec.infoshare_venues,
+                stride=stride,
+                lags=infoshare.DEFAULT_LAGS,
+                estimates=estimates,
+            )
+        )
+    return out
+
+
 def run(
     dates: list[str],
     symbol: str,
@@ -323,6 +365,8 @@ def run(
     n_boot: int = N_BOOT,
     placebo: bool = False,
     extra_symbols: tuple[str, ...] = (),
+    infoshare_venues: tuple[str, str] | None = None,
+    infoshare_strides: tuple[int, ...] = (),
 ) -> RunRecord | None:
     """Build, fit, score, report and persist one run.
 
@@ -424,6 +468,8 @@ def run(
         placebo_lag_bars=PLACEBO_LAG_BARS,
         coverages=COVERAGES,
         dead_zone_spreads=DEAD_ZONE_SPREADS,
+        infoshare_venues=infoshare_venues,
+        infoshare_strides=tuple(infoshare_strides),
     )
     record = runs.build(
         spec,
@@ -433,6 +479,7 @@ def run(
         n_rows=df.height,
         n_rows_before=before,
         coverage_gaps=gaps,
+        infoshare=_information_shares(df, spec, max_age_ms),
     )
     report(record)
     print(f"\nrun record: {record.write()}")
@@ -516,6 +563,26 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "and refit. A clean pipeline reports R2 ~0 and hit ~0.50; anything better is "
         "lookahead. Re-run after every feature-set change",
     )
+    p.add_argument(
+        "--infoshare",
+        nargs=2,
+        default=None,
+        metavar="VENUE",
+        help="also estimate Hasbrouck information shares and Gonzalo-Granger component "
+        "shares for this venue pair. The model answers which venue's book forecasts "
+        "which, which cannot separate a venue that discovers price from one that "
+        "requotes slowly; this answers which venue the other error-corrects toward",
+    )
+    p.add_argument(
+        "--infoshare-stride",
+        nargs="+",
+        type=int,
+        default=[1],
+        metavar="N",
+        help="sample every Nth bar for --infoshare (default 1). Information shares depend "
+        "on sampling frequency - coarse enough and every venue looks simultaneous - so "
+        "pass several to report the answer as a function of it",
+    )
     return p.parse_args(argv)
 
 
@@ -536,6 +603,8 @@ def main() -> None:
         args.n_boot,
         args.placebo,
         tuple(args.extra_symbols),
+        tuple(args.infoshare) if args.infoshare else None,
+        tuple(args.infoshare_stride),
     )
 
 

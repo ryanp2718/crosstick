@@ -45,6 +45,7 @@ from pathlib import Path
 import numpy as np
 import polars as pl
 
+from research.infoshare import InfoShare
 from research.model import Split, dead_zone_classes
 from research.schema import FeatureSchema
 from research.validation import (
@@ -95,6 +96,8 @@ class RunSpec:
     placebo_lag_bars: int
     coverages: tuple[float, ...]
     dead_zone_spreads: float
+    infoshare_venues: tuple[str, str] | None = None
+    infoshare_strides: tuple[int, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -147,6 +150,21 @@ class Selectivity:
     metrics: dict[str, Interval]
 
 
+@dataclass(frozen=True)
+class InfoShares:
+    """One venue pair's information shares at one sampling frequency.
+
+    Carried per stride rather than as a single number because the measure depends on it:
+    sampled coarsely enough every venue looks simultaneous and the shares converge on the
+    residual correlation, so a share quoted without its stride is not an answer.
+    """
+
+    venues: tuple[str, str]
+    stride: int
+    lags: int
+    estimates: list[InfoShare]
+
+
 @dataclass
 class RunRecord:
     """One run, whole. Everything the reports print is read from here."""
@@ -167,6 +185,9 @@ class RunRecord:
     base_rates: dict[str, float]
     selectivity: list[Selectivity]
     importance: list[dict[str, float]]
+    # The second analysis, when asked for: which venue discovers price rather than which
+    # venue forecasts which (see research.infoshare).
+    infoshare: list[InfoShares] = field(default_factory=list)
     # Not serialised into record.json; written as oos.parquet.
     oos: dict[str, OutOfSample] = field(default_factory=dict, repr=False)
 
@@ -193,6 +214,8 @@ def _plain(value):
         return value if math.isfinite(value) else None
     if isinstance(value, np.generic):
         return _plain(value.item())
+    if isinstance(value, np.ndarray):
+        return _plain(value.tolist())
     if isinstance(value, dict):
         return {str(k): _plain(v) for k, v in value.items() if k != "oos"}
     if isinstance(value, (list, tuple)):
@@ -267,6 +290,7 @@ def build(
     n_rows: int,
     n_rows_before: int,
     coverage_gaps: dict[str, dict[str, int]],
+    infoshare: list[InfoShares] | None = None,
 ) -> RunRecord:
     """Everything the fold sequence produced, scored and intervalled.
 
@@ -312,6 +336,7 @@ def build(
         base_rates=_base_rates(gbt) if dead_zone else {},
         selectivity=selectivity,
         importance=list(wf.importance),
+        infoshare=list(infoshare or ()),
         oos=dict(wf.oos),
     )
 
