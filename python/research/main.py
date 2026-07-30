@@ -38,8 +38,10 @@ from research.validation import (
     TEST_DATES,
     WalkForward,
     as_classes,
+    as_classes_at_coverage,
     class_confidence_intervals,
     confidence_intervals,
+    coverage_confidence_intervals,
     evaluate_walk_forward,
     fold_spread,
     placebo_target,
@@ -215,6 +217,48 @@ def _report_dead_zone(wf: WalkForward, n_boot: int) -> None:
         "  their sum is the ceiling on recall. 'traded' is the share of bars the model's own\n"
         "  view cleared the same bar on: a model that never clears it has no tradeable\n"
         "  opinion, whatever its hit rate says."
+    )
+    _report_selectivity(wf, n_boot)
+
+
+# Traded shares to score the headline model at. Spans two orders of magnitude so the
+# curve shows whether precision actually concentrates as the model gets selective.
+COVERAGES = (0.02, 0.05, 0.10, 0.25, 0.50)
+
+
+def _report_selectivity(wf: WalkForward, n_boot: int, model: str = "gbt") -> None:
+    """Precision as the model is forced to call a fixed share of bars.
+
+    The row above floats: each model calls whatever share its own output happens to clear
+    half a spread on, which was 0.939 on the 2026-07-29 lead-lag run and 0.085 on its
+    placebo. Precision falls as coverage rises, so those two numbers sit at different
+    points of different curves and comparing them is meaningless. Fixing the share makes
+    runs comparable.
+
+    Read this against the PLACEBO's curve, not against the base rate. Volatility is
+    autocorrelated at the hour scale, so a model with no directional skill at all still
+    beats the base rate here by flagging bars that clear the threshold and coin-flipping
+    the sign: the same placebo scored 0.144/0.147 precision on 0.105/0.100 base rates
+    with R2 -0.0001 and hit 0.5035. The base rate is not the null; the placebo is.
+    """
+    oos = wf.oos.get(model)
+    if oos is None or oos.threshold is None:
+        return
+    keys = ("up_precision", "up_recall", "down_precision", "down_recall")
+    print(f"\nselectivity ({model}, precision at a forced traded share)")
+    header = " ".join(f"{k.replace('_', ' '):>19}" for k in keys)
+    print(f"{'traded':>7} {'n called':>9} {header}")
+    print("-" * 98)
+    for coverage in COVERAGES:
+        ci = coverage_confidence_intervals(oos, coverage, n_boot)
+        called = int(np.sum(as_classes_at_coverage(oos, coverage).pred != 0))
+        cells = [f"{ci[k][0]:>6.3f}[{ci[k][1]:>5.3f},{ci[k][2]:>5.3f}]" for k in keys]
+        print(f"{coverage:>7.2f} {called:>9} " + " ".join(cells))
+    print(
+        "\n  Compare a row against the SAME row of the placebo run, never against the base\n"
+        "  rate: a model that predicts only volatility and not direction still clears the\n"
+        "  base rate here. The gap between this curve and the placebo's is the directional\n"
+        "  skill; the placebo's own height above base is the volatility component."
     )
 
 

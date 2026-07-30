@@ -18,8 +18,10 @@ from research.model import _hit_rate, _r2_vs_zero
 from research.validation import (
     OutOfSample,
     as_classes,
+    as_classes_at_coverage,
     bootstrap_ci,
     class_confidence_intervals,
+    coverage_confidence_intervals,
     evaluate_walk_forward,
     fold_spread,
     placebo_target,
@@ -215,3 +217,57 @@ def test_the_dead_zone_report_runs_end_to_end(capsys) -> None:
     assert "dead-zone classes" in out
     assert "up precision" in out and "down recall" in out
     assert "cleared half a spread" in out
+    assert "selectivity" in out
+
+
+# ── coverage-matched selectivity ────────────────────────────────────────────
+
+
+def _cov_oos(pred: list[float], y: list[float], threshold: float = 1.0) -> OutOfSample:
+    n = len(pred)
+    return OutOfSample(
+        dates=np.array([f"2026-01-{i % 4 + 1:02d}" for i in range(n)]),
+        y=np.array(y, dtype=float),
+        pred=np.array(pred, dtype=float),
+        threshold=np.full(n, threshold),
+    )
+
+
+def test_coverage_forces_the_traded_share_regardless_of_prediction_scale() -> None:
+    """The whole point: a model whose predictions never clear half a spread still gets
+    scored, and one whose predictions always clear it stops being scored on everything."""
+    tiny = _cov_oos(pred=[0.01 * i for i in range(100)], y=[0.0] * 100)
+    huge = _cov_oos(pred=[100.0 * i for i in range(100)], y=[0.0] * 100)
+    for oos in (tiny, huge):
+        called = as_classes_at_coverage(oos, 0.10).pred != 0
+        assert called.sum() == pytest.approx(10, abs=1)
+
+
+def test_coverage_keeps_the_strongest_predictions() -> None:
+    """Selectivity has to mean high-conviction, not an arbitrary tenth of the rows."""
+    oos = _cov_oos(pred=[-5.0, 0.1, -0.2, 4.0, 0.0], y=[0.0] * 5)
+    called = as_classes_at_coverage(oos, 0.4).pred
+    assert list(called) == [-1.0, 0.0, 0.0, 1.0, 0.0]
+
+
+def test_truth_still_uses_the_real_spread_not_the_coverage_cut() -> None:
+    """Coverage reshapes what the model is allowed to call; it must not reshape what
+    counts as a tradeable move, or the metric would grade against a moving target."""
+    oos = _cov_oos(pred=[3.0, 3.0], y=[5.0, 0.5], threshold=1.0)
+    assert list(as_classes_at_coverage(oos, 1.0).y) == [1.0, 0.0]
+
+
+def test_coverage_intervals_bracket_their_point_estimates() -> None:
+    splits = walk_forward(_dz_frame(14), "y_kraken_ret_bps_5", 5, spread_col="kraken_spread_bps")
+    oos = evaluate_walk_forward(splits, 5).oos["gbt"]
+    ci = coverage_confidence_intervals(oos, 0.25, n_boot=50)
+    assert set(ci) == {"up_precision", "up_recall", "down_precision", "down_recall"}
+    for name, (point, lo, hi) in ci.items():
+        if not np.isnan(point):
+            assert lo <= point <= hi, name
+
+
+def test_coverage_scoring_needs_a_threshold() -> None:
+    splits = walk_forward(_dz_frame(14), "y_kraken_ret_bps_5", 5)
+    with pytest.raises(ValueError, match="threshold"):
+        as_classes_at_coverage(evaluate_walk_forward(splits, 5).oos["gbt"], 0.1)
