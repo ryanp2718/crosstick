@@ -14,6 +14,8 @@ DECIMAL(38,18) is the portable canonical scale; ns timestamps and offsets are in
 
 from __future__ import annotations
 
+from dataclasses import dataclass
+
 import pyarrow as pa
 
 _PRICE = pa.decimal128(38, 18)
@@ -239,3 +241,130 @@ FRESHNESS_SCHEMA = pa.schema(
         ("row_count", pa.int64()),
     ]
 )
+
+
+# ── the registry ──────────────────────────────────────────────────────────────
+
+
+@dataclass(frozen=True)
+class Dataset:
+    """One physical dataset on the lake."""
+
+    name: str
+    layer: str
+    schema: pa.Schema
+    # Partition columns in `common.lake.partition_key` argument order, so the tuple
+    # splats straight into it. `date` is excluded because that helper always appends it.
+    partition_by: tuple[str, ...]
+    description: str
+    # Documentation only; path construction stays in partition_key / bronze.object_key.
+    filename: str = "part.parquet"
+    source_topics: str = ""
+
+
+def _bronze(name: str, topics: str, partition_by: tuple[str, ...], description: str) -> Dataset:
+    return Dataset(
+        name=name,
+        layer="bronze",
+        schema=BRONZE_SCHEMA,
+        partition_by=partition_by,
+        description=description,
+        filename="{partition:03d}-{start_offset:012d}.parquet",
+        source_topics=topics,
+    )
+
+
+_EX_SYM = ("exchange", "symbol")
+
+# Declaration order is documentation order. Bronze mirrors the log verbatim, so every
+# bronze dataset shares BRONZE_SCHEMA and differs only in which topics feed it.
+DATASETS: tuple[Dataset, ...] = (
+    _bronze(
+        "book_snapshots",
+        "md.book.*.snapshots",
+        _EX_SYM,
+        "one bootstrap or re-emitted book snapshot",
+    ),
+    _bronze("book_deltas", "md.book.*.deltas", _EX_SYM, "one book delta"),
+    _bronze("trades", "md.trades.*", _EX_SYM, "one trade"),
+    _bronze("bbo", "md.bbo.*", _EX_SYM, "one gateway-derived best bid/offer"),
+    _bronze("liquidations", "md.liquidations.*", _EX_SYM, "one forced order"),
+    _bronze("mark_price", "md.markprice.*", _EX_SYM, "one mark/funding tick"),
+    _bronze("open_interest", "md.openinterest.*", _EX_SYM, "one open-interest poll"),
+    _bronze("status", "md.status.*", ("exchange",), "one venue connection-state record"),
+    _bronze("nbbo", "md.nbbo.*", ("symbol",), "one gateway-derived NBBO tick"),
+    Dataset(
+        "book_quality",
+        "silver",
+        BOOK_QUALITY_SCHEMA,
+        _EX_SYM,
+        "one book event, with crossed/invariant flags and a sequence-gap count",
+    ),
+    Dataset(
+        "latency",
+        "silver",
+        LATENCY_SCHEMA,
+        _EX_SYM,
+        "one firehose record's per-hop latency",
+    ),
+    Dataset(
+        "status_events",
+        "silver",
+        STATUS_SCHEMA,
+        ("exchange",),
+        "one typed venue up/down transition, with downtime",
+    ),
+    Dataset(
+        "quotes",
+        "silver",
+        QUOTES_SCHEMA,
+        _EX_SYM,
+        "one reconstructed top-of-book, at each event with a valid two-sided book",
+    ),
+    Dataset(
+        "nbbo",
+        "silver",
+        NBBO_SCHEMA,
+        ("symbol",),
+        "one reconstructed cross-venue NBBO tick",
+    ),
+    Dataset("trades", "silver", TRADES_SCHEMA, _EX_SYM, "one trade, taker side measured"),
+    Dataset("liquidations", "silver", LIQUIDATIONS_SCHEMA, _EX_SYM, "one forced order"),
+    Dataset("mark_price", "silver", MARK_PRICE_SCHEMA, _EX_SYM, "one mark/funding tick"),
+    Dataset("open_interest", "silver", OPEN_INTEREST_SCHEMA, _EX_SYM, "one open-interest poll"),
+    Dataset(
+        "scorecard",
+        "gold",
+        SCORECARD_SCHEMA,
+        (),
+        "one (exchange, symbol, date, check) data-quality fact",
+    ),
+    Dataset("basis", "gold", BASIS_SCHEMA, (), "one USD/USDT basis tick (either leg moved)"),
+    Dataset("basis_summary", "gold", BASIS_SUMMARY_SCHEMA, (), "one base per day"),
+)
+
+_BY_KEY = {(d.layer, d.name): d for d in DATASETS}
+
+
+def dataset(layer: str, name: str) -> Dataset:
+    """One dataset by `(layer, name)`.
+
+    Keyed on the pair, not the name: `trades`, `nbbo`, `liquidations`, `mark_price` and
+    `open_interest` each exist in both bronze and silver with different schemas, so a
+    name-only lookup would silently return whichever was declared last.
+    """
+    try:
+        return _BY_KEY[(layer, name)]
+    except KeyError:
+        raise KeyError(f"no dataset {name!r} in layer {layer!r}") from None
+
+
+def datasets(layer: str) -> tuple[Dataset, ...]:
+    """Every dataset in one layer, in declaration order."""
+    return tuple(d for d in DATASETS if d.layer == layer)
+
+
+def decimal_columns(layer: str, name: str) -> tuple[str, ...]:
+    """Column names a reader has to cast out of Arrow decimal128."""
+    schema = dataset(layer, name).schema
+    return tuple(f.name for f in schema if pa.types.is_decimal(f.type))

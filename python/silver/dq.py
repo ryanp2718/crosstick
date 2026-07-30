@@ -79,6 +79,7 @@ from common.schemas import (  # noqa: F401
     QUOTES_SCHEMA,
     STATUS_SCHEMA,
     TRADES_SCHEMA,
+    dataset,
 )
 from ingest.book import BookInvariantError, Level, OrderBook
 from materializer.bronze import CanonicalMap, parse_topic, record_date
@@ -634,9 +635,4 @@ def _status_transitions(exchange: str, recs: list[CorpusRecord]) -> list[dict]:
     return rows
 
 
-TAPE_SCHEMAS = {
-    "trades": TRADES_SCHEMA,
-    "mark_price": MARK_PRICE_SCHEMA,
-    "open_interest": OPEN_INTEREST_SCHEMA,
-    "liquidations": LIQUIDATIONS_SCHEMA,
-}
+TAPE_SCHEMAS = {name: dataset("silver", name).schema for name in TAPE_DATASETS}
