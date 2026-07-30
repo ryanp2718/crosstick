@@ -4,7 +4,7 @@ version = "0.1.0"
 description = "Polyglot crypto market-data ingest + analytics platform"
 requires-python = ">=3.11"
 dependencies = [
-    "websockets==16.1.1",
+    "websockets==17.0",
     "httpx==0.28.1",
     "msgspec==0.21.1",
     "sortedcontainers==2.4.0",
