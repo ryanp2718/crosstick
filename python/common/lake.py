@@ -85,6 +85,13 @@ def instruments_path_from_env() -> Path:
     return Path(__file__).resolve().parents[2] / "ops" / "instruments.yml"
 
 
+def dq_budget_path_from_env() -> Path:
+    raw = os.environ.get("DQ_BUDGET_FILE")
+    if raw:
+        return Path(raw)
+    return Path(__file__).resolve().parents[2] / "ops" / "dq_budgets.yml"
+
+
 def partition_key(
     dataset: str,
     *,

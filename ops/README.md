@@ -1,7 +1,8 @@
 # ops/
 
 Operational config for the compose stack: `instruments.yml` (the canonical
-instrument map every service reads), `prometheus/` (scrape config + alert
+instrument map every service reads), `dq_budgets.yml` (per-check data-quality
+limits, see `python/gold/budget.py`), `prometheus/` (scrape config + alert
 rules), `grafana/` (provisioning + dashboards), and `smoke.py`.
 
 ## Editing Prometheus/Grafana config

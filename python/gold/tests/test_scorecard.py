@@ -5,7 +5,13 @@ from __future__ import annotations
 import json
 from decimal import Decimal
 
-from gold.scorecard import SCORECARD_SCHEMA, build_scorecard, scorecard_table
+from gold.scorecard import (
+    CHECKS,
+    LATENCY_PREFIX,
+    SCORECARD_SCHEMA,
+    build_scorecard,
+    scorecard_table,
+)
 
 
 def bq(**over) -> dict:
@@ -123,3 +129,11 @@ def test_rows_match_the_published_schema() -> None:
     rows = build_scorecard([bq(seq_gap=1)], [lat(1_000_000)], [st("up", 1)])
     table = scorecard_table(rows)
     assert table.schema == SCORECARD_SCHEMA
+
+
+def test_the_declared_vocabulary_is_what_gets_emitted() -> None:
+    """`gold.budget` validates config keys against CHECKS, so a check renamed here
+    without updating that tuple would silently stop being budgeted."""
+    rows = build_scorecard([bq(seq_gap=1)], [lat(1_000_000)], [st("up", 1)])
+    emitted = {r["check"] for r in rows}
+    assert emitted == {*CHECKS, f"{LATENCY_PREFIX}trades"}

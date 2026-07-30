@@ -1,0 +1,123 @@
+# Per-check data-quality budgets. Evaluated one scorecard row at a time -
+# (exchange, canonical_symbol, date, check) - by python/gold/budget.py, which also
+# documents the resolution order and the meaning of each limit.
+#
+# ── How these numbers were set ────────────────────────────────────────────────
+# Observation window: 2026-06-27 .. 2026-07-27 (26 dates, 1609 scorecard rows).
+# Measured by rebuilding the scorecard from silver over every date bronze retention
+# still covers (`gold.main.build_for_date`, read-only), NOT by reading the gold
+# mart: only 5 dates had ever been written to gold, and 2026-06-28's persisted rows
+# predate the re-snapshot fix (6039fc3) so they overstate book_invariant ~300x.
+#
+# The window deliberately starts at 06-27. The three earlier dates (06-11, 06-17,
+# 06-18) carry silver built before that same fix - every book_invariant violation on
+# them is `non_monotonic_seq`, 134-501 per venue-symbol, against 0-4 after - and
+# bronze retention no longer reaches back far enough to rebuild them. 06-11 also
+# still has unmapped perp symbols (BTCUSDT rather than BTC-USDT-PERP). Calibrating
+# on them would budget for code that no longer runs.
+#
+# Limits are ~2x the worst single row observed in the window, except where a tighter
+# regime split is the point (see `coverage` and `latency.*`). To re-measure after a
+# silver DQ change, aggregate `gold.main.build_for_date(fs, silver, date)` over every
+# date in silver and take, per check, the worst n_violations, the worst
+# n_violations/n_records, the smallest n_records and the worst p99_ms.
+#
+# As set, this file breaches 25 of the window's 1609 rows, on 4 dates. Three are
+# known capture holes: 2026-07-25 (15,025 book records across all eight partitions,
+# against a median day of 12.0M) and 2026-07-07 (780,809) fail `coverage.min_records`,
+# and 07-25, 07-09 and 07-07 fail latency tails up to 105s. The fourth is 2026-06-27,
+# which passes coverage at 88% of a median day but carries a 31.5s trades p99 on
+# coinbase ETH-USD. That one is the limit doing its job rather than a threshold
+# artefact, and it is the only otherwise-clean date in the window that fails.
+# Extended over the three pre-fix dates it breaches 97 rows on 7 dates, which is the
+# calibration argument above restated as an outcome.
+
+# Any check with no entry below. Fail-closed, so a check added to the scorecard
+# shows up as a breach rather than as silence.
+default:
+  max_violations: 0
+
+checks:
+  # Missing deltas under the per-exchange sequence policy (docs/data-contracts.md).
+  sequence_gap:
+    # Coinbase (connection-wide counter) and binance(-futures) (update-ids) are
+    # monotonic-only: silver never counts a gap for them, so anything above zero
+    # would be a policy bug rather than data loss. Observed 0 across the window.
+    max_violations: 0
+    exchanges:
+      kraken:
+        # Kraken's synthesized per-book counter is contiguous, so a hole is real
+        # ingest-to-bronze loss. Worst row in the window: 2 gaps in 5.4M deltas
+        # (2026-07-01). Rated as well as capped because kraken's daily delta count
+        # swings from 1.7k to 5.4M, so a fixed cap is either loose or punitive.
+        max_violations: 20
+        max_rate: 0.000002
+
+  # OrderBook fold rejections: crossed_after_delta, non_monotonic_seq, locked.
+  # Worst row in the window: 4 (binance-futures, 2026-07-01).
+  book_invariant:
+    max_violations: 10
+
+  # Host capture-clock backward steps between same-epoch deltas. Worst row in the
+  # window: 95 (kraken, 2026-07-02); worst before the WSL2 clocksource fix: 19,391.
+  # ClockStepsElevated in ops/prometheus/alerts.yml warns at 100 off this same
+  # measurement; the alert leads and this gate is the harder stop behind it.
+  clock_monotonic:
+    max_violations: 200
+
+  # `coverage` never reports violations (its job is the denominator), so this is the
+  # "did this venue-symbol actually capture today" check, and the only place a record
+  # floor is needed: all three book checks share one partition, so one floor here
+  # flags the partition once instead of three times.
+  # Smallest partition on a date with no known capture hole: 176,250 (2026-07-19).
+  # The floor sits at roughly half that, between the 5th and 10th percentile.
+  coverage:
+    max_violations: 0
+    min_records: 100000
+
+  # Down-transitions per exchange-day. Worst row in the window: 1, on 11 of 104 rows.
+  venue_uptime:
+    max_violations: 2
+
+  # exchange_ts -> gateway emit, so these measure live capture lag and are unaffected
+  # by when the silver batch ran. Each dataset gets its own tail because their
+  # cadences differ by two orders of magnitude; the family entry is the catch-all
+  # that budgets the next silver dataset from the day it lands.
+  latency:
+    max_p99_ms: 30000
+
+  # Healthy days peak at 1.3s; 2026-07-25 reached 13.6s catching up.
+  latency.book_deltas:
+    max_p99_ms: 5000
+
+  # The fat tail here belongs to one venue, not to the platform. Over the window
+  # kraken peaks at 2.5s, binance at 4.1s and binance-futures at 4.9s across 156
+  # rows, while coinbase runs a p50 of 0.5s and a p100 of 105s. A single limit would
+  # have to clear coinbase's tail and would then be 20x too loose for everyone else,
+  # so the venues that stream trades promptly are held to a limit that can catch a
+  # regression, and coinbase gets its own.
+  latency.trades:
+    max_p99_ms: 10000
+    exchanges:
+      # Breaches 4 dates: 07-25 (105s) and 07-09/07-07 are capture holes, 06-27 is
+      # the first date of the window at 88% of a median day and 31.5s on ETH-USD,
+      # which is a real backlog rather than a threshold artefact.
+      coinbase:
+        max_p99_ms: 30000
+
+  latency.mark_price:
+    max_p99_ms: 3000
+
+  latency.liquidations:
+    max_p99_ms: 5000
+
+  # Structurally ~8.5s: open interest is polled, not streamed, so the tail measures
+  # the poll cadence rather than lag. Worst row in the window: 10.6s.
+  latency.open_interest:
+    max_p99_ms: 20000
+
+  # Not a real budget. Coinbase publishes ~10 snapshots a day, so this p99 is often
+  # a single observation and swings 0.3s to 21s on healthy days. The number is here
+  # so the family catch-all does not fire on noise.
+  latency.book_snapshots:
+    max_p99_ms: 60000
