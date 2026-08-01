@@ -102,8 +102,8 @@ def write_basis_for_date(
     have = {p["symbol"] for p in list_partitions(fs, silver_bucket, "nbbo", date)}
     summaries: list[dict] = []
     n = 0
-    writer = PartitionWriter(fs, gold_bucket, partition_key("basis", date=date), BASIS_SCHEMA)
-    try:
+    key = partition_key("basis", date=date)
+    with PartitionWriter(fs, gold_bucket, key, BASIS_SCHEMA) as writer:
         for base, usd_c, usdt_c in canonical.pairs_by_base():
             if usd_c not in have or usdt_c not in have:
                 continue
@@ -125,8 +125,7 @@ def write_basis_for_date(
             writer.write_rows(batch)
             if bps:
                 summaries.append(summary_row(base, date, bps, ts))
-    finally:
-        writer.close()
+    # After the writer closes: a summary must never outlive the series it summarises.
     if summaries:
         path = write_object(
             fs,
