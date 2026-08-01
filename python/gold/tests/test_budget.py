@@ -9,7 +9,7 @@ import pytest
 
 from common.lake import dq_budget_path_from_env
 from gold.budget import FAIL_CLOSED, Budget, BudgetError, Limit
-from gold.scorecard import CHECKS, LATENCY_PREFIX
+from gold.scorecard import CHECKS, LATENCY_PREFIX, absent_partition_rows
 
 
 def budget(yml: str, tmp_path: Path) -> Budget:
@@ -189,6 +189,19 @@ def test_min_records_catches_a_venue_that_nearly_stopped(tmp_path: Path) -> None
     assert breach.value == 93
     assert breach.bound == 100000
     assert "n_records 93 < min_records 100000" in str(breach)
+
+
+def test_an_absent_partition_breaches_the_floor_a_thin_one_does(tmp_path: Path) -> None:
+    """Absence needs no new budget concept: it is coverage at zero records.
+
+    The row is synthesised by `gold.scorecard.absent_partition_rows` from the declared
+    instrument map, because a venue-symbol that captured nothing produces no row here
+    to fail on.
+    """
+    b = budget("checks:\n  coverage: {min_records: 100000}", tmp_path)
+    absent = absent_partition_rows([], {("kraken", "BTC-USD")}, "2026-07-13")
+    (breach,) = b.breaches(absent)
+    assert breach.limit_name == "min_records" and breach.value == 0
 
 
 def test_a_latency_tail_only_trips_where_a_percentile_exists(tmp_path: Path) -> None:

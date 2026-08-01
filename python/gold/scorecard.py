@@ -210,6 +210,28 @@ def _status_checks(status_events: Iterable[dict]) -> list[dict]:
     return rows
 
 
+def absent_partition_rows(
+    rows: Iterable[dict], expected: Iterable[tuple[str, str]], date: str
+) -> list[dict]:
+    """A zero-record `coverage` row per declared venue-symbol that produced no row.
+
+    Every other check counts violations over records that exist, so a venue-symbol
+    which captured nothing is not a clean row, it is *no* row - the one failure a
+    rollup over silver cannot see, and the one a budget over that rollup therefore
+    cannot fail on. Writing the absence as `coverage` with n_records=0 puts it in the
+    mart and on the dashboard, and lets the record floor that already exists gate it
+    instead of inventing a second kind of budget.
+
+    `expected` is the declared (exchange, canonical_symbol) set - reference data, not
+    an inference from the day's own output, which is what makes an absence visible.
+    """
+    seen = {(r["exchange"], r["canonical_symbol"]) for r in rows}
+    return [
+        _row(exchange, symbol, date, COVERAGE, n_records=0, n_violations=0, detail={"absent": True})
+        for exchange, symbol in sorted(set(expected) - seen)
+    ]
+
+
 # --- per-partition accumulators (the streaming gold path) -------------------
 # Every scorecard group key nests inside one silver partition (book_quality and
 # latency are written `exchange=/symbol=canonical/date=`), so gold can fold one

@@ -39,6 +39,7 @@ from gold.scorecard import (
     BookCheckAccumulator,
     LatencyAccumulator,
     _status_checks,
+    absent_partition_rows,
     scorecard_table,
 )
 from materializer.bronze import CanonicalMap
@@ -172,6 +173,17 @@ def main() -> None:
         counts: dict[str, int] = {}
         scorecard = build_for_date(fs, silver_bucket, date)
         if scorecard:
+            # Only for a date silver produced *something* for: a date with no silver at
+            # all is a pipeline outage, which the freshness markers already carry.
+            absent = absent_partition_rows(scorecard, canonical.venue_pairs(), date)
+            for row in absent:
+                log.warning(
+                    "  absent: %s/%s wrote no silver on %s",
+                    row["exchange"],
+                    row["canonical_symbol"],
+                    date,
+                )
+            scorecard += absent
             path = write_object(
                 fs,
                 gold_bucket,

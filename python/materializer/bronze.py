@@ -116,6 +116,14 @@ class CanonicalMap:
                 mapping[key] = canonical_id
         return cls(mapping, specs)
 
+    def venue_pairs(self) -> set[tuple[str, str]]:
+        """Every declared (exchange, canonical_id): the partitions a complete date has.
+
+        Derived layers only ever see what capture produced, so this is the only place
+        that knows a venue-symbol was *supposed* to be there (gold.scorecard).
+        """
+        return {(exchange, canonical) for (exchange, _symbol), canonical in self._map.items()}
+
     def pairs_by_base(self) -> list[tuple[str, str, str]]:
         """(base, usd_canonical, usdt_canonical) for each base quoted in both USD
         and USDT - the cross-quote pairs the stablecoin basis joins. Perp

@@ -71,6 +71,11 @@ checks:
   # flags the partition once instead of three times.
   # Smallest partition on a date with no known capture hole: 176,250 (2026-07-19).
   # The floor sits at roughly half that, between the 5th and 10th percentile.
+  # It also carries the absent case: gold synthesises an n_records=0 coverage row for
+  # every venue-symbol in ops/instruments.yml that wrote no silver, so a partition
+  # that never arrived breaches this floor rather than passing by producing no row.
+  # Measured over the window: all 26 dates carry the declared 8, so this adds no
+  # breach here; on 2026-06-18, outside it, kraken's two symbols are missing outright.
   coverage:
     max_violations: 0
     min_records: 100000
