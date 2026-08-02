@@ -9,6 +9,8 @@ is the most dangerous kind of bug in this file.
 
 from __future__ import annotations
 
+import warnings
+
 import numpy as np
 import polars as pl
 import pytest
@@ -215,6 +217,24 @@ def test_fold_spread_is_mean_and_sd_over_folds() -> None:
     mean, sd = fold_spread(folds, "gbt", "r2")
     assert mean == pytest.approx(0.2)
     assert sd == pytest.approx(0.1)
+
+
+def test_a_metric_undefined_on_every_fold_is_quiet() -> None:
+    """The `zero` baseline calls no direction, so its hit rate has no value on any fold.
+    That is a documented case, not an error path, and numpy should not say otherwise."""
+    folds = [{"zero": {"hit": float("nan")}} for _ in range(4)]
+    with warnings.catch_warnings():
+        warnings.simplefilter("error", RuntimeWarning)
+        mean, sd = fold_spread(folds, "zero", "hit")
+    assert np.isnan(mean) and np.isnan(sd)
+
+
+def test_a_metric_defined_on_some_folds_still_averages_those() -> None:
+    """The guard must not swallow a partially defined metric along with the empty one."""
+    folds = [{"gbt": {"r2": v}} for v in (0.10, float("nan"), 0.20)]
+    mean, sd = fold_spread(folds, "gbt", "r2")
+    assert mean == pytest.approx(0.15)
+    assert sd == pytest.approx(0.05)
 
 
 # ── dead-zone plumbing ──────────────────────────────────────────────────────

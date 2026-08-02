@@ -374,8 +374,14 @@ def class_confidence_intervals(
 
 
 def fold_spread(fold_metrics: list[dict[str, dict[str, float]]], model: str, key: str):
-    """Mean and standard deviation of one metric across folds."""
+    """Mean and standard deviation of one metric across folds.
+
+    A metric undefined on every fold is routine rather than an error: the `zero` baseline
+    calls no direction, so its hit rate has no value anywhere. It reads as NaN either way,
+    so the guard buys no correctness - it keeps numpy's empty-slice warning off the stderr
+    of a run whose reader cannot act on it, and treats the case exactly like the empty one.
+    """
     vals = np.array([m[model][key] for m in fold_metrics if model in m], dtype=float)
-    if not len(vals):
+    if not len(vals) or bool(np.all(np.isnan(vals))):
         return float("nan"), float("nan")
     return float(np.nanmean(vals)), float(np.nanstd(vals))
