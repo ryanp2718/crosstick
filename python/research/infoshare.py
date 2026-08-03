@@ -148,7 +148,10 @@ def _shares_for_order(psi: np.ndarray, omega: np.ndarray, order: list[int]) -> n
     total = float(psi @ omega @ psi)
     shares = np.empty(2)
     shares[order] = contribution / total
-    return shares
+    # A Hasbrouck share is a proportion of variance, so [0, 1] holds by construction and
+    # any excess is float error in the ratio. Clipped rather than reported, unlike the
+    # Gonzalo-Granger shares, which leave the range for a real reason and are flagged.
+    return np.clip(shares, 0.0, 1.0)
 
 
 def information_shares(

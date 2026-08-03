@@ -176,6 +176,17 @@ def test_bounds_are_ordered_and_the_pair_brackets_one() -> None:
     assert got.bounds[:, 1].sum() >= 1.0 - 1e-9
 
 
+def test_a_share_never_leaves_the_unit_interval() -> None:
+    """A Hasbrouck share is a proportion of variance, so [0, 1] holds by construction, but
+    the ratio computing it lands an ulp outside on a near-degenerate system. A published
+    bound of 1.0000000000000002 reads as a defect in the estimator rather than as float
+    noise, and it is a share, so it is clipped rather than flagged the way GG is."""
+    for panel in (_leader_follower(noise=1e-6), _symmetric(), _two_sided(w=0.9)):
+        bounds = information_shares(panel, VENUES).bounds
+        assert np.all(bounds >= 0.0)
+        assert np.all(bounds <= 1.0)
+
+
 def test_simultaneous_discovery_widens_the_bounds_and_separated_discovery_narrows_them() -> None:
     """The order-dependence IS the uncertainty, and it is driven by residual correlation.
 
