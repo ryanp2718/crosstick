@@ -16,13 +16,93 @@ oracle that would catch it mechanically is a known gap, not yet built.
 The log is the source of truth; bronze mirrors it verbatim, and every silver and
 gold table is a batch projection of bronze:
 
+The entities and their derivation edges (columns are the key ones; the full
+schemas are the tables further down):
+
 ```mermaid
-flowchart LR
-    log["Redpanda log<br/>md.book · md.trades · md.status · md.bbo · md.nbbo<br/>+ derivatives (liq · mark · oi)"]
-    bronze["bronze<br/>every md.* topic projected 1:1<br/>corpus-shaped rows"]
-    silver["silver (per UTC date)<br/>book_quality · quotes · latency<br/>status_events · nbbo"]
-    gold["gold (per UTC date)<br/>scorecard · basis · basis_summary"]
-    log --> bronze --> silver --> gold
+erDiagram
+    bronze ||--o{ book_quality : "OrderBook fold"
+    bronze ||--o{ latency : "header decode"
+    bronze ||--o{ status_events : "status fold"
+    bronze ||--o{ quotes : "OrderBook fold, top-of-1"
+    quotes ||--o{ nbbo : "cross-venue max-bid min-ask"
+    status_events ||--o{ nbbo : "connection-state eviction"
+    book_quality }o--|| scorecard : "aggregate per check"
+    latency }o--|| scorecard : "latency percentiles"
+    status_events }o--|| scorecard : "venue_uptime"
+    nbbo ||--o{ basis : "as-of join USD x USDT"
+    basis }o--|| basis_summary : "daily summary"
+
+    bronze {
+        string topic
+        int partition
+        int offset
+        int timestamp_ms
+        bytes key
+        bytes value
+        list headers
+    }
+    book_quality {
+        string kind
+        int sequence
+        int epoch
+        decimal best_bid
+        decimal best_ask
+        bool seq_gap
+        bool crossed
+        string invariant_kind
+    }
+    latency {
+        string dataset
+        int offset
+        int exchange_ts_ns
+        int exchange_to_recv_ns
+        int exchange_to_emit_ns
+    }
+    status_events {
+        int ts_ns
+        string state
+        string prev_state
+        bool is_transition
+        int downtime_ns
+    }
+    quotes {
+        int ts_ns
+        decimal best_bid
+        decimal best_ask
+        decimal bid_sz
+        decimal ask_sz
+    }
+    nbbo {
+        int ts_ns
+        decimal best_bid
+        decimal best_ask
+        string bid_venue
+        string ask_venue
+        int n_venues
+    }
+    scorecard {
+        string check
+        int n_records
+        int n_violations
+        float p50_ms
+        float p99_ms
+        json detail
+    }
+    basis {
+        string base
+        int ts_ns
+        decimal usd_mid
+        decimal usdt_mid
+        decimal basis_abs
+        float basis_bps
+    }
+    basis_summary {
+        int n_obs
+        float basis_bps_mean
+        float basis_bps_p99
+        int coverage_ns
+    }
 ```
 
 ## Topics
