@@ -122,21 +122,23 @@ services:
       minio:
         condition: service_healthy
     # Idempotent bucket setup + a bronze lifecycle rule: expire raw `lake` objects
-    # after 30 days (matches log_retention_ms) so the lake can't grow unbounded.
-    # Only deletes once data ages past 30d (nothing yet - capture started <30d ago).
-    # mc is pinned (above), so the single `ilm rule add` syntax is known-good - no
-    # version fallback. Non-blocking (|| WARN to stderr) so a retention hiccup never
-    # fails minio-init (materializer waits on it) yet stays visible in the logs;
-    # retention is non-critical here (~200 GB free). Verify: mc ilm rule ls local/lake.
-    # Durable-layer's real fix is off-box object storage; the
-    # same S3 lifecycle API applies there unchanged.
+    # after BRONZE_EXPIRE_DAYS (default 30, matches log_retention_ms) so the lake
+    # can't grow unbounded. `ilm rule add` is NOT idempotent - it appends a rule per
+    # call - so this only seeds a rule when the bucket has no lifecycle config yet,
+    # leaving a hand-tuned retention (e.g. extended for a backfill) intact across
+    # restarts. Non-blocking (|| WARN to stderr) so a retention hiccup never fails
+    # minio-init (materializer waits on it) yet stays visible in the logs.
+    # Verify: mc ilm rule ls local/lake. Change retention: mc ilm rule rm --all
+    # --force local/lake && mc ilm rule add --expire-days N local/lake.
     entrypoint: >
       /bin/sh -c "
         mc alias set local http://minio:9000 "$$MINIO_ROOT_USER" "$$MINIO_ROOT_PASSWORD" &&
         mc mb -p local/lake &&
         mc mb -p local/silver &&
         mc mb -p local/gold &&
-        { mc ilm rule add --expire-days 30 local/lake || echo 'WARN: bronze lifecycle rule not set (mc ilm failed)' >&2; } &&
+        { mc ilm rule ls local/lake >/dev/null 2>&1 ||
+          mc ilm rule add --expire-days $${BRONZE_EXPIRE_DAYS:-30} local/lake ||
+          echo 'WARN: bronze lifecycle rule not set (mc ilm failed)' >&2; } &&
         echo 'buckets ready'
       "
     restart: "no"
