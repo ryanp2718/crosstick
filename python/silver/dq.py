@@ -12,11 +12,17 @@ Five fact streams, each canonical-resolved:
                    real ingest.book.OrderBook) and a sequence-gap count.
   - latency      : per-hop latency (ns) for every firehose record with headers.
   - status_events: typed venue up/down transitions with downtime.
-  - quotes       : per-venue reconstructed top-of-book (best bid/ask + sizes) at
-                   each book event with a valid two-sided book - the same
-                   OrderBook fold as book_quality, one pass.
+  - quotes       : per-venue reconstructed top-of-book (best bid/ask + sizes) plus
+                   cumulative depth at the DEPTH_LEVELS rungs, at each book event
+                   with a valid two-sided book - the same OrderBook fold as
+                   book_quality, one pass.
   - nbbo         : per-canonical reconstructed NBBO (max-bid/min-ask across a
                    canonical's venues, evicting a venue while its status is down).
+
+Plus the four tape datasets (TAPE_DATASETS): trades, liquidations, mark_price,
+open_interest, carried over from bronze verbatim rather than derived. They are
+market-data content, not quality facts, and they exist ONLY in bronze upstream -
+which expires on a lifecycle rule - so silver is what makes them durable.
 
 Sequence-gap policy is per-exchange and *grounded in each driver* (cry-wolf is
 worse than a miss for a quality floor):
@@ -49,7 +55,17 @@ import pyarrow as pa
 from analytics.corpus import CorpusRecord
 from common.asof import MAX_LEG_AGE_NS, merge_latest
 from common.kafka_io import header_value
-from common.models import BookDelta, BookSnapshot, Status, decode
+from common.models import (
+    BookDelta,
+    BookSnapshot,
+    Liquidation,
+    MarkPrice,
+    OpenInterest,
+    Side,
+    Status,
+    Trade,
+    decode,
+)
 from ingest.book import BookInvariantError, Level, OrderBook
 from materializer.bronze import CanonicalMap, parse_topic, record_date
 
@@ -64,6 +80,26 @@ LATENCY_DATASETS = frozenset(
 )
 CROSSED_KINDS = frozenset({"snapshot_crossed", "crossed_after_delta"})
 
+# Depth rungs carried into `quotes` beyond the touch, as cumulative size over the
+# best N levels a side.
+#
+# Ten is not a tuning choice, it is the floor across venues: Kraken's v2 book
+# channel is subscribed at depth 10 (ingest/kraken.py DEFAULT_DEPTH) and hard-trims
+# past it, so ten is the deepest rung EVERY venue can supply. Going deeper - or
+# using price-relative windows ("size within 25bps"), which coinbase and binance
+# could fill and kraken structurally could not - would hand three venues a feature
+# the fourth cannot have, and a cross-venue lead-lag model reads that asymmetry as
+# venue skill. Symmetry beats resolution here.
+MAX_DEPTH = 10
+DEPTH_LEVELS = (5, 10)
+
+
+# Bronze tape datasets lifted into silver verbatim, canonical-resolved and on the
+# quotes clock. The facts above *describe* the feed; these ARE the feed, and bronze
+# expires on a lifecycle rule, so anything not lifted here is unrecoverable.
+# Silver keeps the bronze dataset names (the funding rate is mark_price.funding_rate).
+TAPE_DATASETS = ("trades", "liquidations", "mark_price", "open_interest")
+
 
 @dataclass
 class SilverFacts:
@@ -74,6 +110,10 @@ class SilverFacts:
     status_events: list[dict] = field(default_factory=list)
     quotes: list[dict] = field(default_factory=list)
     nbbo: list[dict] = field(default_factory=list)
+    trades: list[dict] = field(default_factory=list)
+    mark_price: list[dict] = field(default_factory=list)
+    open_interest: list[dict] = field(default_factory=list)
+    liquidations: list[dict] = field(default_factory=list)
 
 
 @dataclass
@@ -138,6 +178,10 @@ def build_silver(records: Iterable[CorpusRecord], canonical: CanonicalMap) -> Si
         if lat is not None:
             facts.latency.append(lat)
 
+        if meta.dataset in _TAPE_ROW:
+            base = _tape_base(exchange, canon, date, rec.offset, msg, recv)
+            getattr(facts, meta.dataset).append(_TAPE_ROW[meta.dataset](base, msg))
+
         if meta.dataset in BOOK_DATASETS:
             bids, asks = _levels(msg)
             books.setdefault((exchange, msg.symbol), []).append(
@@ -179,13 +223,21 @@ def build_silver(records: Iterable[CorpusRecord], canonical: CanonicalMap) -> Si
 @dataclass
 class _BookEvent:
     """One reconstructed book event - the shared output of the fold that both
-    book_quality (quality flags) and quotes (top-of-book series) derive from."""
+    book_quality (quality flags) and quotes (top-of-book series) derive from.
+
+    `bid_levels`/`ask_levels` are the best `MAX_DEPTH` levels, populated only when
+    the event will produce a quote (valid, two-sided). book_quality is emitted for
+    every event including resyncing ones, so best_bid/best_ask stay separate rather
+    than being derived from the level lists.
+    """
 
     rec: _BookRec
     seq_gap: int
     invariant_kind: str | None
     best_bid: Level | None
     best_ask: Level | None
+    bid_levels: list[Level] = field(default_factory=list)
+    ask_levels: list[Level] = field(default_factory=list)
 
 
 # snap before delta at equal sequence (a re-snapshot replaces the book).
@@ -235,7 +287,19 @@ def _fold(book_recs: Iterable[_BookRec], contiguous: bool) -> Iterator[_BookEven
         except BookInvariantError as e:
             invariant_kind = e.kind
 
-        yield _BookEvent(r, seq_gap, invariant_kind, book.best_bid(), book.best_ask())
+        bb, ba = book.best_bid(), book.best_ask()
+        # Walking depth costs a tree read per level, so only do it on events that
+        # will actually emit a quote (`_quote_row` drops the rest).
+        deep = invariant_kind is None and bb is not None and ba is not None
+        yield _BookEvent(
+            r,
+            seq_gap,
+            invariant_kind,
+            bb,
+            ba,
+            book.top_n(Side.BID, MAX_DEPTH) if deep else [],
+            book.top_n(Side.ASK, MAX_DEPTH) if deep else [],
+        )
         if invariant_kind is not None:
             book.clear()  # resync from the next snapshot, as the ingester does
 
@@ -290,25 +354,31 @@ def book_latency_row(r: _BookRec) -> dict | None:
     )
 
 
-def latency_rows(records: Iterable[CorpusRecord], canonical: CanonicalMap) -> Iterator[dict]:
-    """Latency facts for a non-book latency dataset (trades/liquidations/
-    mark_price/open_interest), streamed per partition by the driver."""
+def tape_and_latency_rows(
+    records: Iterable[CorpusRecord], canonical: CanonicalMap, dataset: str
+) -> Iterator[tuple[dict, dict | None]]:
+    """One decode pass over a non-book partition -> `(tape row, latency row)`, the
+    latency row None where there is no exchange clock. The tape datasets are exactly
+    the non-book latency datasets, so the driver writes both from one bronze read."""
+    build = _TAPE_ROW[dataset]
     for rec in records:
         meta = parse_topic(rec.topic)
         msg = decode(rec.value)
         exchange = meta.exchange or ""
+        canon = canonical.resolve(exchange, msg.symbol)
+        date = record_date(rec.timestamp_ms)
+        recv = _recv_ns(rec)
         lat = _latency_dict(
             exchange,
-            canonical.resolve(exchange, msg.symbol),
-            record_date(rec.timestamp_ms),
+            canon,
+            date,
             meta.dataset,
             rec.offset,
             msg.exchange_ts_ns,
             msg.local_ts_ns,
-            _recv_ns(rec),
+            recv,
         )
-        if lat is not None:
-            yield lat
+        yield build(_tape_base(exchange, canon, date, rec.offset, msg, recv), msg), lat
 
 
 def _latency_dict(
@@ -337,6 +407,68 @@ def _latency_dict(
     }
 
 
+def _tape_base(exchange: str, canon: str, date: str, offset: int, msg, recv: int | None) -> dict:
+    """Identity + the clock every tape row shares with `quotes`: local_recv_ts_ns
+    (one gateway clock, so cross-venue joins are valid) falling back to the emit
+    clock. `exchange_ts_ns` stays for reference under the clock-domain caveat."""
+    return {
+        "exchange": exchange,
+        "canonical_symbol": canon,
+        "date": date,
+        "ts_ns": recv if recv is not None else msg.local_ts_ns,
+        "offset": offset,
+        "exchange_ts_ns": msg.exchange_ts_ns,
+        "local_ts_ns": msg.local_ts_ns,
+    }
+
+
+def _trades_row(base: dict, msg: Trade) -> dict:
+    # `side` is the taker/aggressor direction in every driver (BID = buyer-initiated),
+    # so order-flow sign needs no Lee-Ready inference.
+    return {
+        **base,
+        "trade_id": msg.trade_id,
+        "price": Decimal(msg.price),
+        "size": Decimal(msg.size),
+        "side": str(msg.side),
+    }
+
+
+def _mark_price_row(base: dict, msg: MarkPrice) -> dict:
+    return {
+        **base,
+        "mark_price": Decimal(msg.mark_price),
+        "index_price": Decimal(msg.index_price),
+        "est_settle_price": Decimal(msg.est_settle_price),
+        "funding_rate": Decimal(msg.funding_rate),
+        "next_funding_ts_ns": msg.next_funding_ts_ns,
+    }
+
+
+def _open_interest_row(base: dict, msg: OpenInterest) -> dict:
+    return {**base, "open_interest": Decimal(msg.open_interest)}
+
+
+def _liquidations_row(base: dict, msg: Liquidation) -> dict:
+    return {
+        **base,
+        "side": str(msg.side),
+        "price": Decimal(msg.price),
+        "avg_price": Decimal(msg.avg_price),
+        "orig_size": Decimal(msg.orig_size),
+        "filled_size": Decimal(msg.filled_size),
+        "status": msg.status,
+    }
+
+
+_TAPE_ROW = {
+    "trades": _trades_row,
+    "mark_price": _mark_price_row,
+    "open_interest": _open_interest_row,
+    "liquidations": _liquidations_row,
+}
+
+
 def _book_quality_row(ev: _BookEvent) -> dict:
     r = ev.rec
     return {
@@ -358,14 +490,27 @@ def _book_quality_row(ev: _BookEvent) -> dict:
     }
 
 
+def _cum_size(levels: list[Level], n: int) -> Decimal:
+    """Cumulative resting size over the best `n` levels, or over the whole side when
+    the book is thinner than that."""
+    return sum((sz for _, sz in levels[:n]), Decimal(0))
+
+
 def _quote_row(ev: _BookEvent) -> dict | None:
     """A quote is the top of a *valid* two-sided book - skip events that raised
-    an invariant (the book is resyncing) or are one-sided."""
+    an invariant (the book is resyncing) or are one-sided.
+
+    Beyond the touch it carries cumulative size at the DEPTH_LEVELS rungs plus the
+    worst price reached, which together give book slope: `bid_depth_10` is how much
+    size is available and `bid_px_10` is how far down you walked to find it. Both
+    are truncated to the levels the side actually has, so a book thinner than a rung
+    reports its whole side rather than a null (and the pair stays consistent).
+    """
     if ev.invariant_kind is not None or ev.best_bid is None or ev.best_ask is None:
         return None
     r = ev.rec
     ts = r.local_recv_ts_ns if r.local_recv_ts_ns is not None else r.local_ts_ns
-    return {
+    row = {
         "exchange": r.exchange,
         "canonical_symbol": r.canonical,
         "date": r.date,
@@ -375,6 +520,12 @@ def _quote_row(ev: _BookEvent) -> dict | None:
         "bid_sz": ev.best_bid[1],
         "ask_sz": ev.best_ask[1],
     }
+    for n in DEPTH_LEVELS:
+        row[f"bid_depth_{n}"] = _cum_size(ev.bid_levels, n)
+        row[f"ask_depth_{n}"] = _cum_size(ev.ask_levels, n)
+    row["bid_px_10"] = ev.bid_levels[:MAX_DEPTH][-1][0] if ev.bid_levels else None
+    row["ask_px_10"] = ev.ask_levels[:MAX_DEPTH][-1][0] if ev.ask_levels else None
+    return row
 
 
 def iter_nbbo(
@@ -541,6 +692,11 @@ QUOTES_SCHEMA = pa.schema(
         ("best_ask", _PRICE),
         ("bid_sz", _PRICE),
         ("ask_sz", _PRICE),
+        # Depth beyond the touch: cumulative size at each DEPTH_LEVELS rung, and the
+        # worst price the deepest rung reaches (size + distance = book slope).
+        *[(f"{side}_depth_{n}", _PRICE) for n in DEPTH_LEVELS for side in ("bid", "ask")],
+        ("bid_px_10", _PRICE),
+        ("ask_px_10", _PRICE),
     ]
 )
 
@@ -556,3 +712,57 @@ NBBO_SCHEMA = pa.schema(
         ("n_venues", pa.int64()),
     ]
 )
+
+# Tape schemas. The leading seven columns are `_tape_base` and are identical across
+# all four, so a feature build can join any tape to `quotes` on (exchange, symbol, ts_ns).
+_TAPE_BASE_FIELDS = [
+    ("exchange", pa.string()),
+    ("canonical_symbol", pa.string()),
+    ("date", pa.string()),
+    ("ts_ns", pa.int64()),
+    ("offset", pa.int64()),
+    ("exchange_ts_ns", pa.int64()),
+    ("local_ts_ns", pa.int64()),
+]
+
+TRADES_SCHEMA = pa.schema(
+    [
+        *_TAPE_BASE_FIELDS,
+        ("trade_id", pa.string()),
+        ("price", _PRICE),
+        ("size", _PRICE),
+        ("side", pa.string()),
+    ]
+)
+
+MARK_PRICE_SCHEMA = pa.schema(
+    [
+        *_TAPE_BASE_FIELDS,
+        ("mark_price", _PRICE),
+        ("index_price", _PRICE),
+        ("est_settle_price", _PRICE),
+        ("funding_rate", _PRICE),
+        ("next_funding_ts_ns", pa.int64()),
+    ]
+)
+
+OPEN_INTEREST_SCHEMA = pa.schema([*_TAPE_BASE_FIELDS, ("open_interest", _PRICE)])
+
+LIQUIDATIONS_SCHEMA = pa.schema(
+    [
+        *_TAPE_BASE_FIELDS,
+        ("side", pa.string()),
+        ("price", _PRICE),
+        ("avg_price", _PRICE),
+        ("orig_size", _PRICE),
+        ("filled_size", _PRICE),
+        ("status", pa.string()),
+    ]
+)
+
+TAPE_SCHEMAS = {
+    "trades": TRADES_SCHEMA,
+    "mark_price": MARK_PRICE_SCHEMA,
+    "open_interest": OPEN_INTEREST_SCHEMA,
+    "liquidations": LIQUIDATIONS_SCHEMA,
+}

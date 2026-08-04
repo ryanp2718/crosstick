@@ -46,12 +46,14 @@ from silver.dq import (
     NBBO_SCHEMA,
     QUOTES_SCHEMA,
     STATUS_SCHEMA,
+    TAPE_DATASETS,
+    TAPE_SCHEMAS,
     SilverFacts,
     _status_transitions,
     book_partition_rows,
     downs_by_exchange,
     iter_nbbo,
-    latency_rows,
+    tape_and_latency_rows,
     to_book_recs,
 )
 
@@ -67,10 +69,13 @@ SOURCE_DATASETS = (
     "open_interest",
     "status",
 )
+# Every dataset this entrypoint writes, in report order.
+SILVER_DATASETS = ("book_quality", "latency", "status_events", "quotes", "nbbo", *TAPE_DATASETS)
 BOOK_DATASETS = ("book_snapshots", "book_deltas")
 # Non-book firehose datasets that carry latency headers (book latency is emitted
-# during the fold, since it already holds the decoded records).
-NONBOOK_LATENCY_DATASETS = ("trades", "liquidations", "mark_price", "open_interest")
+# during the fold, since it already holds the decoded records). These are exactly
+# the tape datasets, so one read yields both the tape row and the latency fact.
+NONBOOK_LATENCY_DATASETS = TAPE_DATASETS
 # Rows per ParquetWriter row group - bounds the streaming driver's write buffers.
 BATCH_ROWS = 50_000
 # Allowed quote lateness for the NBBO reorder buffer: a quote may arrive this far
@@ -155,6 +160,19 @@ def write_silver(fs: pafs.FileSystem, bucket: str, facts: SilverFacts) -> None:
         NBBO_SCHEMA,
         lambda r: {"symbol": r["canonical_symbol"], "date": r["date"]},
     )
+    for dataset in TAPE_DATASETS:
+        _write_grouped(
+            fs,
+            bucket,
+            dataset,
+            getattr(facts, dataset),
+            TAPE_SCHEMAS[dataset],
+            lambda r: {
+                "exchange": r["exchange"],
+                "symbol": r["canonical_symbol"],
+                "date": r["date"],
+            },
+        )
 
 
 class _Batch:
@@ -239,11 +257,19 @@ def _process_partition(
                     latb.add(lat_row)
                     counts["latency"] += 1
         for dataset in NONBOOK_LATENCY_DATASETS:
-            if dataset in present:
-                recs = _iter_records(bronze_fs, lake_bucket, dataset, date, bron)
-                for lat_row in latency_rows(recs, canonical):
-                    latb.add(lat_row)
-                    counts["latency"] += 1
+            if dataset not in present:
+                continue
+            recs = _iter_records(bronze_fs, lake_bucket, dataset, date, bron)
+            key = partition_key(dataset, exchange=exchange, symbol=canon, date=date)
+            with PartitionWriter(derived_fs, silver_bucket, key, TAPE_SCHEMAS[dataset]) as w:
+                tapeb = _Batch(w)
+                for tape_row, lat_row in tape_and_latency_rows(recs, canonical, dataset):
+                    tapeb.add(tape_row)
+                    counts[dataset] += 1
+                    if lat_row is not None:
+                        latb.add(lat_row)
+                        counts["latency"] += 1
+                tapeb.flush()
         bqb.flush()
         qtb.flush()
         latb.flush()
@@ -378,13 +404,9 @@ def main() -> None:
         # the exporter reads freshness in O(1) without a metered LIST walk.
         write_freshness_markers(derived_fs, silver_bucket, date, counts)
         log.info(
-            "silver %s: %d book_quality, %d latency, %d status_events, %d quotes, %d nbbo",
+            "silver %s: %s",
             date,
-            counts["book_quality"],
-            counts["latency"],
-            counts["status_events"],
-            counts["quotes"],
-            counts["nbbo"],
+            ", ".join(f"{counts[d]} {d}" for d in SILVER_DATASETS if counts[d]),
         )
 
 

@@ -30,7 +30,17 @@ from silver.dq import build_silver
 from silver.main import build_silver_streaming, read_bronze_records, write_silver
 
 INSTRUMENTS_FILE = Path(__file__).resolve().parents[3] / "ops" / "instruments.yml"
-SILVER_DATASETS = ("book_quality", "latency", "status_events", "quotes", "nbbo")
+SILVER_DATASETS = (
+    "book_quality",
+    "latency",
+    "status_events",
+    "quotes",
+    "nbbo",
+    "trades",
+    "liquidations",
+    "mark_price",
+    "open_interest",
+)
 
 
 def _seed_bronze(
@@ -89,8 +99,5 @@ def test_streaming_counts_match_facts(tmp_path) -> None:
 
     counts = build_silver_streaming(fs, fs, lake, (tmp_path / "silver").as_posix(), date, canonical)
     facts = build_silver(read_bronze_records(fs, lake, date), canonical)
-    assert counts["book_quality"] == len(facts.book_quality)
-    assert counts["latency"] == len(facts.latency)
-    assert counts["quotes"] == len(facts.quotes)
-    assert counts["status_events"] == len(facts.status_events)
-    assert counts["nbbo"] == len(facts.nbbo)
+    for ds in SILVER_DATASETS:
+        assert counts[ds] == len(getattr(facts, ds)), ds
