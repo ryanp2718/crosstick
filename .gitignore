@@ -55,3 +55,7 @@ docs/scale-out.md
 
 # Local diagnostic / one-off scripts (not part of the shipped product)
 python/scripts/
+
+# Materialised research features: a pure function of an immutable silver date, so
+# it is a cache, not an artifact (research/main.py --cache).
+python/.feature_cache/

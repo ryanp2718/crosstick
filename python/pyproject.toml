@@ -23,12 +23,24 @@ dev = [
     "ruff==0.16.0",
     "testcontainers==4.15.0",
 ]
+# Modelling only. Kept out of the runtime deps so the service images (ingest,
+# materializer, silver/gold batch) don't carry scipy/sklearn.
+research = [
+    "polars==1.43.1",
+    "scikit-learn==1.9.0",
+]
+
+[tool.uv]
+# Both groups install for local dev and CI (`uv sync`). The service images build with
+# `uv pip install .` (main deps only), so research never reaches a runtime container.
+default-groups = ["dev", "research"]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = [
     "ingest/tests", "analytics/tests", "materializer/tests",
     "common/tests", "silver/tests", "gold/tests", "exporter/tests",
+    "research/tests",
 ]
 pythonpath = ["."]
 # Integration tests need Docker (testcontainers); excluded by default so the
