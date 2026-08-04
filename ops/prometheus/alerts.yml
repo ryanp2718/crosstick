@@ -147,16 +147,20 @@ groups:
           summary: "Capture-clock step > 60s reorder window ({{ $labels.exchange }}/{{ $labels.symbol }})"
           description: "Worst intra-epoch backward recv step {{ $value }}ms exceeds silver's W=60s: the NBBO build would fail loud. Investigate host/WSL2 clock (see host-clock-skew)."
 
-      # Elevated step COUNT vs the clean baseline (~150/venue/day). ~7000 was the
-      # w32time-stopped signature; >1000 flags a clock regression while staying well
-      # above the residual guest-clock noise.
+      # Elevated step COUNT. Measured over 26 dates (2026-06-27..07-27): the median
+      # scorecard row is 2 and the worst is 95, all of the tail is kraken (mean 28,
+      # p95 70) and no other venue exceeds 14. The old >1000 came from the
+      # pre-clocksource-fix era and now sits 10x above the worst real day, so a 5x
+      # regression would never reach it. 100 leads the DQ budget's hard limit of 200
+      # (ops/dq_budgets.yml): warn when kraken doubles or anyone else goes 7x, fail
+      # the gold build only when it doubles again.
       - alert: ClockStepsElevated
-        expr: gold_dq_violations{check="clock_monotonic"} > 1000
+        expr: gold_dq_violations{check="clock_monotonic"} > 100
         for: 10m
         labels: { severity: warning }
         annotations:
           summary: "Elevated capture-clock backward steps ({{ $labels.exchange }}/{{ $labels.symbol }})"
-          description: "{{ $value }} intra-epoch backward recv steps in the latest gold build (clean baseline ~150): suspect a stopped/again-drifting host clock."
+          description: "{{ $value }} intra-epoch backward recv steps in the latest gold build (measured worst day 95, kraken): suspect a stopped/again-drifting host clock."
 
       # The exporter itself stopped refreshing: gold DQ/basis/freshness gauges are
       # stale even though the scrape target is up. Distinct from TargetDown.
