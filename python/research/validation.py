@@ -187,6 +187,35 @@ def as_classes(oos: OutOfSample) -> OutOfSample:
     )
 
 
+def as_classes_at_coverage(oos: OutOfSample, coverage: float) -> OutOfSample:
+    """`as_classes`, but the prediction is cut at whatever |pred| makes the model call
+    exactly `coverage` of bars, instead of at half the spread.
+
+    Precision is only comparable between two runs at equal coverage. A model calling 8%
+    of bars is answering an easier question than one calling 94%, and the half-spread cut
+    lets coverage float with whatever the model happens to output - so a run and its
+    placebo land at different points on their own curves and the two precisions cannot be
+    compared. Truth keeps the real half-spread threshold: what counts as a tradeable move
+    is a property of the book, not of the model.
+    """
+    if oos.threshold is None:
+        raise ValueError("dead-zone scoring needs a threshold; pass spread_col to walk_forward")
+    magnitude = np.abs(oos.pred)
+    cut = float(np.quantile(magnitude, 1.0 - coverage)) if len(magnitude) else float("inf")
+    return OutOfSample(
+        dates=oos.dates,
+        y=dead_zone_classes(oos.y, oos.threshold),
+        pred=np.sign(oos.pred) * (magnitude > cut),
+    )
+
+
+def coverage_confidence_intervals(
+    oos: OutOfSample, coverage: float, n_boot: int = N_BOOT, seed: int = 0
+) -> dict[str, tuple[float, float, float]]:
+    """Dead-zone precision and recall at a fixed traded share, same date blocks."""
+    return _intervals(as_classes_at_coverage(oos, coverage), CLASS_METRICS, n_boot, seed)
+
+
 def evaluate_walk_forward(
     splits: list[Split], horizon: int, venues: list[str] | None = None, n_repeats: int = 5
 ) -> WalkForward:
