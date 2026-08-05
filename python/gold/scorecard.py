@@ -22,20 +22,8 @@ import numpy as np
 import pyarrow as pa
 import pyarrow.compute as pc
 
-SCORECARD_SCHEMA = pa.schema(
-    [
-        ("exchange", pa.string()),
-        ("canonical_symbol", pa.string()),
-        ("date", pa.string()),
-        ("check", pa.string()),
-        ("n_records", pa.int64()),
-        ("n_violations", pa.int64()),
-        ("p50_ms", pa.float64()),
-        ("p95_ms", pa.float64()),
-        ("p99_ms", pa.float64()),
-        ("detail", pa.string()),
-    ]
-)
+# Re-exported: declared in common.schemas, imported from here by convention.
+from common.schemas import SCORECARD_SCHEMA, table_from_rows
 
 
 def _row(
@@ -396,4 +384,4 @@ def build_scorecard(
 
 
 def scorecard_table(rows: list[dict]) -> pa.Table:
-    return pa.Table.from_pylist(rows, schema=SCORECARD_SCHEMA)
+    return table_from_rows(rows, SCORECARD_SCHEMA)

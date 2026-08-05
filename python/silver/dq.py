@@ -50,8 +50,6 @@ from collections.abc import Iterable, Iterator, Mapping
 from dataclasses import dataclass, field
 from decimal import Decimal
 
-import pyarrow as pa
-
 from analytics.corpus import CorpusRecord
 from common.asof import MAX_LEG_AGE_NS, merge_latest
 from common.kafka_io import header_value
@@ -66,6 +64,23 @@ from common.models import (
     Trade,
     decode,
 )
+
+# Re-exported: the silver output contract lives in common.schemas so one module can
+# enumerate the whole lake, but callers still import these from here.
+from common.schemas import (  # noqa: F401
+    BOOK_QUALITY_SCHEMA,
+    DEPTH_LEVELS,
+    LATENCY_SCHEMA,
+    LIQUIDATIONS_SCHEMA,
+    MARK_PRICE_SCHEMA,
+    MAX_DEPTH,
+    NBBO_SCHEMA,
+    OPEN_INTEREST_SCHEMA,
+    QUOTES_SCHEMA,
+    STATUS_SCHEMA,
+    TRADES_SCHEMA,
+    dataset,
+)
 from ingest.book import BookInvariantError, Level, OrderBook
 from materializer.bronze import CanonicalMap, parse_topic, record_date
 
@@ -79,19 +94,6 @@ LATENCY_DATASETS = frozenset(
     {"book_snapshots", "book_deltas", "trades", "liquidations", "mark_price", "open_interest"}
 )
 CROSSED_KINDS = frozenset({"snapshot_crossed", "crossed_after_delta"})
-
-# Depth rungs carried into `quotes` beyond the touch, as cumulative size over the
-# best N levels a side.
-#
-# Ten is not a tuning choice, it is the floor across venues: Kraken's v2 book
-# channel is subscribed at depth 10 (ingest/kraken.py DEFAULT_DEPTH) and hard-trims
-# past it, so ten is the deepest rung EVERY venue can supply. Going deeper - or
-# using price-relative windows ("size within 25bps"), which coinbase and binance
-# could fill and kraken structurally could not - would hand three venues a feature
-# the fourth cannot have, and a cross-venue lead-lag model reads that asymmetry as
-# venue skill. Symmetry beats resolution here.
-MAX_DEPTH = 10
-DEPTH_LEVELS = (5, 10)
 
 
 # Bronze tape datasets lifted into silver verbatim, canonical-resolved and on the
@@ -633,136 +635,4 @@ def _status_transitions(exchange: str, recs: list[CorpusRecord]) -> list[dict]:
     return rows
 
 
-# Typed silver output contract. DECIMAL(38,18) is the portable canonical scale;
-# ns timestamps and offsets are int64.
-_PRICE = pa.decimal128(38, 18)
-
-BOOK_QUALITY_SCHEMA = pa.schema(
-    [
-        ("exchange", pa.string()),
-        ("canonical_symbol", pa.string()),
-        ("date", pa.string()),
-        ("kind", pa.string()),
-        ("offset", pa.int64()),
-        ("sequence", pa.int64()),
-        ("epoch", pa.int64()),
-        ("exchange_ts_ns", pa.int64()),
-        ("local_ts_ns", pa.int64()),
-        ("local_recv_ts_ns", pa.int64()),
-        ("best_bid", _PRICE),
-        ("best_ask", _PRICE),
-        ("seq_gap", pa.int64()),
-        ("crossed", pa.bool_()),
-        ("invariant_kind", pa.string()),
-    ]
-)
-
-LATENCY_SCHEMA = pa.schema(
-    [
-        ("exchange", pa.string()),
-        ("canonical_symbol", pa.string()),
-        ("date", pa.string()),
-        ("dataset", pa.string()),
-        ("offset", pa.int64()),
-        ("exchange_ts_ns", pa.int64()),
-        ("exchange_to_recv_ns", pa.int64()),
-        ("exchange_to_emit_ns", pa.int64()),
-    ]
-)
-
-STATUS_SCHEMA = pa.schema(
-    [
-        ("exchange", pa.string()),
-        ("date", pa.string()),
-        ("ts_ns", pa.int64()),
-        ("state", pa.string()),
-        ("prev_state", pa.string()),
-        ("is_transition", pa.bool_()),
-        ("downtime_ns", pa.int64()),
-    ]
-)
-
-QUOTES_SCHEMA = pa.schema(
-    [
-        ("exchange", pa.string()),
-        ("canonical_symbol", pa.string()),
-        ("date", pa.string()),
-        ("ts_ns", pa.int64()),
-        ("best_bid", _PRICE),
-        ("best_ask", _PRICE),
-        ("bid_sz", _PRICE),
-        ("ask_sz", _PRICE),
-        # Depth beyond the touch: cumulative size at each DEPTH_LEVELS rung, and the
-        # worst price the deepest rung reaches (size + distance = book slope).
-        *[(f"{side}_depth_{n}", _PRICE) for n in DEPTH_LEVELS for side in ("bid", "ask")],
-        ("bid_px_10", _PRICE),
-        ("ask_px_10", _PRICE),
-    ]
-)
-
-NBBO_SCHEMA = pa.schema(
-    [
-        ("canonical_symbol", pa.string()),
-        ("date", pa.string()),
-        ("ts_ns", pa.int64()),
-        ("best_bid", _PRICE),
-        ("best_ask", _PRICE),
-        ("bid_venue", pa.string()),
-        ("ask_venue", pa.string()),
-        ("n_venues", pa.int64()),
-    ]
-)
-
-# Tape schemas. The leading seven columns are `_tape_base` and are identical across
-# all four, so a feature build can join any tape to `quotes` on (exchange, symbol, ts_ns).
-_TAPE_BASE_FIELDS = [
-    ("exchange", pa.string()),
-    ("canonical_symbol", pa.string()),
-    ("date", pa.string()),
-    ("ts_ns", pa.int64()),
-    ("offset", pa.int64()),
-    ("exchange_ts_ns", pa.int64()),
-    ("local_ts_ns", pa.int64()),
-]
-
-TRADES_SCHEMA = pa.schema(
-    [
-        *_TAPE_BASE_FIELDS,
-        ("trade_id", pa.string()),
-        ("price", _PRICE),
-        ("size", _PRICE),
-        ("side", pa.string()),
-    ]
-)
-
-MARK_PRICE_SCHEMA = pa.schema(
-    [
-        *_TAPE_BASE_FIELDS,
-        ("mark_price", _PRICE),
-        ("index_price", _PRICE),
-        ("est_settle_price", _PRICE),
-        ("funding_rate", _PRICE),
-        ("next_funding_ts_ns", pa.int64()),
-    ]
-)
-
-OPEN_INTEREST_SCHEMA = pa.schema([*_TAPE_BASE_FIELDS, ("open_interest", _PRICE)])
-
-LIQUIDATIONS_SCHEMA = pa.schema(
-    [
-        *_TAPE_BASE_FIELDS,
-        ("side", pa.string()),
-        ("price", _PRICE),
-        ("avg_price", _PRICE),
-        ("orig_size", _PRICE),
-        ("filled_size", _PRICE),
-        ("status", pa.string()),
-    ]
-)
-
-TAPE_SCHEMAS = {
-    "trades": TRADES_SCHEMA,
-    "mark_price": MARK_PRICE_SCHEMA,
-    "open_interest": OPEN_INTEREST_SCHEMA,
-    "liquidations": LIQUIDATIONS_SCHEMA,
-}
+TAPE_SCHEMAS = {name: dataset("silver", name).schema for name in TAPE_DATASETS}

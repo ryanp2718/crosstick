@@ -16,8 +16,8 @@ oracle that would catch it mechanically is a known gap, not yet built.
 The log is the source of truth; bronze mirrors it verbatim, and every silver and
 gold table is a batch projection of bronze:
 
-The entities and their derivation edges (columns are the key ones; the full
-schemas are the tables further down):
+The entities and their derivation edges; the column-level schemas are the
+generated tables further down.
 
 ```mermaid
 erDiagram
@@ -33,82 +33,9 @@ erDiagram
     nbbo ||--o{ basis : "as-of join USD x USDT"
     basis }o--|| basis_summary : "daily summary"
 
-    bronze {
-        string topic
-        int partition
-        int offset
-        int timestamp_ms
-        bytes key
-        bytes value
-        list headers
-    }
-    book_quality {
-        string kind
-        int sequence
-        int epoch
-        decimal best_bid
-        decimal best_ask
-        bool seq_gap
-        bool crossed
-        string invariant_kind
-    }
-    latency {
-        string dataset
-        int offset
-        int exchange_ts_ns
-        int exchange_to_recv_ns
-        int exchange_to_emit_ns
-    }
-    status_events {
-        int ts_ns
-        string state
-        string prev_state
-        bool is_transition
-        int downtime_ns
-    }
-    quotes {
-        int ts_ns
-        decimal best_bid
-        decimal best_ask
-        decimal bid_sz
-        decimal ask_sz
-        decimal bid_depth_5
-        decimal ask_depth_5
-        decimal bid_depth_10
-        decimal ask_depth_10
-        decimal bid_px_10
-        decimal ask_px_10
-    }
-    nbbo {
-        int ts_ns
-        decimal best_bid
-        decimal best_ask
-        string bid_venue
-        string ask_venue
-        int n_venues
-    }
-    scorecard {
-        string check
-        int n_records
-        int n_violations
-        float p50_ms
-        float p99_ms
-        json detail
-    }
-    basis {
-        string base
-        int ts_ns
-        decimal usd_mid
-        decimal usdt_mid
-        decimal basis_abs
-        float basis_bps
-    }
-    basis_summary {
-        int n_obs
-        float basis_bps_mean
-        float basis_bps_p99
-        int coverage_ns
-    }
+    %% Columns are deliberately not listed: mermaid's ER types cannot express
+    %% decimal128(38,18) vs int32 vs int64, so an attribute block here would be a
+    %% second, lossy copy of the generated tables below.
 ```
 
 ## Topics
@@ -209,16 +136,31 @@ to Parquet on the `lake` bucket, the insurance layer of the medallion plan.
 Object paths are Hive-partitioned, canonical-resolved
 via `ops/instruments.yml`:
 
-| Dataset | Source topics | Path |
+<!-- BEGIN GENERATED: bronze-datasets -->
+
+| Dataset | Source topics | Path | Row = |
+|---|---|---|---|
+| `book_snapshots` | `md.book.*.snapshots` | `book_snapshots/exchange={ex}/symbol={canonical}/date={d}/{partition:03d}-{start_offset:012d}.parquet` | one bootstrap or re-emitted book snapshot |
+| `book_deltas` | `md.book.*.deltas` | `book_deltas/exchange={ex}/symbol={canonical}/date={d}/{partition:03d}-{start_offset:012d}.parquet` | one book delta |
+| `trades` | `md.trades.*` | `trades/exchange={ex}/symbol={canonical}/date={d}/{partition:03d}-{start_offset:012d}.parquet` | one trade |
+| `bbo` | `md.bbo.*` | `bbo/exchange={ex}/symbol={canonical}/date={d}/{partition:03d}-{start_offset:012d}.parquet` | one gateway-derived best bid/offer |
+| `liquidations` | `md.liquidations.*` | `liquidations/exchange={ex}/symbol={canonical}/date={d}/{partition:03d}-{start_offset:012d}.parquet` | one forced order |
+| `mark_price` | `md.markprice.*` | `mark_price/exchange={ex}/symbol={canonical}/date={d}/{partition:03d}-{start_offset:012d}.parquet` | one mark/funding tick |
+| `open_interest` | `md.openinterest.*` | `open_interest/exchange={ex}/symbol={canonical}/date={d}/{partition:03d}-{start_offset:012d}.parquet` | one open-interest poll |
+| `status` | `md.status.*` | `status/exchange={ex}/date={d}/{partition:03d}-{start_offset:012d}.parquet` | one venue connection-state record |
+| `nbbo` | `md.nbbo.*` | `nbbo/symbol={canonical}/date={d}/{partition:03d}-{start_offset:012d}.parquet` | one gateway-derived NBBO tick |
+
+| Dataset | Column | Type |
 |---|---|---|
-| `book_snapshots`, `book_deltas` | `md.book.*` | `{dataset}/exchange={ex}/symbol={canonical}/date={YYYY-MM-DD}/` |
-| `trades` | `md.trades.*` | same |
-| `bbo` | `md.bbo.*` | same |
-| `liquidations` | `md.liquidations.*` | same |
-| `mark_price` | `md.markprice.*` | same |
-| `open_interest` | `md.openinterest.*` | same |
-| `status` | `md.status.*` | `status/exchange={ex}/date=.../` |
-| `nbbo` | `md.nbbo.*` | `nbbo/symbol={canonical}/date=.../` |
+| all of the above | `topic` | string |
+| all of the above | `partition` | int32 |
+| all of the above | `offset` | int64 |
+| all of the above | `timestamp_ms` | int64 |
+| all of the above | `key` | binary |
+| all of the above | `value` | binary |
+| all of the above | `headers` | list<item: struct<key: string, value: binary>> |
+
+<!-- END GENERATED: bronze-datasets -->
 
 - **Object naming:** `{partition:03d}-{start_offset:012d}.parquet`, keyed by
   the chunk's **start offset only** (Kafka Connect S3-sink convention). The
@@ -253,17 +195,120 @@ canonical-resolved; **one overwrite-keyed `part.parquet` per partition** (a laye
 aggregates a whole date, so a recompute rewrites the object: idempotent, the same
 discipline as bronze's start-offset keys, but at date grain).
 
-| Dataset | Path | Row = | Key columns |
-|---|---|---|---|
-| `book_quality` | `book_quality/exchange={ex}/symbol={canon}/date={d}/` | one book event | `kind` (snap/delta), `offset`, `sequence`, `epoch`, `exchange_ts_ns`, `local_ts_ns`, `local_recv_ts_ns`, `best_bid`/`best_ask` (`DECIMAL(38,18)`), `seq_gap`, `crossed`, `invariant_kind` |
-| `latency` | `latency/exchange={ex}/symbol={canon}/date={d}/` | one firehose record | `dataset`, `offset`, `exchange_ts_ns`, `exchange_to_recv_ns`, `exchange_to_emit_ns` |
-| `status_events` | `status_events/exchange={ex}/date={d}/` | one venue status | `ts_ns`, `state`, `prev_state`, `is_transition`, `downtime_ns` |
-| `quotes` | `quotes/exchange={ex}/symbol={canon}/date={d}/` | one valid two-sided book event | `ts_ns`, `best_bid`/`best_ask`, `bid_sz`/`ask_sz`, `bid_depth_5`/`ask_depth_5`, `bid_depth_10`/`ask_depth_10`, `bid_px_10`/`ask_px_10` (`DECIMAL(38,18)`) |
-| `nbbo` | `nbbo/symbol={canon}/date={d}/` | one cross-venue NBBO tick | `ts_ns`, `best_bid`/`best_ask` (`DECIMAL(38,18)`), `bid_venue`, `ask_venue`, `n_venues` |
-| `trades` | `trades/exchange={ex}/symbol={canon}/date={d}/` | one trade | `trade_id`, `price`, `size` (`DECIMAL(38,18)`), `side` |
-| `liquidations` | `liquidations/exchange={ex}/symbol={canon}/date={d}/` | one forced order | `side`, `price`, `avg_price`, `orig_size`, `filled_size` (`DECIMAL(38,18)`), `status` |
-| `mark_price` | `mark_price/exchange={ex}/symbol={canon}/date={d}/` | one mark/funding tick | `mark_price`, `index_price`, `est_settle_price`, `funding_rate` (`DECIMAL(38,18)`), `next_funding_ts_ns` |
-| `open_interest` | `open_interest/exchange={ex}/symbol={canon}/date={d}/` | one OI poll | `open_interest` (`DECIMAL(38,18)`) |
+<!-- BEGIN GENERATED: silver-datasets -->
+
+| Dataset | Path | Row = |
+|---|---|---|
+| `book_quality` | `book_quality/exchange={ex}/symbol={canonical}/date={d}/part.parquet` | one book event, with crossed/invariant flags and a sequence-gap count |
+| `latency` | `latency/exchange={ex}/symbol={canonical}/date={d}/part.parquet` | one firehose record's per-hop latency |
+| `status_events` | `status_events/exchange={ex}/date={d}/part.parquet` | one typed venue up/down transition, with downtime |
+| `quotes` | `quotes/exchange={ex}/symbol={canonical}/date={d}/part.parquet` | one reconstructed top-of-book, at each event with a valid two-sided book |
+| `nbbo` | `nbbo/symbol={canonical}/date={d}/part.parquet` | one reconstructed cross-venue NBBO tick |
+| `trades` | `trades/exchange={ex}/symbol={canonical}/date={d}/part.parquet` | one trade, taker side measured |
+| `liquidations` | `liquidations/exchange={ex}/symbol={canonical}/date={d}/part.parquet` | one forced order |
+| `mark_price` | `mark_price/exchange={ex}/symbol={canonical}/date={d}/part.parquet` | one mark/funding tick |
+| `open_interest` | `open_interest/exchange={ex}/symbol={canonical}/date={d}/part.parquet` | one open-interest poll |
+
+| Dataset | Column | Type |
+|---|---|---|
+| `book_quality` | `exchange` | string |
+| `book_quality` | `canonical_symbol` | string |
+| `book_quality` | `date` | string |
+| `book_quality` | `kind` | string |
+| `book_quality` | `offset` | int64 |
+| `book_quality` | `sequence` | int64 |
+| `book_quality` | `epoch` | int64 |
+| `book_quality` | `exchange_ts_ns` | int64 |
+| `book_quality` | `local_ts_ns` | int64 |
+| `book_quality` | `local_recv_ts_ns` | int64 |
+| `book_quality` | `best_bid` | decimal128(38, 18) |
+| `book_quality` | `best_ask` | decimal128(38, 18) |
+| `book_quality` | `seq_gap` | int64 |
+| `book_quality` | `crossed` | bool |
+| `book_quality` | `invariant_kind` | string |
+| `latency` | `exchange` | string |
+| `latency` | `canonical_symbol` | string |
+| `latency` | `date` | string |
+| `latency` | `dataset` | string |
+| `latency` | `offset` | int64 |
+| `latency` | `exchange_ts_ns` | int64 |
+| `latency` | `exchange_to_recv_ns` | int64 |
+| `latency` | `exchange_to_emit_ns` | int64 |
+| `status_events` | `exchange` | string |
+| `status_events` | `date` | string |
+| `status_events` | `ts_ns` | int64 |
+| `status_events` | `state` | string |
+| `status_events` | `prev_state` | string |
+| `status_events` | `is_transition` | bool |
+| `status_events` | `downtime_ns` | int64 |
+| `quotes` | `exchange` | string |
+| `quotes` | `canonical_symbol` | string |
+| `quotes` | `date` | string |
+| `quotes` | `ts_ns` | int64 |
+| `quotes` | `best_bid` | decimal128(38, 18) |
+| `quotes` | `best_ask` | decimal128(38, 18) |
+| `quotes` | `bid_sz` | decimal128(38, 18) |
+| `quotes` | `ask_sz` | decimal128(38, 18) |
+| `quotes` | `bid_depth_5` | decimal128(38, 18) |
+| `quotes` | `ask_depth_5` | decimal128(38, 18) |
+| `quotes` | `bid_depth_10` | decimal128(38, 18) |
+| `quotes` | `ask_depth_10` | decimal128(38, 18) |
+| `quotes` | `bid_px_10` | decimal128(38, 18) |
+| `quotes` | `ask_px_10` | decimal128(38, 18) |
+| `nbbo` | `canonical_symbol` | string |
+| `nbbo` | `date` | string |
+| `nbbo` | `ts_ns` | int64 |
+| `nbbo` | `best_bid` | decimal128(38, 18) |
+| `nbbo` | `best_ask` | decimal128(38, 18) |
+| `nbbo` | `bid_venue` | string |
+| `nbbo` | `ask_venue` | string |
+| `nbbo` | `n_venues` | int64 |
+| `trades` | `exchange` | string |
+| `trades` | `canonical_symbol` | string |
+| `trades` | `date` | string |
+| `trades` | `ts_ns` | int64 |
+| `trades` | `offset` | int64 |
+| `trades` | `exchange_ts_ns` | int64 |
+| `trades` | `local_ts_ns` | int64 |
+| `trades` | `trade_id` | string |
+| `trades` | `price` | decimal128(38, 18) |
+| `trades` | `size` | decimal128(38, 18) |
+| `trades` | `side` | string |
+| `liquidations` | `exchange` | string |
+| `liquidations` | `canonical_symbol` | string |
+| `liquidations` | `date` | string |
+| `liquidations` | `ts_ns` | int64 |
+| `liquidations` | `offset` | int64 |
+| `liquidations` | `exchange_ts_ns` | int64 |
+| `liquidations` | `local_ts_ns` | int64 |
+| `liquidations` | `side` | string |
+| `liquidations` | `price` | decimal128(38, 18) |
+| `liquidations` | `avg_price` | decimal128(38, 18) |
+| `liquidations` | `orig_size` | decimal128(38, 18) |
+| `liquidations` | `filled_size` | decimal128(38, 18) |
+| `liquidations` | `status` | string |
+| `mark_price` | `exchange` | string |
+| `mark_price` | `canonical_symbol` | string |
+| `mark_price` | `date` | string |
+| `mark_price` | `ts_ns` | int64 |
+| `mark_price` | `offset` | int64 |
+| `mark_price` | `exchange_ts_ns` | int64 |
+| `mark_price` | `local_ts_ns` | int64 |
+| `mark_price` | `mark_price` | decimal128(38, 18) |
+| `mark_price` | `index_price` | decimal128(38, 18) |
+| `mark_price` | `est_settle_price` | decimal128(38, 18) |
+| `mark_price` | `funding_rate` | decimal128(38, 18) |
+| `mark_price` | `next_funding_ts_ns` | int64 |
+| `open_interest` | `exchange` | string |
+| `open_interest` | `canonical_symbol` | string |
+| `open_interest` | `date` | string |
+| `open_interest` | `ts_ns` | int64 |
+| `open_interest` | `offset` | int64 |
+| `open_interest` | `exchange_ts_ns` | int64 |
+| `open_interest` | `local_ts_ns` | int64 |
+| `open_interest` | `open_interest` | decimal128(38, 18) |
+
+<!-- END GENERATED: silver-datasets -->
 
 - **`crossed`/`invariant_kind`** come from the OrderBook fold per
   `(exchange, symbol, epoch)`; a violation resyncs (clear) like the ingester. The
@@ -318,6 +363,29 @@ ad-hoc; dbt formalizes gold marts at Phase 4/5, over typed silver).
 
 Fact table keyed `(exchange, canonical_symbol, date, check)`:
 
+<!-- BEGIN GENERATED: gold-scorecard -->
+
+| Dataset | Path | Row = |
+|---|---|---|
+| `scorecard` | `scorecard/date={d}/part.parquet` | one (exchange, symbol, date, check) data-quality fact |
+
+| Dataset | Column | Type |
+|---|---|---|
+| `scorecard` | `exchange` | string |
+| `scorecard` | `canonical_symbol` | string |
+| `scorecard` | `date` | string |
+| `scorecard` | `check` | string |
+| `scorecard` | `n_records` | int64 |
+| `scorecard` | `n_violations` | int64 |
+| `scorecard` | `p50_ms` | double |
+| `scorecard` | `p95_ms` | double |
+| `scorecard` | `p99_ms` | double |
+| `scorecard` | `detail` | string |
+
+<!-- END GENERATED: gold-scorecard -->
+
+What the non-obvious columns mean (the schema can carry the type, not the intent):
+
 | Column | Meaning |
 |---|---|
 | `n_records`, `n_violations` | denominator + the headline pass/fail count for the check |
@@ -338,14 +406,69 @@ excluded), it as-of joins the two NBBO series (backward-only, so each observatio
 is point-in-time correct) and emits the basis where **both** legs have a valid
 two-sided NBBO. Two overwrite-keyed objects per date:
 
-| Dataset | Path | Row = | Key columns |
-|---|---|---|---|
-| `basis` | `basis/date={d}/` | one tick (either leg moved) | `base`, `ts_ns`, `usd_mid`, `usdt_mid`, `basis_abs`, `basis_bps`, `usd_bid`/`usd_ask`/`usdt_bid`/`usdt_ask` (`DECIMAL(38,18)`; `basis_bps` float) |
-| `basis_summary` | `basis_summary/date={d}/` | one base/day | `n_obs`, `basis_bps_mean`/`std`/`median`/`min`/`max`/`p1`/`p99`, `coverage_ns` |
+<!-- BEGIN GENERATED: gold-basis -->
+
+| Dataset | Path | Row = |
+|---|---|---|
+| `basis` | `basis/date={d}/part.parquet` | one USD/USDT basis tick (either leg moved) |
+| `basis_summary` | `basis_summary/date={d}/part.parquet` | one base per day |
+
+| Dataset | Column | Type |
+|---|---|---|
+| `basis` | `base` | string |
+| `basis` | `date` | string |
+| `basis` | `ts_ns` | int64 |
+| `basis` | `usd_mid` | decimal128(38, 18) |
+| `basis` | `usdt_mid` | decimal128(38, 18) |
+| `basis` | `basis_abs` | decimal128(38, 18) |
+| `basis` | `basis_bps` | double |
+| `basis` | `usd_bid` | decimal128(38, 18) |
+| `basis` | `usd_ask` | decimal128(38, 18) |
+| `basis` | `usdt_bid` | decimal128(38, 18) |
+| `basis` | `usdt_ask` | decimal128(38, 18) |
+| `basis_summary` | `base` | string |
+| `basis_summary` | `date` | string |
+| `basis_summary` | `n_obs` | int64 |
+| `basis_summary` | `basis_bps_mean` | double |
+| `basis_summary` | `basis_bps_std` | double |
+| `basis_summary` | `basis_bps_median` | double |
+| `basis_summary` | `basis_bps_min` | double |
+| `basis_summary` | `basis_bps_max` | double |
+| `basis_summary` | `basis_bps_p1` | double |
+| `basis_summary` | `basis_bps_p99` | double |
+| `basis_summary` | `coverage_ns` | int64 |
+
+<!-- END GENERATED: gold-basis -->
 
 `basis_abs = usd_mid - usdt_mid`; `basis_bps = basis_abs / usd_mid * 1e4`. This is
 the first signal driven through the full research spine;
 the later ladder rungs (price-discovery, carry, OFI) reuse the same as-of join.
+
+## Freshness markers
+
+A tiny overwrite-keyed object per dataset under `_freshness/`, written into both
+the `silver` and `gold` buckets **after** that dataset's data objects, so a
+partial or aborted build can never read back as fresh. It lets the lake-exporter
+read a derived layer's freshness in O(1) (one GET per marker) instead of a full
+LIST walk whose Class A cost grows with venues x securities, which is the
+difference between free and metered on R2. A once-daily audit still walks the
+layer to cross-check the markers. A zero-row dataset writes no object, so its
+freshness stays undefined, exactly as the LIST walk reported it.
+
+<!-- BEGIN GENERATED: freshness-markers -->
+
+| Dataset | Path | Row = |
+|---|---|---|
+| `_freshness` | `_freshness/<dataset>.parquet` | one dataset's last successful build |
+
+| Column | Type |
+|---|---|
+| `dataset` | string |
+| `date` | string |
+| `written_at_epoch` | double |
+| `row_count` | int64 |
+
+<!-- END GENERATED: freshness-markers -->
 
 ## Corpus format (replay harness)
 
