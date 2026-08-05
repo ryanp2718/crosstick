@@ -55,11 +55,16 @@ import polars as pl
 # side found signal at, without spending degrees of freedom on lags past it.
 DEFAULT_LAGS = 10
 
-# Minimum usable rows before an estimate is worth reporting for a date. Sized for the 1s
-# grid; a coarse stride legitimately falls below it, so `by_date` takes an override
-# rather than silently returning nothing (a 30s stride leaves 2880 bars a date, which is
-# ample for ~21 parameters but under this floor).
+# Minimum usable rows before an estimate is worth reporting for a date, on the 1s grid.
+# A coarse stride legitimately falls below it, so scale with `min_rows_for` rather than
+# passing this directly: a 30s stride leaves under 3000 bars a date, which is ample for
+# ~22 parameters but under this floor, and the date would be dropped without a word.
 MIN_ROWS = 5_000
+
+# Observations per fitted parameter the estimate needs to be worth quoting. The VECM
+# fits one error-correction loading, two coefficients per lag and an intercept per
+# equation, so at the default lag count that is 22.
+OBS_PER_PARAMETER = 20
 
 
 @dataclass
@@ -91,6 +96,18 @@ class InfoShare:
     def component_shares_usable(self) -> bool:
         """Whether the Gonzalo-Granger numbers are shares at all rather than artefacts."""
         return bool(np.all(self.component_shares >= 0.0) and np.all(self.component_shares <= 1.0))
+
+
+def min_rows_for(stride: int, lags: int = DEFAULT_LAGS) -> int:
+    """Rows a date needs at this sampling frequency before its estimate is reported.
+
+    Two floors, whichever binds. `MIN_ROWS / stride` keeps the requirement about how much
+    of the day is covered rather than how many rows survive striding, so asking for a
+    coarser sample does not silently discard every date. Under it sits a hard floor of
+    `OBS_PER_PARAMETER` observations per fitted coefficient, because past some coarseness
+    the fit stops being identified and a share printed from it is noise wearing a number.
+    """
+    return max(MIN_ROWS // max(stride, 1), OBS_PER_PARAMETER * (2 * lags + 2))
 
 
 def _stack_lags(dp: np.ndarray, lags: int) -> np.ndarray:
@@ -131,7 +148,10 @@ def _shares_for_order(psi: np.ndarray, omega: np.ndarray, order: list[int]) -> n
     total = float(psi @ omega @ psi)
     shares = np.empty(2)
     shares[order] = contribution / total
-    return shares
+    # A Hasbrouck share is a proportion of variance, so [0, 1] holds by construction and
+    # any excess is float error in the ratio. Clipped rather than reported, unlike the
+    # Gonzalo-Granger shares, which leave the range for a real reason and are flagged.
+    return np.clip(shares, 0.0, 1.0)
 
 
 def information_shares(
@@ -201,14 +221,19 @@ def by_date(
     stride: int = 1,
     lags: int = DEFAULT_LAGS,
     max_age_ms: int | None = None,
-    min_rows: int = MIN_ROWS,
+    min_rows: int | None = None,
 ) -> list[InfoShare]:
     """One estimate per date, never one over the concatenated tape.
 
     Splicing dates would put an overnight gap inside a lag window and let the
     error-correction term absorb a jump that no venue traded through. Per-date estimates
     also give the across-date spread, which is the only error bar this method gets.
+
+    `min_rows` defaults to `min_rows_for(stride)` rather than to a constant, so a coarse
+    sample is not silently every date dropped.
     """
+    if min_rows is None:
+        min_rows = min_rows_for(stride, lags)
     out = []
     for (date,), part in df.sort("ts_ns").group_by(["date"], maintain_order=True):
         panel = price_panel(part, venues, stride, max_age_ms)

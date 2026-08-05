@@ -59,3 +59,8 @@ python/scripts/
 # Materialised research features: a pure function of an immutable silver date, so
 # it is a cache, not an artifact (research/main.py --cache).
 python/.feature_cache/
+
+# Run records (research/runs.py). These ARE artifacts, but they accumulate one
+# directory per run and each carries a multi-megabyte oos.parquet. The ones worth
+# publishing get copied out deliberately, not swept in by a stray `git add`.
+python/runs/

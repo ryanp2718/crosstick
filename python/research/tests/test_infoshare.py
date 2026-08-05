@@ -13,10 +13,13 @@ import polars as pl
 import pytest
 
 from research.infoshare import (
+    DEFAULT_LAGS,
     MIN_ROWS,
+    OBS_PER_PARAMETER,
     by_date,
     fit,
     information_shares,
+    min_rows_for,
     price_panel,
     report,
 )
@@ -173,6 +176,17 @@ def test_bounds_are_ordered_and_the_pair_brackets_one() -> None:
     assert got.bounds[:, 1].sum() >= 1.0 - 1e-9
 
 
+def test_a_share_never_leaves_the_unit_interval() -> None:
+    """A Hasbrouck share is a proportion of variance, so [0, 1] holds by construction, but
+    the ratio computing it lands an ulp outside on a near-degenerate system. A published
+    bound of 1.0000000000000002 reads as a defect in the estimator rather than as float
+    noise, and it is a share, so it is clipped rather than flagged the way GG is."""
+    for panel in (_leader_follower(noise=1e-6), _symmetric(), _two_sided(w=0.9)):
+        bounds = information_shares(panel, VENUES).bounds
+        assert np.all(bounds >= 0.0)
+        assert np.all(bounds <= 1.0)
+
+
 def test_simultaneous_discovery_widens_the_bounds_and_separated_discovery_narrows_them() -> None:
     """The order-dependence IS the uncertainty, and it is driven by residual correlation.
 
@@ -281,9 +295,24 @@ def test_by_date_skips_dates_with_too_little_data() -> None:
     assert by_date(short, VENUES) == []
 
 
-def test_the_row_floor_can_be_lowered_for_a_coarse_stride() -> None:
-    """A coarse stride legitimately leaves few rows per date, and the default floor is
-    sized for the 1s grid - without the override the whole sweep returns nothing."""
-    df = _frame(1)
-    assert by_date(df, VENUES, stride=20) == []
-    assert len(by_date(df, VENUES, stride=20, min_rows=200)) == 1
+def test_the_row_floor_scales_with_the_stride() -> None:
+    """The floor asks how much of the day the sample covers, not how many rows survive
+    striding. Sized for the 1s grid and left fixed, a 30s sweep of full days falls under
+    it on every date and the whole analysis returns nothing without a word."""
+    assert min_rows_for(1) == MIN_ROWS
+    assert min_rows_for(5) == MIN_ROWS // 5
+    # Past some coarseness the identification floor binds instead and stops scaling.
+    identified = OBS_PER_PARAMETER * (2 * DEFAULT_LAGS + 2)
+    assert min_rows_for(30) == identified
+    assert min_rows_for(10_000) == identified
+
+
+def test_a_full_day_at_a_coarse_stride_survives_the_floor() -> None:
+    df = _frame(1, n_per_date=80_000)
+    assert len(by_date(df, VENUES, stride=30)) == 1
+
+
+def test_a_sample_too_thin_to_identify_the_fit_is_still_dropped() -> None:
+    """255 rows for 22 parameters is not an estimate, however coarse the stride."""
+    assert by_date(_frame(1), VENUES, stride=20) == []
+    assert len(by_date(_frame(1), VENUES, stride=20, min_rows=200)) == 1

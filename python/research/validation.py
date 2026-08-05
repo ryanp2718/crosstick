@@ -81,12 +81,19 @@ class OutOfSample:
 
 @dataclass
 class WalkForward:
-    """Everything a fold sequence produced, before any of it is formatted."""
+    """Everything a fold sequence produced, before any of it is formatted.
+
+    `fold_edge` and `fold_classes` are keyed by model like `fold_metrics`, but sparsely:
+    the `zero` baseline has no edge because it takes no position, and no model has classes
+    unless the caller asked for dead-zone scoring by passing a spread column.
+    """
 
     splits: list[Split]
     fold_metrics: list[dict[str, dict[str, float]]]
     oos: dict[str, OutOfSample]
     importance: list[dict[str, float]] = field(default_factory=list)
+    fold_edge: list[dict[str, dict[str, float]]] = field(default_factory=list)
+    fold_classes: list[dict[str, dict[str, float]]] = field(default_factory=list)
 
 
 def walk_forward(
@@ -225,8 +232,14 @@ def evaluate_walk_forward(
     "what is the interval on the headline", and they are different questions - a stable
     mean across folds with a wide bootstrap interval means the effect is consistent but
     small relative to daily noise.
+
+    Every scored quantity `fit_models` produces is kept. Edge and class reports used to
+    be computed per fold and dropped on the floor here, so `n_trades` and the per-fold
+    support counts were paid for and never seen.
     """
     fold_metrics: list[dict[str, dict[str, float]]] = []
+    fold_edge: list[dict[str, dict[str, float]]] = []
+    fold_classes: list[dict[str, dict[str, float]]] = []
     parts: dict[str, list[OutOfSample]] = {}
     importance: list[dict[str, float]] = []
 
@@ -243,6 +256,10 @@ def evaluate_walk_forward(
         )
         results = fit_models(split, horizon)
         fold_metrics.append({name: res["metrics"] for name, res in results.items()})
+        fold_edge.append({name: res["edge"] for name, res in results.items() if "edge" in res})
+        fold_classes.append(
+            {name: res["classes"] for name, res in results.items() if "classes" in res}
+        )
         for name, res in results.items():
             parts.setdefault(name, []).append(_strided(split, res["pred"], horizon))
         if venues:
@@ -255,6 +272,8 @@ def evaluate_walk_forward(
         fold_metrics=fold_metrics,
         oos={name: _concat(p) for name, p in parts.items()},
         importance=importance,
+        fold_edge=fold_edge,
+        fold_classes=fold_classes,
     )
 
 
