@@ -20,6 +20,7 @@ import logging
 import os
 from collections import defaultdict
 from collections.abc import Callable, Iterable
+from contextlib import ExitStack
 
 import pyarrow as pa
 from pyarrow import fs as pafs
@@ -79,10 +80,18 @@ NONBOOK_LATENCY_DATASETS = TAPE_DATASETS
 # Rows per ParquetWriter row group - bounds the streaming driver's write buffers.
 BATCH_ROWS = 50_000
 # Allowed quote lateness for the NBBO reorder buffer: a quote may arrive this far
-# behind the running-max ts (reconnect-seam stragglers, worst ~29s measured) and
-# still be placed; past it `reorder` fails loud (a clock regression). Also bounds
-# the per-venue buffer to ~one window of quotes.
-WINDOW_NS = 60_000_000_000  # 60s
+# behind the running-max ts and still be placed; past it `reorder` fails loud. Also
+# bounds the per-venue buffer to ~one window of quotes.
+#
+# The fold writes quotes in `(epoch, sequence)` order, so their recv-ts is only
+# incidentally ascending, and a reconnect storm (a venue cycling epochs while the
+# previous epoch's deltas are still arriving) interleaves two book generations minutes
+# apart. Measured over every date holding silver quotes: 10 of 13 stay under 17s, but
+# 2026-07-13 reaches 151s and 2026-07-01 reaches 990s, which is what the old 60s
+# window died on. 30 minutes clears the worst observed storm ~2x over while still
+# failing loud on the epoch-blind era (2026-06-11 carries 23.6h of disorder, being
+# pre-PR-#20 data where every record reported epoch 0 - unrescuable by any window).
+WINDOW_NS = int(os.environ.get("SILVER_REORDER_WINDOW_NS", 1_800_000_000_000))  # 30min
 
 
 def read_bronze_records(fs: pafs.FileSystem, bucket: str, date: str) -> list[CorpusRecord]:
@@ -237,11 +246,15 @@ def _process_partition(
     bq_key = partition_key("book_quality", exchange=exchange, symbol=canon, date=date)
     qt_key = partition_key("quotes", exchange=exchange, symbol=canon, date=date)
     lat_key = partition_key("latency", exchange=exchange, symbol=canon, date=date)
-    bq = PartitionWriter(derived_fs, silver_bucket, bq_key, BOOK_QUALITY_SCHEMA)
-    qt = PartitionWriter(derived_fs, silver_bucket, qt_key, QUOTES_SCHEMA)
-    lat = PartitionWriter(derived_fs, silver_bucket, lat_key, LATENCY_SCHEMA)
-    bqb, qtb, latb = _Batch(bq), _Batch(qt), _Batch(lat)
-    try:
+    with ExitStack() as stack:
+
+        def _writer(key: str, schema: pa.Schema) -> PartitionWriter:
+            return stack.enter_context(PartitionWriter(derived_fs, silver_bucket, key, schema))
+
+        bq = _writer(bq_key, BOOK_QUALITY_SCHEMA)
+        qt = _writer(qt_key, QUOTES_SCHEMA)
+        lat = _writer(lat_key, LATENCY_SCHEMA)
+        bqb, qtb, latb = _Batch(bq), _Batch(qt), _Batch(lat)
         if present & set(BOOK_DATASETS):
             snap_recs = _iter_records(bronze_fs, lake_bucket, "book_snapshots", date, bron)
             delta_recs = _iter_records(bronze_fs, lake_bucket, "book_deltas", date, bron)
@@ -273,10 +286,6 @@ def _process_partition(
         bqb.flush()
         qtb.flush()
         latb.flush()
-    finally:
-        bq.close()
-        qt.close()
-        lat.close()
 
 
 def _write_rows(
@@ -393,10 +402,19 @@ def main() -> None:
     lake_bucket = os.environ.get("LAKE_BUCKET", "lake")
     silver_bucket = os.environ.get("SILVER_BUCKET", "silver")
     canonical = CanonicalMap.from_yaml(instruments_path_from_env())
+    failed: list[str] = []
     for date in args.dates:
-        counts = build_silver_streaming(
-            bronze_fs, derived_fs, lake_bucket, silver_bucket, date, canonical
-        )
+        # A backfill run is a list of independent dates, so one unbuildable date must
+        # not cost every date behind it in the list. Partial objects are discarded by
+        # PartitionWriter, so a failed date leaves nothing rather than a short partition.
+        try:
+            counts = build_silver_streaming(
+                bronze_fs, derived_fs, lake_bucket, silver_bucket, date, canonical
+            )
+        except Exception:
+            log.exception("silver %s failed - continuing with the remaining dates", date)
+            failed.append(date)
+            continue
         if not counts:
             log.warning("no bronze partitions for %s", date)
             continue
@@ -408,6 +426,8 @@ def main() -> None:
             date,
             ", ".join(f"{counts[d]} {d}" for d in SILVER_DATASETS if counts[d]),
         )
+    if failed:
+        raise SystemExit(f"{len(failed)} date(s) failed: {', '.join(failed)}")
 
 
 if __name__ == "__main__":

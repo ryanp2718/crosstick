@@ -188,6 +188,36 @@ def test_partition_writer_no_rows_writes_nothing(tmp_path) -> None:
     assert read_dataset(fs, bucket, "book_quality", "2026-06-12") is None
 
 
+def test_partition_writer_discards_a_partition_it_could_not_finish(tmp_path) -> None:
+    """A crash mid-partition must leave nothing, not a short readable object.
+
+    Batches already flushed are inside a valid parquet, so publishing them would put a
+    truncated partition in the lake that reads exactly like a complete one - which is
+    how a failed NBBO build once left half a day of 2026-07-01 looking legitimate.
+    """
+    fs = pafs.LocalFileSystem()
+    bucket = tmp_path.as_posix()
+    schema = pa.schema([("a", pa.int64())])
+    key = partition_key("nbbo", symbol="BTC-USD", date="2026-06-12")
+    with pytest.raises(RuntimeError):
+        with PartitionWriter(fs, bucket, key, schema) as w:
+            w.write_rows([{"a": 1}])  # a whole row group lands on disk
+            raise RuntimeError("build died mid-partition")
+    assert read_dataset(fs, bucket, "nbbo", "2026-06-12") is None
+
+
+def test_partition_writer_discard_survives_having_written_nothing(tmp_path) -> None:
+    """Failing before the first row means no object was ever opened to delete."""
+    fs = pafs.LocalFileSystem()
+    bucket = tmp_path.as_posix()
+    schema = pa.schema([("a", pa.int64())])
+    key = partition_key("nbbo", symbol="BTC-USD", date="2026-06-12")
+    with pytest.raises(RuntimeError):
+        with PartitionWriter(fs, bucket, key, schema):
+            raise RuntimeError("died before any row")
+    assert read_dataset(fs, bucket, "nbbo", "2026-06-12") is None
+
+
 def test_freshness_marker_round_trip(tmp_path) -> None:
     fs = pafs.LocalFileSystem()
     bucket = tmp_path.as_posix()

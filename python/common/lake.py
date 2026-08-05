@@ -320,7 +320,9 @@ class PartitionWriter:
     has to be fully resident. The output stream is opened lazily on the first
     non-empty batch - a partition with no rows writes nothing (matching the
     previous group-then-write behavior). Same zstd + overwrite semantics as
-    `write_object`, so the idempotency contract holds.
+    `write_object`, so the idempotency contract holds. Used as a context manager it is
+    all-or-nothing: leaving via an exception discards the object rather than publishing
+    however many rows happened to be flushed.
     """
 
     def __init__(self, fs: pafs.FileSystem, bucket: str, key: str, schema: pa.Schema):
@@ -353,9 +355,25 @@ class PartitionWriter:
             self._writer = None
             self._stream = None
 
+    def discard(self) -> None:
+        """Close the stream and delete the object, leaving no partition behind.
+
+        A half-written parquet still closes into a perfectly readable file, so a build
+        that dies mid-partition would otherwise leave a short object that nothing
+        downstream can distinguish from a complete one.
+        """
+        self.close()
+        try:
+            self._fs.delete_file(self._path)
+        except FileNotFoundError:  # nothing was ever opened
+            pass
+
     def __enter__(self) -> PartitionWriter:
         return self
 
-    def __exit__(self, *exc: object) -> bool:
-        self.close()
+    def __exit__(self, exc_type: type[BaseException] | None, *_exc: object) -> bool:
+        if exc_type is None:
+            self.close()
+        else:
+            self.discard()
         return False

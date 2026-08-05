@@ -13,11 +13,12 @@ from pyarrow import fs as pafs
 
 from common.asof import LatenessError
 from common.lake import PartitionWriter, partition_key, read_dataset
+from silver import main as silver_main
 from silver.dq import QUOTES_SCHEMA, _build_nbbo
 from silver.main import _build_nbbo_streaming
 
 DATE = "2026-06-16"
-S = 1_000_000_000  # 1s in ns (WINDOW_NS is 60s)
+S = 1_000_000_000  # 1s in ns
 
 
 def _q(exchange: str, symbol: str, ts: int, bid: str, ask: str) -> dict:
@@ -95,11 +96,14 @@ def test_equal_ts_ties_match_oracle(tmp_path) -> None:
     assert _norm(_run(fs, bucket, rows)) == _norm(_build_nbbo(rows, []))
 
 
-def test_beyond_window_fails_loud(tmp_path) -> None:
+def test_beyond_window_fails_loud(tmp_path, monkeypatch) -> None:
     fs = pafs.LocalFileSystem()
     bucket = (tmp_path / "silver").as_posix()
+    # Pinned to a small window so the case stays about the guard rather than about
+    # whatever the shipped window happens to be sized at.
+    monkeypatch.setattr(silver_main, "WINDOW_NS", 60 * S)
     # 100s is emitted once the watermark reaches 200s; a 50s arriving after that is
-    # behind an already-emitted ts -> cannot be placed within the 60s window.
+    # behind an already-emitted ts -> cannot be placed within the window.
     rows = [
         _q("coinbase", "BTC-USD", 100 * S, "100", "101"),
         _q("coinbase", "BTC-USD", 200 * S, "100", "101"),
@@ -107,6 +111,20 @@ def test_beyond_window_fails_loud(tmp_path) -> None:
     ]
     with pytest.raises((LatenessError, AssertionError)):
         _run(fs, bucket, rows)
+
+
+def test_a_storm_scale_inversion_still_places(tmp_path) -> None:
+    """A venue cycling epochs can strand minutes of an older generation behind the new
+    one, which is what 2026-07-01 did at 990s. The shipped window has to absorb that,
+    or the date is unbuildable rather than merely disordered."""
+    fs = pafs.LocalFileSystem()
+    bucket = (tmp_path / "silver").as_posix()
+    rows = [
+        _q("coinbase", "BTC-USD", 1000 * S, "100", "101"),
+        _q("coinbase", "BTC-USD", 10 * S, "99", "100"),  # ~990s behind, as observed
+        _q("kraken", "BTC-USD", 1001 * S, "100", "102"),
+    ]
+    assert _norm(_run(fs, bucket, rows)) == _norm(_build_nbbo(rows, []))
 
 
 def test_down_sentinel_evicts_under_streaming(tmp_path) -> None:
