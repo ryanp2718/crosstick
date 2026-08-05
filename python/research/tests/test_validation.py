@@ -13,10 +13,14 @@ import numpy as np
 import polars as pl
 import pytest
 
+from research.main import _report_pooled
 from research.model import _hit_rate, _r2_vs_zero
 from research.validation import (
     OutOfSample,
+    as_classes,
     bootstrap_ci,
+    class_confidence_intervals,
+    evaluate_walk_forward,
     fold_spread,
     placebo_target,
     walk_forward,
@@ -149,3 +153,65 @@ def test_fold_spread_is_mean_and_sd_over_folds() -> None:
     mean, sd = fold_spread(folds, "gbt", "r2")
     assert mean == pytest.approx(0.2)
     assert sd == pytest.approx(0.1)
+
+
+# ── dead-zone plumbing ──────────────────────────────────────────────────────
+
+
+def _dz_frame(n_dates: int, n_per_date: int = 60) -> pl.DataFrame:
+    """Folds with a spread column, and a target that genuinely tracks one feature."""
+    rows = []
+    for d in range(1, n_dates + 1):
+        for i in range(n_per_date):
+            rows.append(
+                {
+                    "ts_ns": d * 10_000 + i,
+                    "date": f"2026-01-{d:02d}",
+                    "coinbase_ofi": float(i % 7) - 3.0,
+                    "kraken_ofi": float(i % 5) - 2.0,
+                    "kraken_spread_bps": 2.0,
+                    "y_kraken_ret_bps_5": (float(i % 7) - 3.0) * 2.0,
+                }
+            )
+    return pl.DataFrame(rows)
+
+
+def test_the_threshold_reaches_the_pooled_rows() -> None:
+    """Without this the dead-zone report silently does not happen: `threshold` stays
+    None all the way through and the section is skipped rather than failing."""
+    splits = walk_forward(_dz_frame(14), "y_kraken_ret_bps_5", 5, spread_col="kraken_spread_bps")
+    assert splits
+    assert all(s.test_threshold_bps is not None for s in splits)
+    wf = evaluate_walk_forward(splits, 5)
+    oos = wf.oos["gbt"]
+    assert oos.threshold is not None
+    assert len(oos.threshold) == len(oos.y)  # one threshold per pooled row, not one total
+
+
+def test_omitting_the_spread_column_leaves_dead_zone_scoring_off() -> None:
+    splits = walk_forward(_dz_frame(14), "y_kraken_ret_bps_5", 5)
+    wf = evaluate_walk_forward(splits, 5)
+    assert wf.oos["gbt"].threshold is None
+    with pytest.raises(ValueError, match="threshold"):
+        as_classes(wf.oos["gbt"])
+
+
+def test_class_intervals_bracket_their_point_estimates() -> None:
+    splits = walk_forward(_dz_frame(14), "y_kraken_ret_bps_5", 5, spread_col="kraken_spread_bps")
+    ci = class_confidence_intervals(evaluate_walk_forward(splits, 5).oos["gbt"], n_boot=50)
+    assert set(ci) == {"up_precision", "up_recall", "down_precision", "down_recall"}
+    for name, (point, lo, hi) in ci.items():
+        if not np.isnan(point):
+            assert lo <= point <= hi, name
+            assert 0.0 <= lo <= 1.0 and 0.0 <= hi <= 1.0, name
+
+
+def test_the_dead_zone_report_runs_end_to_end(capsys) -> None:
+    """The report is only ever executed at runtime, so a formatting slip in it would
+    otherwise surface as a crash at the end of a multi-hour run."""
+    splits = walk_forward(_dz_frame(14), "y_kraken_ret_bps_5", 5, spread_col="kraken_spread_bps")
+    _report_pooled(evaluate_walk_forward(splits, 5), n_boot=20)
+    out = capsys.readouterr().out
+    assert "dead-zone classes" in out
+    assert "up precision" in out and "down recall" in out
+    assert "cleared half a spread" in out

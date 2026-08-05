@@ -41,11 +41,12 @@ from sklearn.linear_model import Ridge
 from sklearn.pipeline import make_pipeline
 from sklearn.preprocessing import StandardScaler
 
-log = logging.getLogger(__name__)
+# Re-exported: the staleness tolerances live with the builder that stamps the age columns,
+# so `clean` dropping a row and a feature window refusing to reach across a hole cannot
+# disagree about what "stale" means.
+from research.features import DEAD_ZONE_SPREADS, MAX_AGE_MS, MAX_TAPE_AGE_MS
 
-# A venue's book is unusable as a feature once it is this stale; rows past it are
-# dropped rather than modelled (Kraken runs multi-minute quote gaps in this capture).
-MAX_AGE_MS = 5_000
+log = logging.getLogger(__name__)
 
 # Share of the training period held back, as its latest rows, to stop boosting early.
 VAL_FRAC = 0.15
@@ -97,6 +98,9 @@ class Split:
     feature_names: list[str]
     train_dates: list[str]
     test_dates: list[str]
+    # Half-spread at each test row, when the caller asked for dead-zone scoring. Carried
+    # per row rather than as one number because the threshold IS the prevailing spread.
+    test_threshold_bps: np.ndarray | None = None
 
 
 def venue_prefixes(df: pl.DataFrame) -> list[str]:
@@ -148,7 +152,12 @@ def feature_columns(df: pl.DataFrame, exclude_venue: str | None = None) -> list[
     ]
 
 
-def clean(df: pl.DataFrame, target: str, max_age_ms: int = MAX_AGE_MS) -> pl.DataFrame:
+def clean(
+    df: pl.DataFrame,
+    target: str,
+    max_age_ms: int = MAX_AGE_MS,
+    max_tape_age_ms: int = MAX_TAPE_AGE_MS,
+) -> pl.DataFrame:
     """Drop rows the model must not see: stale books, and rows with no target (the
     tail of each date, where the forward window runs off the end).
 
@@ -156,11 +165,19 @@ def clean(df: pl.DataFrame, target: str, max_age_ms: int = MAX_AGE_MS) -> pl.Dat
     "predicts" venue B because B's book is lagging and has not caught up yet, the edge
     dies once both books are required to be fresh; if it is real price discovery, it
     survives.
+
+    Two tolerances, because two clocks. A book age is exactly `{venue}_age_ms`; anything
+    else ending `_age_ms` times a tape stream that legitimately updates far slower, and
+    holding it to the book's tolerance would throw the day away for a staleness that is
+    the feed's normal cadence rather than an outage.
     """
-    age_cols = [c for c in df.columns if c.endswith("_age_ms")]
+    book_ages = {v + "_age_ms" for v in venue_prefixes(df)}
     out = df.filter(pl.col(target).is_not_null())
-    for c in age_cols:
-        out = out.filter(pl.col(c).is_null() | (pl.col(c) <= max_age_ms))
+    for c in df.columns:
+        if not c.endswith("_age_ms"):
+            continue
+        tol = max_age_ms if c in book_ages else max_tape_age_ms
+        out = out.filter(pl.col(c).is_null() | (pl.col(c) <= tol))
     return out
 
 
@@ -172,6 +189,7 @@ def split_on_dates(
     test_dates: list[str],
     exclude_venue: str | None = None,
     val_frac: float = VAL_FRAC,
+    spread_col: str | None = None,
 ) -> Split | None:
     """Build one split from an explicit date assignment.
 
@@ -197,6 +215,10 @@ def split_on_dates(
         log.warning("train period too short to carve a validation slice, %d rows", train.height)
         return None
 
+    threshold = None
+    if spread_col is not None:
+        threshold = test[spread_col].to_numpy() * DEAD_ZONE_SPREADS
+
     return Split(
         x_train=fit.select(cols).to_numpy(),
         y_train=fit[target].to_numpy(),
@@ -208,6 +230,7 @@ def split_on_dates(
         feature_names=cols,
         train_dates=train_dates,
         test_dates=test_dates,
+        test_threshold_bps=threshold,
     )
 
 
@@ -218,6 +241,7 @@ def make_split(
     test_frac: float = 0.3,
     exclude_venue: str | None = None,
     val_frac: float = VAL_FRAC,
+    spread_col: str | None = None,
 ) -> Split | None:
     """One holdout split: the earliest dates train, the latest `test_frac` test.
 
@@ -234,7 +258,9 @@ def make_split(
     train_dates, test_dates = dates[:-n_test], dates[-n_test:]
     if not train_dates:
         return None
-    return split_on_dates(df, target, horizon, train_dates, test_dates, exclude_venue, val_frac)
+    return split_on_dates(
+        df, target, horizon, train_dates, test_dates, exclude_venue, val_frac, spread_col
+    )
 
 
 def _r2_vs_zero(y: np.ndarray, pred: np.ndarray) -> float:
@@ -301,6 +327,72 @@ def _linear() -> object:
     not the less.
     """
     return make_pipeline(SimpleImputer(strategy="median"), StandardScaler(), Ridge(alpha=1.0))
+
+
+def dead_zone_classes(values: np.ndarray, threshold_bps: np.ndarray) -> np.ndarray:
+    """{-1, 0, +1} against a per-row threshold: flat unless the move clears it.
+
+    Mirrors `features._dead_zone` so a prediction is judged by the same bar the target
+    was labelled with. Applying it to the prediction too is the strict reading and the
+    only honest one - a model whose view never clears the cost of crossing has no
+    tradeable opinion, however well its sign correlates.
+    """
+    return np.sign(values) * (np.abs(values) > threshold_bps)
+
+
+def _class_precision(cls: int):
+    """Of the bars called `cls`, how many really were - the number that decides whether
+    an edge exists at all. Undefined rather than zero when no call was made."""
+
+    def metric(truth: np.ndarray, call: np.ndarray) -> float:
+        called = call == cls
+        if not called.any():
+            return float("nan")
+        return float(np.sum(called & (truth == cls)) / called.sum())
+
+    return metric
+
+
+def _class_recall(cls: int):
+    """Of the bars that really were `cls`, how many were called. Says how much of the
+    opportunity is left behind, which a high-precision model may well trade none of."""
+
+    def metric(truth: np.ndarray, call: np.ndarray) -> float:
+        actual = truth == cls
+        if not actual.any():
+            return float("nan")
+        return float(np.sum(actual & (call == cls)) / actual.sum())
+
+    return metric
+
+
+# Metrics over ALREADY-CLASSIFIED rows, so the pooled date-block bootstrap can resample
+# them with exactly the same machinery as the return metrics (validation.as_classes).
+CLASS_METRICS = {
+    "up_precision": _class_precision(1),
+    "up_recall": _class_recall(1),
+    "down_precision": _class_precision(-1),
+    "down_recall": _class_recall(-1),
+}
+
+
+def class_report(
+    y: np.ndarray, pred: np.ndarray, threshold_bps: np.ndarray, stride: int
+) -> dict[str, float]:
+    """Precision and recall on the two non-flat classes, plus how often each was seen.
+
+    Hit rate answers "when it called a direction, was the sign right", which counts a
+    quarter-tick wiggle as a win. This answers the question that survives costs: was the
+    move big enough to be worth trading, and did the model say so.
+    """
+    truth = dead_zone_classes(y[::stride], threshold_bps[::stride])
+    call = dead_zone_classes(pred[::stride], threshold_bps[::stride])
+    out = {name: metric(truth, call) for name, metric in CLASS_METRICS.items()}
+    out["traded_share"] = float(np.mean(call != 0)) if len(call) else float("nan")
+    out["movable_share"] = float(np.mean(truth != 0)) if len(truth) else float("nan")
+    out["up_support"] = float(np.sum(truth == 1))
+    out["down_support"] = float(np.sum(truth == -1))
+    return out
 
 
 def edge_summary(y: np.ndarray, pred: np.ndarray, stride: int) -> dict[str, float]:
@@ -384,6 +476,10 @@ def fit_models(split: Split, horizon: int) -> dict[str, dict]:
         res["metrics"] = evaluate(split.y_test, res["pred"], horizon)
         if res["model"] is not None:
             res["edge"] = edge_summary(split.y_test, res["pred"], horizon)
+            if split.test_threshold_bps is not None:
+                res["classes"] = class_report(
+                    split.y_test, res["pred"], split.test_threshold_bps, horizon
+                )
     return results
 
 

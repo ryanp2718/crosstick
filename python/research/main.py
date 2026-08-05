@@ -18,12 +18,15 @@ from __future__ import annotations
 import argparse
 import logging
 import os
+from functools import lru_cache
+from hashlib import blake2b
 from pathlib import Path
 
 import numpy as np
 import polars as pl
 
 from common.lake import filesystem_from_env, list_partitions, partition_key
+from research import features
 from research.features import HORIZONS, SOURCE_DATASETS, build_features
 from research.model import MAX_AGE_MS, clean, venue_prefixes
 from research.validation import (
@@ -34,6 +37,8 @@ from research.validation import (
     STEP_DATES,
     TEST_DATES,
     WalkForward,
+    as_classes,
+    class_confidence_intervals,
     confidence_intervals,
     evaluate_walk_forward,
     fold_spread,
@@ -63,6 +68,22 @@ def source_fingerprint(fs, bucket: str, date: str, symbols: tuple[str, ...]) -> 
     return str(int(newest))
 
 
+@lru_cache(maxsize=1)
+def builder_fingerprint() -> str:
+    """Short digest of `research/features.py`, as part of every cache key.
+
+    The source mtime says when the DATA last changed and nothing about what was computed
+    from it. Adding a feature family changes the frame without touching a single silver
+    object, so an mtime-only key happily serves a matrix built before the columns existed
+    - the run then trains on a narrower feature set than it reports and nothing fails.
+
+    Hashing the builder is deliberately blunt: any edit here rebuilds, including one that
+    only moved a comment. A needless rebuild costs a silver read; the alternative costs a
+    wrong answer that looks right.
+    """
+    return blake2b(Path(features.__file__).read_bytes(), digest_size=4).hexdigest()
+
+
 def cache_name(date: str, symbol: str, extra_symbols: tuple[str, ...], fingerprint: str) -> str:
     """Cache filename for one date's feature matrix.
 
@@ -71,7 +92,7 @@ def cache_name(date: str, symbol: str, extra_symbols: tuple[str, ...], fingerpri
     would serve a two-venue frame to a four-venue run.
     """
     legs = "+".join(("", *extra_symbols))
-    return f"{symbol}{legs}_{date}_{fingerprint}.parquet"
+    return f"{symbol}{legs}_{date}_{fingerprint}-{builder_fingerprint()}.parquet"
 
 
 def cached_features(
@@ -161,6 +182,40 @@ def _report_pooled(wf: WalkForward, n_boot: int) -> None:
         "  is tens of bps and the BTC-USD touch spread alone is ~1-2 bps crossed twice, so\n"
         "  these are upper bounds to compare against a cost, not a P&L."
     )
+    _report_dead_zone(wf, n_boot)
+
+
+def _report_dead_zone(wf: WalkForward, n_boot: int) -> None:
+    """Precision and recall once sub-spread wiggles stop counting as wins.
+
+    Hit rate is scored on any move at all, so on a 1s grid it is mostly measuring which
+    way the last quote twitched. Here a bar only counts as a direction if it moved more
+    than half the prevailing spread, and a prediction only counts as a call if it
+    expected the same - which is the version of the question that survives costs.
+    """
+    if wf.oos["gbt"].threshold is None:
+        return
+    keys = ("up_precision", "up_recall", "down_precision", "down_recall")
+    print("\ndead-zone classes (move > half the spread at t, same date-block resamples)")
+    header = " ".join(f"{k.replace('_', ' '):>19}" for k in keys)
+    print(f"{'model':<12} {'traded':>7} {header}")
+    print("-" * 101)
+    for name, oos in wf.oos.items():
+        ci = class_confidence_intervals(oos, n_boot)
+        traded = float(np.mean(as_classes(oos).pred != 0))
+        cells = [f"{ci[k][0]:>6.3f}[{ci[k][1]:>5.3f},{ci[k][2]:>5.3f}]" for k in keys]
+        print(f"{name:<12} {traded:>7.3f} " + " ".join(cells))
+
+    truth = as_classes(wf.oos["gbt"]).y
+    up, down = float(np.mean(truth == 1)), float(np.mean(truth == -1))
+    print(
+        f"\n  {(up + down) * 100:.1f}% of pooled bars cleared half a spread ({up * 100:.1f}% up, "
+        f"{down * 100:.1f}% down). Those two\n"
+        "  are the base rates a directional call has to beat to carry any information, and\n"
+        "  their sum is the ceiling on recall. 'traded' is the share of bars the model's own\n"
+        "  view cleared the same bar on: a model that never clears it has no tradeable\n"
+        "  opinion, whatever its hit rate says."
+    )
 
 
 def _report_importance(wf: WalkForward, venues: list[str]) -> None:
@@ -219,12 +274,18 @@ def run(
             print(f"unknown venue {predict_venue!r}; have {venues}")
             return
         target = f"y_{predict_venue}_ret_bps_{horizon}"
+        # The threshold is the spread of the book being predicted, even in cross-venue
+        # mode where that venue's features are excluded. That is not a leak: it defines
+        # what counts as a tradeable move on that book, the model never sees it, and a
+        # trader working that venue knows its spread at `t`.
+        spread_col = f"{predict_venue}_spread_bps"
         print(
             f"\ncross-venue mode: predicting {predict_venue}'s own forward mid using only "
             f"{[v for v in venues if v != predict_venue]} (no NBBO, no {predict_venue} features)"
         )
     else:
         target = f"y_ret_bps_{horizon}"
+        spread_col = "nbbo_spread_bps"
     if placebo:
         df = placebo_target(df, target)
         print(
@@ -241,7 +302,9 @@ def run(
         f"over {df['date'].n_unique()} dates"
     )
 
-    splits = walk_forward(df, target, horizon, min_train, test_size, step, predict_venue)
+    splits = walk_forward(
+        df, target, horizon, min_train, test_size, step, predict_venue, spread_col
+    )
     if not splits:
         n = df["date"].n_unique()
         print(

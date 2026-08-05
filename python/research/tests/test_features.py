@@ -15,16 +15,24 @@ import pyarrow as pa
 import pytest
 
 from research.features import (
+    _LIVE_COL,
     BAR_NS,
+    MAX_AGE_MS,
+    MAX_TAPE_AGE_MS,
     _add_targets,
     _align,
     _bar_index,
     _book_features,
+    _dead_zone,
     _flow_features,
     _grid,
+    _liq_features,
+    _mark_features,
     _ofi,
+    _oi_features,
     _quote_legs,
     _returns,
+    _window_tol,
     build_features,
     leg_prefix,
 )
@@ -153,13 +161,16 @@ def test_vwap_is_null_only_where_there_is_no_volume() -> None:
 # ── targets ─────────────────────────────────────────────────────────────────
 
 
-def _nbbo_grid(grid: pl.DataFrame, mids: list[float]) -> pl.DataFrame:
+def _nbbo_grid(
+    grid: pl.DataFrame, mids: list[float], ages: list[float] | None = None
+) -> pl.DataFrame:
     return pl.DataFrame(
         {
             "ts_ns": grid["ts_ns"],
             "nbbo_mid": mids,
             "nbbo_spread_bps": [1.0] * len(mids),
             "nbbo_n_venues": [2] * len(mids),
+            "nbbo_age_ms": ages if ages is not None else [0.0] * len(mids),
         }
     )
 
@@ -176,7 +187,11 @@ def test_targets_look_forward_and_run_off_the_end() -> None:
 def test_per_venue_targets_track_that_venue_not_the_nbbo() -> None:
     """The cross-venue test needs a target with no NBBO term in it at all."""
     grid = _grid(0, 2 * BAR_NS)
-    feats = grid.with_columns(pl.Series("v_mid", [100.0, 110.0, 121.0]))
+    feats = grid.with_columns(
+        pl.Series("v_mid", [100.0, 110.0, 121.0]),
+        pl.Series("v_spread_bps", [1.0, 1.0, 1.0]),  # a leg always carries both
+        pl.Series("v_age_ms", [0.0, 0.0, 0.0]),
+    )
     out = _add_targets(feats, _nbbo_grid(grid, [100.0, 100.0, 100.0]), ["v"]).sort("ts_ns")
     assert out["y_ret_bps_1"].to_list()[0] == 0.0  # the NBBO did not move
     assert out["y_v_ret_bps_1"].to_list()[0] == (110.0 / 100.0 - 1) * 1e4  # the venue did
@@ -245,7 +260,10 @@ def test_trailing_returns_look_backward_only() -> None:
     """The one feature family derived from the mid, so it is the one most likely to
     be accidentally forward-looking. A rising series must report positive trailing
     returns, and the first bar of a window has no history to measure against."""
-    grid = _grid(0, 3 * BAR_NS).with_columns(pl.Series("v_mid", [100.0, 101.0, 102.0, 103.0]))
+    grid = _grid(0, 3 * BAR_NS).with_columns(
+        pl.Series("v_mid", [100.0, 101.0, 102.0, 103.0]),
+        pl.Series("v_age_ms", [0.0, 0.0, 0.0, 0.0]),
+    )
     out = grid.with_columns(_returns("v")).sort("ts_ns")
     assert out["v_ret_bps_1"].to_list()[0] is None  # nothing precedes the first bar
     assert out["v_ret_bps_1"].to_list()[1] == pytest.approx((101.0 / 100.0 - 1) * 1e4)
@@ -254,10 +272,112 @@ def test_trailing_returns_look_backward_only() -> None:
 
 def test_a_trailing_return_never_reaches_forward() -> None:
     """A jump at the last bar must not show up in any earlier bar's trailing return."""
-    grid = _grid(0, 3 * BAR_NS).with_columns(pl.Series("v_mid", [100.0, 100.0, 100.0, 200.0]))
+    grid = _grid(0, 3 * BAR_NS).with_columns(
+        pl.Series("v_mid", [100.0, 100.0, 100.0, 200.0]),
+        pl.Series("v_age_ms", [0.0, 0.0, 0.0, 0.0]),
+    )
     out = grid.with_columns(_returns("v")).sort("ts_ns")
     assert out["v_ret_bps_1"].to_list()[1:3] == [0.0, 0.0]
     assert out["v_ret_bps_1"].to_list()[3] > 0
+
+
+# ── capture holes ───────────────────────────────────────────────────────────
+#
+# 2026-07-08 holds 13 gaps over a minute, the longest 5.9h, and 07-09 another 10. The
+# grid is uniform and `_asof` carries the last quote across them, so every window that
+# reaches over a hole measures unobserved time. `model.clean` cannot catch any of it:
+# the rows on the lips of a hole have perfectly fresh books of their own.
+
+
+def _holed(grid: pl.DataFrame, dead: set[int]) -> pl.DataFrame:
+    """The same grid, with those bar indices marked as capture downtime."""
+    return grid.with_columns(pl.Series(_LIVE_COL, [i not in dead for i in range(grid.height)]))
+
+
+def test_a_trailing_return_will_not_reach_across_a_capture_hole() -> None:
+    stale = float(MAX_AGE_MS + 1)
+    grid = _grid(0, 3 * BAR_NS).with_columns(
+        pl.Series("v_mid", [100.0, 100.0, 100.0, 200.0]),
+        pl.Series("v_age_ms", [0.0, 0.0, stale, 0.0]),  # bar 2 is inside the hole
+    )
+    got = grid.with_columns(_returns("v")).sort("ts_ns")["v_ret_bps_1"].to_list()
+    assert got[3] is None  # would have been +10000bps of move nobody recorded
+    assert got[1] == 0.0  # a lookback that stays on live bars is untouched
+
+
+def test_a_target_will_not_reach_forward_across_a_capture_hole() -> None:
+    """Worse than a contaminated feature: a fabricated label trains the model on a move
+    that was never observed, and the bar it lands on looks pristine."""
+    grid = _grid(0, 2 * BAR_NS)
+    ages = [0.0, float(MAX_AGE_MS + 1), 0.0]
+    out = _add_targets(grid, _nbbo_grid(grid, [100.0, 100.0, 500.0], ages), []).sort("ts_ns")
+    assert out["y_ret_bps_1"].to_list()[0] is None
+    assert out["y_dz_1"].to_list()[0] is None  # and the class sibling does not go flat
+
+
+def test_a_flow_roll_spans_a_quiet_venue_but_not_a_dead_capture() -> None:
+    """Two ways to see no trades in a bar, and they are not the same fact. A venue that
+    printed nothing really did see no flow; a capture that was down saw nothing at all,
+    and summing its zeros invents a quiet market that was never measured."""
+    trades = _trades([(5 * BAR_NS + 1, 100.0, 2.0, "bid")])  # lands in bar 6
+    grid = _grid(0, 9 * BAR_NS)
+
+    quiet = _flow_features(trades, grid, "v").sort("ts_ns")["v_signed_vol_5"].to_list()
+    assert quiet[6] == 2.0  # eight silent bars around one trade is a real, measured 2.0
+
+    got = _flow_features(trades, _holed(grid, {4}), "v").sort("ts_ns")["v_signed_vol_5"].to_list()
+    assert got[6] is None  # the trailing 5 bars cover the dead one
+    assert got[9] == 2.0  # by here the window has cleared it
+
+
+def test_ofi_does_not_book_a_capture_hole_as_a_single_tick() -> None:
+    """`_ofi` differences consecutive quote *events*, not grid bars, so it needs its own
+    guard: the first quote back would otherwise charge hours of book evolution to one tick."""
+    gap_ns = (MAX_AGE_MS + 1) * 1_000_000
+    quotes = _quotes([(0, 100.0, 101.0, 5.0, 5.0), (gap_ns, 100.0, 101.0, 50.0, 5.0)])
+    got = _ofi(quotes, "v")["v_ofi"].to_list()
+    assert got[1] == 0.0  # not +45 of depth that appeared while nobody was watching
+
+
+def test_the_staleness_a_window_accepts_scales_with_the_window() -> None:
+    """A flat tolerance is wrong for long windows and wrong unevenly: only a slow-quoting
+    venue ever goes seconds without an update, so it alone loses its long-horizon
+    features. The floor keeps short windows exactly as strict as they were."""
+    assert _window_tol(1) == MAX_AGE_MS
+    assert _window_tol(30) == MAX_AGE_MS  # 3s of window, floored
+    assert _window_tol(300) == 30_000  # 10% of 300s, past the floor
+    assert _window_tol(300, MAX_TAPE_AGE_MS) == MAX_TAPE_AGE_MS  # never tightens a stream
+
+
+def test_a_long_window_tolerates_a_burst_quoters_gap_but_not_a_hole() -> None:
+    """Kraken publishes in bursts: 393 inter-quote gaps past the book tolerance on
+    2026-07-26, none of them past 30s, against zero for Coinbase. A 6s-stale endpoint is
+    2% of a 300-bar window and the return off it is sound; a capture hole is not."""
+    n = 301
+    ages = [0.0] * n
+    ages[0] = 6_000.0  # a burst gap: past the book tolerance, inside the window's
+    grid = _grid(0, 300 * BAR_NS).with_columns(
+        pl.Series("v_mid", [100.0] * 300 + [101.0]),
+        pl.Series("v_age_ms", ages),
+    )
+    got = grid.with_columns(_returns("v")).sort("ts_ns")["v_ret_bps_300"].to_list()
+    assert got[300] == pytest.approx(100.0)
+
+    ages[0] = float(_window_tol(300) + 1)  # a real hole is still refused
+    holed = grid.with_columns(pl.Series("v_age_ms", ages))
+    assert holed.with_columns(_returns("v")).sort("ts_ns")["v_ret_bps_300"].to_list()[300] is None
+
+
+def test_the_perp_tape_keeps_its_own_lookback_tolerance() -> None:
+    """Open interest is a 10s poll, so it is never fresh by book standards. Holding its
+    change features to the 5s book tolerance would null them on every bar of every date -
+    the guard has to bound a real outage, not the stream's normal cadence."""
+    oi = pl.DataFrame({"ts_ns": [0, 8 * BAR_NS], "open_interest": [100.0, 110.0]})
+    got = _oi_features(oi, _grid(0, 12 * BAR_NS), "p").sort("ts_ns")
+    # bar 12 looks back 5 bars to bar 7, which is 7s stale: past the book tolerance,
+    # well inside the tape's, and a genuine observation of the poll before last.
+    assert got["p_oi_age_ms"].to_list()[7] == 7000.0
+    assert got["p_oi_chg_bps_5"].to_list()[12] == pytest.approx(1000.0)
 
 
 def test_leg_prefix_is_the_exchange_not_the_symbol() -> None:
@@ -320,3 +440,194 @@ def test_a_venue_without_depth_loads_beside_one_with_it() -> None:
     without = _book_features(df.filter(pl.col("exchange") == "old"), "v")
     assert without["v_depth_imb_10"][0] is None
     assert without["v_bid_span_bps"][0] is None
+
+
+# ── perp microstructure ─────────────────────────────────────────────────────
+
+
+def _mark(rows: list[tuple[int, float, float, float, int]]) -> pl.DataFrame:
+    return pl.DataFrame(
+        rows,
+        schema=["ts_ns", "mark_price", "index_price", "funding_rate", "next_funding_ts_ns"],
+        orient="row",
+    )
+
+
+def test_basis_is_the_premium_to_the_index() -> None:
+    mark = _mark([(0, 100.10, 100.00, 0.0001, 10 * BAR_NS)])
+    got = _mark_features(mark, _grid(0, 0), "p")
+    assert got["p_basis_bps"][0] == pytest.approx(10.0)  # 0.10 on 100 == 10bps
+    assert got["p_funding_rate"][0] == pytest.approx(0.0001)
+
+
+def test_a_zero_index_price_is_unknown_basis_not_infinity() -> None:
+    """A venue publishing a zero index must not poison the column with inf."""
+    mark = _mark([(0, 100.0, 0.0, 0.0001, 10 * BAR_NS)])
+    assert _mark_features(mark, _grid(0, 0), "p")["p_basis_bps"][0] is None
+
+
+def test_funding_countdown_runs_on_the_grid_clock() -> None:
+    """Time to funding decays between mark ticks. Carrying the tick-time value forward
+    would freeze the countdown at whatever it was when the venue last spoke."""
+    mark = _mark([(0, 100.0, 100.0, 0.0, 10 * BAR_NS)])  # one tick, then silence
+    got = _mark_features(mark, _grid(0, 3 * BAR_NS), "p").sort("ts_ns")
+    assert got["p_funding_in_s"].to_list() == [10.0, 9.0, 8.0, 7.0]
+    assert got["p_mark_age_ms"].to_list() == [0.0, 1000.0, 2000.0, 3000.0]
+
+
+def test_open_interest_yields_change_not_level() -> None:
+    """The level is a non-stationary stock and must not survive into the frame."""
+    oi = pl.DataFrame({"ts_ns": [0, BAR_NS], "open_interest": [1000.0, 1010.0]})
+    got = _oi_features(oi, _grid(0, BAR_NS), "p").sort("ts_ns")
+    assert "_oi_level" not in got.columns
+    assert not [c for c in got.columns if c == "p_oi"]
+    # 1000 -> 1010 over one bar is +100bps; the 5-bar window has no history yet.
+    assert got["p_oi_chg_bps_5"].to_list() == [None, None]
+
+
+def test_a_long_liquidation_signs_negative() -> None:
+    """`side` is the forced order's own side: an ASK is a long being sold out, which
+    pushes price down and must sign like aggressive selling."""
+    liq = pl.DataFrame(
+        {
+            "ts_ns": [1, 2],
+            "side": ["ask", "bid"],
+            "filled_size": [3.0, 1.0],
+        }
+    )
+    got = _liq_features(liq, _grid(0, BAR_NS), "p").sort("ts_ns")
+    assert got["p_liq_flow"].to_list() == [0.0, -2.0]  # -3 long + 1 short, one bar
+    assert got["p_n_liqs"].to_list() == [0, 2]
+
+
+def test_a_bar_with_no_liquidation_is_a_real_zero() -> None:
+    """Most bars hold no forced flow. That is measured absence, not missing data - a
+    null would make the model impute a cascade where there was none."""
+    liq = pl.DataFrame({"ts_ns": [1], "side": ["ask"], "filled_size": [3.0]})
+    got = _liq_features(liq, _grid(0, 3 * BAR_NS), "p").sort("ts_ns")
+    assert got["p_liq_flow"].to_list() == [0.0, -3.0, 0.0, 0.0]
+
+
+def test_a_perp_leg_joins_without_disturbing_the_grid() -> None:
+    """End to end: the perp tape must widen the frame, never lengthen it.
+
+    Each perp stream runs on its own clock and is joined separately, so a duplicate key
+    in any one of them would multiply rows - and a matrix that quietly grew rows would
+    still train, still score, and be wrong about how much data it had.
+    """
+    bars = [0, BAR_NS, 2 * BAR_NS, 3 * BAR_NS]
+    spot = pl.DataFrame(
+        {
+            "ts_ns": bars,
+            "exchange": ["coinbase"] * 4,
+            "best_bid": [100.0, 100.1, 100.2, 100.3],
+            "best_ask": [100.02, 100.12, 100.22, 100.32],
+            "bid_sz": [1.0] * 4,
+            "ask_sz": [1.0] * 4,
+        }
+    )
+    perp = spot.with_columns(pl.lit("binance-futures").alias("exchange"))
+    nbbo = pl.DataFrame(
+        {
+            "ts_ns": bars,
+            "best_bid": [100.0, 100.1, 100.2, 100.3],
+            "best_ask": [100.02, 100.12, 100.22, 100.32],
+            "n_venues": [2] * 4,
+        }
+    )
+    perp_only = {"BTC-USDT-PERP"}
+    mark = pl.DataFrame(
+        {
+            "ts_ns": bars,
+            "exchange": ["binance-futures"] * 4,
+            "mark_price": [100.01, 100.11, 100.21, 100.31],
+            "index_price": [100.0, 100.1, 100.2, 100.3],
+            "funding_rate": [0.0001] * 4,
+            "next_funding_ts_ns": [10 * BAR_NS] * 4,
+        }
+    )
+    oi = pl.DataFrame(
+        {"ts_ns": bars, "exchange": ["binance-futures"] * 4, "open_interest": [10.0] * 4}
+    )
+    liq = pl.DataFrame(
+        {"ts_ns": [1], "exchange": ["binance-futures"], "side": ["ask"], "filled_size": [2.0]}
+    )
+
+    def _for_perp(df):
+        return lambda _fs, _bucket, _date, symbol: df if symbol in perp_only else None
+
+    with (
+        mock.patch(
+            "research.features.load_quotes",
+            side_effect=lambda _f, _b, _d, s: perp if s in perp_only else spot,
+        ),
+        mock.patch("research.features.load_nbbo", return_value=nbbo),
+        mock.patch("research.features.load_trades", return_value=None),
+        mock.patch("research.features.load_mark_price", side_effect=_for_perp(mark)),
+        mock.patch("research.features.load_open_interest", side_effect=_for_perp(oi)),
+        mock.patch("research.features.load_liquidations", side_effect=_for_perp(liq)),
+    ):
+        got = build_features(None, "silver", "2026-06-30", "BTC-USD", ("BTC-USDT-PERP",))
+
+    assert got is not None
+    assert got.height == len(bars)  # widened, not lengthened
+    assert got["ts_ns"].n_unique() == len(bars)
+    for col in (
+        "binance_futures_basis_bps",
+        "binance_futures_funding_rate",
+        "binance_futures_funding_in_s",
+        "binance_futures_oi_chg_bps_5",
+        "binance_futures_liq_flow",
+        "binance_futures_mark_age_ms",
+        "binance_futures_oi_age_ms",
+    ):
+        assert col in got.columns, col
+    # the spot venue publishes no perp tape, so it gets no perp columns at all
+    assert not [c for c in got.columns if c.startswith("coinbase_basis")]
+    assert got["binance_futures_basis_bps"][0] == pytest.approx(1.0)  # 0.01 on 100 == 1bps
+    # every builder takes the grid and so sees `_LIVE_COL`; any that forgets to drop it
+    # leaks a constant column the model would happily take as a feature.
+    assert not [c for c in got.columns if c.startswith("_")], "private column leaked"
+
+
+# ── dead-zone target ────────────────────────────────────────────────────────
+
+
+def test_dead_zone_flattens_a_move_inside_half_the_spread() -> None:
+    """A 2bps book cannot be traded on a 0.5bps move: crossing to get in costs more
+    than the move is worth, so it is the flat class however confidently it is called."""
+    df = pl.DataFrame({"ret": [0.5, -0.5, 2.0, -2.0], "spread": [2.0] * 4})
+    got = df.select(_dead_zone(pl.col("ret"), pl.col("spread")).alias("dz"))["dz"].to_list()
+    assert got == [0, 0, 1, -1]  # +/-0.5 is inside the 1.0 half-spread, +/-2.0 clears it
+
+
+def test_dead_zone_scales_with_the_prevailing_spread() -> None:
+    """The same move is a signal in a tight book and noise in a wide one - which is the
+    whole reason the threshold is not a fixed bps cut."""
+    df = pl.DataFrame({"ret": [1.0, 1.0], "spread": [0.5, 10.0]})
+    got = df.select(_dead_zone(pl.col("ret"), pl.col("spread")).alias("dz"))["dz"].to_list()
+    assert got == [1, 0]
+
+
+def test_dead_zone_keeps_a_null_return_null() -> None:
+    """The tail of every date has no forward window. Collapsing that into the flat class
+    would hand the model a confident "no move" for rows whose future is unknown, on
+    every date, and nothing downstream would flag it."""
+    df = pl.DataFrame({"ret": [None, 1e9], "spread": [2.0, None]})
+    got = df.select(_dead_zone(pl.col("ret"), pl.col("spread")).alias("dz"))["dz"].to_list()
+    assert got == [None, None]
+
+
+def test_targets_carry_a_dead_zone_sibling_per_horizon() -> None:
+    grid = _grid(0, 3 * BAR_NS)
+    feats = grid.with_columns(
+        pl.Series("v_mid", [100.0, 100.0, 100.0, 100.0]),
+        pl.Series("v_spread_bps", [1.0] * 4),
+        pl.Series("v_age_ms", [0.0] * 4),
+    )
+    out = _add_targets(feats, _nbbo_grid(grid, [100.0, 100.0, 100.0, 100.0]), ["v"])
+    for h in (1, 5, 30):
+        assert f"y_dz_{h}" in out.columns
+        assert f"y_v_dz_{h}" in out.columns
+    # a perfectly flat series is the flat class, never a direction
+    assert set(out["y_dz_1"].drop_nulls().to_list()) == {0}

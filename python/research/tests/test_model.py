@@ -14,6 +14,9 @@ from research.model import (
     VAL_FRAC,
     _hit_rate,
     _r2_vs_zero,
+    class_report,
+    clean,
+    dead_zone_classes,
     edge_summary,
     evaluate,
     feature_columns,
@@ -225,3 +228,84 @@ def test_trailing_returns_survive_into_the_feature_set() -> None:
     cols = feature_columns(_binance_frame())
     assert "binance_ret_bps_5" in cols
     assert "binance_futures_ret_bps_5" in cols
+
+
+# ── staleness tolerances ────────────────────────────────────────────────────
+
+
+def _aged(book_ms: float, tape_ms: float) -> pl.DataFrame:
+    """One venue leg (its `_ofi` is what makes it a venue) plus a perp tape age."""
+    return pl.DataFrame(
+        {
+            "coinbase_ofi": [1.0],
+            "coinbase_age_ms": [book_ms],
+            "binance_futures_oi_age_ms": [tape_ms],
+            "y_ret_bps_5": [1.0],
+        }
+    )
+
+
+def test_a_tape_age_is_not_held_to_the_book_tolerance() -> None:
+    """Open interest is a 10s poll, so it is routinely older than the 5s a book may be.
+    Judging it by the book's tolerance would drop nearly every row of every date - a
+    silent near-total data loss that still produces a plausible-looking model."""
+    assert clean(_aged(book_ms=100.0, tape_ms=9_000.0), "y_ret_bps_5").height == 1
+
+
+def test_a_stale_book_still_drops_the_row() -> None:
+    assert clean(_aged(book_ms=99_000.0, tape_ms=100.0), "y_ret_bps_5").is_empty()
+
+
+def test_a_genuinely_dead_tape_drops_the_row() -> None:
+    """Minutes of carried-forward open interest is an outage, not a slow feed."""
+    assert clean(_aged(book_ms=100.0, tape_ms=600_000.0), "y_ret_bps_5").is_empty()
+
+
+def test_liquidation_flow_is_not_constrained_monotone() -> None:
+    """Forced flow must not inherit the taker-flow prior by name. A cascade that
+    overshoots and reverts within seconds is the case where the sign is the open
+    question - `_signed_vol` as a substring would have legislated an answer."""
+    names = ["binance_futures_liq_flow_5", "binance_futures_signed_vol_5", "coinbase_ofi"]
+    assert monotonic_constraints(names) == [0, 1, 1]
+
+
+# ── dead-zone scoring ───────────────────────────────────────────────────────
+
+
+def test_dead_zone_classes_need_to_clear_the_threshold() -> None:
+    vals = np.array([2.0, -2.0, 0.4, -0.4, 0.0])
+    thr = np.full(5, 1.0)
+    assert list(dead_zone_classes(vals, thr)) == [1.0, -1.0, 0.0, -0.0, 0.0]
+
+
+def test_a_view_that_never_clears_the_cost_trades_nothing() -> None:
+    """The strict reading: a model whose predictions all sit inside the dead zone has no
+    tradeable opinion, however well its sign lines up. That has to show as zero traded
+    share rather than as a flattering precision on calls it would never have made."""
+    y = np.array([5.0, -5.0, 5.0, -5.0])
+    pred = np.array([0.1, -0.1, 0.1, -0.1])  # right sign every time, far inside the zone
+    got = class_report(y, pred, np.full(4, 1.0), stride=1)
+    assert got["traded_share"] == 0.0
+    assert got["movable_share"] == 1.0
+    assert np.isnan(got["up_precision"])  # no calls made, so precision is undefined
+    assert got["up_recall"] == 0.0  # the opportunity was there and was missed
+
+
+def test_precision_and_recall_split_the_two_failure_modes() -> None:
+    y = np.array([5.0, 5.0, -5.0, 0.0])
+    pred = np.array([5.0, 0.1, 5.0, 5.0])  # 1 right up-call, 2 wrong, 1 up missed
+    got = class_report(y, pred, np.full(4, 1.0), stride=1)
+    assert got["up_precision"] == 1 / 3  # three up-calls, one correct
+    assert got["up_recall"] == 1 / 2  # two real ups, one caught
+    assert got["up_support"] == 2.0
+    assert got["traded_share"] == 3 / 4
+
+
+def test_class_report_honours_the_stride() -> None:
+    """Overlapping targets are scored on non-overlapping rows, exactly as `evaluate` is,
+    or the class counts inherit the same 30x double counting."""
+    y = np.array([5.0, -5.0, 5.0, -5.0])
+    pred = np.array([5.0, 5.0, 5.0, 5.0])
+    got = class_report(y, pred, np.full(4, 1.0), stride=2)
+    assert got["up_support"] == 2.0  # rows 0 and 2 only
+    assert got["up_precision"] == 1.0
