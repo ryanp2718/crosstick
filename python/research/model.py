@@ -45,6 +45,7 @@ from sklearn.preprocessing import StandardScaler
 # so `clean` dropping a row and a feature window refusing to reach across a hole cannot
 # disagree about what "stale" means.
 from research.features import DEAD_ZONE_SPREADS, MAX_AGE_MS, MAX_TAPE_AGE_MS
+from research.schema import FeatureSchema
 
 log = logging.getLogger(__name__)
 
@@ -103,53 +104,20 @@ class Split:
     test_threshold_bps: np.ndarray | None = None
 
 
-def venue_prefixes(df: pl.DataFrame) -> list[str]:
-    """Venue leg prefixes present as features, longest first.
-
-    Ordering is load-bearing, not cosmetic: `leg_of` takes the first match, so
-    `binance_futures` has to be tried before `binance`.
-    """
-    seen = {c.rsplit("_ofi", 1)[0] for c in df.columns if c.endswith("_ofi")}
-    return sorted(seen, key=len, reverse=True)
-
-
-def leg_of(column: str, venues: list[str]) -> str | None:
-    """Which venue leg a column belongs to, or None if it belongs to none.
-
-    Requires `venues` longest-first (see `venue_prefixes`). A plain
-    `startswith(venue + "_")` is wrong once one venue's name prefixes another's:
-    `binance_futures_ofi` starts with `binance_`, so excluding Binance would silently
-    exclude the perp too, and every "predict venue A from the others" number would be
-    quietly computed from fewer venues than it claimed.
-    """
-    for v in venues:
-        if column.startswith(v + "_"):
-            return v
-    return None
-
-
 def feature_columns(df: pl.DataFrame, exclude_venue: str | None = None) -> list[str]:
-    """Model inputs: every numeric column that is not a target, a timestamp, or a
-    staleness diagnostic. Raw price levels are excluded - they are non-stationary and
-    a tree would happily memorise the level of BTC on the training dates. Trailing
-    *returns* are kept: they are stationary and comparable across quote assets.
+    """Model inputs: the columns `research.schema` declares with the `feature` role.
 
-    `exclude_venue` drops that venue's own features, which is what makes the
-    cross-venue test honest: predicting Coinbase's next move using only Kraken's book
-    and flow shares no term with the target.
+    This used to exclude a tuple of name suffixes instead, which got the same answer for
+    the wrong reason. Under exclusion a new family is a model input unless its names
+    happen to collide with the drop list, so whether a feature reaches the model was a
+    property of how it was spelled. Roles are declared once, next to the builder that
+    emits the column.
+
+    `exclude_venue` drops that venue's own features, which is what makes the cross-venue
+    test honest: predicting Coinbase's next move using only Kraken's book and flow shares
+    no term with the target.
     """
-    drop_suffixes = ("_age_ms", "_quote_ts", "_bid", "_ask", "_mid", "_vwap")
-    venues = venue_prefixes(df)
-    return [
-        c
-        for c in df.columns
-        if not c.startswith("y_")
-        and c not in ("ts_ns", "date")
-        and not c.endswith(drop_suffixes)
-        and not (exclude_venue and leg_of(c, venues) == exclude_venue)
-        and not (exclude_venue and c.startswith("nbbo_"))
-        and df[c].dtype.is_numeric()
-    ]
+    return FeatureSchema.from_columns(df.columns).features(df.columns, exclude_venue)
 
 
 def clean(
@@ -166,18 +134,16 @@ def clean(
     dies once both books are required to be fresh; if it is real price discovery, it
     survives.
 
-    Two tolerances, because two clocks. A book age is exactly `{venue}_age_ms`; anything
-    else ending `_age_ms` times a tape stream that legitimately updates far slower, and
-    holding it to the book's tolerance would throw the day away for a staleness that is
-    the feed's normal cadence rather than an outage.
+    Two tolerances, because two clocks. A book age belongs to a venue's `book` family;
+    every other staleness column times a tape stream that legitimately updates far slower,
+    and holding it to the book's tolerance would throw the day away for a staleness that
+    is the feed's normal cadence rather than an outage.
     """
-    book_ages = {v + "_age_ms" for v in venue_prefixes(df)}
+    book_ages, tape_ages = FeatureSchema.from_columns(df.columns).age_columns()
     out = df.filter(pl.col(target).is_not_null())
-    for c in df.columns:
-        if not c.endswith("_age_ms"):
-            continue
-        tol = max_age_ms if c in book_ages else max_tape_age_ms
-        out = out.filter(pl.col(c).is_null() | (pl.col(c) <= tol))
+    for columns, tol in ((book_ages, max_age_ms), (tape_ages, max_tape_age_ms)):
+        for c in columns:
+            out = out.filter(pl.col(c).is_null() | (pl.col(c) <= tol))
     return out
 
 
@@ -494,9 +460,10 @@ def venue_importance(
     """
     x, y = split.x_test[::horizon], split.y_test[::horizon]
     imp = permutation_importance(model, x, y, n_repeats=n_repeats, random_state=0, scoring="r2")
+    schema = FeatureSchema.from_columns(split.feature_names)
     by_venue = dict.fromkeys(venues, 0.0)
     for name, mean in zip(split.feature_names, imp.importances_mean, strict=True):
-        venue = leg_of(name, venues)
+        venue = schema.venue_of(name)
         if venue is not None:
             by_venue[venue] += float(mean)
     return by_venue

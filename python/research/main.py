@@ -28,7 +28,8 @@ import polars as pl
 from common.lake import filesystem_from_env, list_partitions, partition_key
 from research import features
 from research.features import HORIZONS, SOURCE_DATASETS, build_features
-from research.model import MAX_AGE_MS, clean, venue_prefixes
+from research.model import MAX_AGE_MS, clean
+from research.schema import FeatureSchema
 from research.validation import (
     MIN_BOOTSTRAP_BLOCKS,
     MIN_TRAIN_DATES,
@@ -262,6 +263,23 @@ def _report_selectivity(wf: WalkForward, n_boot: int, model: str = "gbt") -> Non
     )
 
 
+def _report_coverage(schema: FeatureSchema, by_date: dict[str, list[str]]) -> None:
+    """The pooled column set, and what each date is missing from it.
+
+    Dates are unioned with `pl.concat(..., how="diagonal")`, which null-fills a date that
+    lacks a venue or a stream and says nothing. Without this, a fortnight where Binance
+    was down reads exactly like a fortnight where it was up and quiet, and the run reports
+    a four-venue feature count either way. The nulls are legitimate and the model handles
+    them; the silence is the problem.
+    """
+    print(f"\nfeature matrix: {len(schema.names)} columns, venues {schema.venues}")
+    for date, columns in by_date.items():
+        gaps = schema.missing_by_family(columns)
+        if gaps:
+            detail = ", ".join(f"{label} ({len(cols)})" for label, cols in sorted(gaps.items()))
+            print(f"  {date} carries no {detail}")
+
+
 def _report_importance(wf: WalkForward, venues: list[str]) -> None:
     """Per-venue permutation importance, averaged over folds with its spread.
 
@@ -298,38 +316,44 @@ def run(
     bucket = os.environ.get("SILVER_BUCKET", "silver")
 
     frames = []
+    columns_by_date: dict[str, list[str]] = {}
     for date in dates:
         df = cached_features(fs, bucket, date, symbol, cache, refresh, extra_symbols)
         if df is None:
             log.warning("skipping %s (no features)", date)
             continue
         frames.append(df)
+        columns_by_date[date] = df.columns
         log.info("%s: %d rows", date, df.height)
     if not frames:
         print("no feature rows built")
         return
 
-    df = pl.concat(frames, how="diagonal").sort("ts_ns")
-    venues = venue_prefixes(df)
+    # Over the union, since a gap only exists relative to what the other dates carry.
+    schema = FeatureSchema.from_columns(c for cols in columns_by_date.values() for c in cols)
+    venues = schema.venues
     if extra_symbols:
-        print(f"\nlegs: {symbol} + {list(extra_symbols)} -> venues {venues}")
+        print(f"\nlegs: {symbol} + {list(extra_symbols)}")
+    _report_coverage(schema, columns_by_date)
+
+    df = pl.concat(frames, how="diagonal").sort("ts_ns")
     if predict_venue:
         if predict_venue not in venues:
             print(f"unknown venue {predict_venue!r}; have {venues}")
             return
-        target = f"y_{predict_venue}_ret_bps_{horizon}"
+        target = schema.target(horizon, predict_venue)
         # The threshold is the spread of the book being predicted, even in cross-venue
         # mode where that venue's features are excluded. That is not a leak: it defines
         # what counts as a tradeable move on that book, the model never sees it, and a
         # trader working that venue knows its spread at `t`.
-        spread_col = f"{predict_venue}_spread_bps"
+        spread_col = schema.spread(predict_venue)
         print(
             f"\ncross-venue mode: predicting {predict_venue}'s own forward mid using only "
             f"{[v for v in venues if v != predict_venue]} (no NBBO, no {predict_venue} features)"
         )
     else:
-        target = f"y_ret_bps_{horizon}"
-        spread_col = "nbbo_spread_bps"
+        target = schema.target(horizon)
+        spread_col = schema.spread()
     if placebo:
         df = placebo_target(df, target)
         print(
