@@ -175,7 +175,7 @@ wheels = [
 [[package]]
 name = "crosstick"
 version = "0.1.0"
-source = { virtual = "." }
+source = { editable = "." }
 dependencies = [
     { name = "aiokafka" },
     { name = "httpx" },
@@ -189,6 +189,12 @@ dependencies = [
     { name = "websockets" },
 ]
 
+[package.optional-dependencies]
+research = [
+    { name = "polars" },
+    { name = "scikit-learn" },
+]
+
 [package.dev-dependencies]
 dev = [
     { name = "pytest" },
@@ -197,8 +203,7 @@ dev = [
     { name = "testcontainers" },
 ]
 research = [
-    { name = "polars" },
-    { name = "scikit-learn" },
+    { name = "crosstick", extra = ["research"] },
 ]
 
 [package.metadata]
@@ -207,13 +212,16 @@ requires-dist = [
     { name = "httpx", specifier = "==0.28.1" },
     { name = "msgspec", specifier = "==0.21.1" },
     { name = "numpy", specifier = "==2.4.6" },
+    { name = "polars", marker = "extra == 'research'", specifier = "==1.43.1" },
     { name = "prometheus-client", specifier = "==0.26.0" },
     { name = "pyarrow", specifier = "==25.0.0" },
     { name = "pyyaml", specifier = "==6.0.3" },
+    { name = "scikit-learn", marker = "extra == 'research'", specifier = "==1.9.0" },
     { name = "sortedcontainers", specifier = "==2.4.0" },
     { name = "uvloop", marker = "sys_platform != 'win32'", specifier = "==0.22.1" },
     { name = "websockets", specifier = "==17.0" },
 ]
+provides-extras = ["research"]
 
 [package.metadata.requires-dev]
 dev = [
@@ -222,10 +230,7 @@ dev = [
     { name = "ruff", specifier = "==0.16.0" },
     { name = "testcontainers", specifier = "==4.15.0" },
 ]
-research = [
-    { name = "polars", specifier = "==1.43.1" },
-    { name = "scikit-learn", specifier = "==1.9.0" },
-]
+research = [{ name = "crosstick", extras = ["research"] }]
 
 [[package]]
 name = "docker"
