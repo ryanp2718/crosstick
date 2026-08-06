@@ -320,9 +320,10 @@ class PartitionWriter:
     has to be fully resident. The output stream is opened lazily on the first
     non-empty batch - a partition with no rows writes nothing (matching the
     previous group-then-write behavior). Same zstd + overwrite semantics as
-    `write_object`, so the idempotency contract holds. Used as a context manager it is
-    all-or-nothing: leaving via an exception discards the object rather than publishing
-    however many rows happened to be flushed.
+    `write_object`, so the idempotency contract holds. It is all-or-nothing: leaving the
+    `with` via an exception discards the object rather than publishing however many rows
+    happened to be flushed. `with` is mandatory, because a caller that closes in a
+    `finally` instead gets the old truncating behavior back and reads identically.
     """
 
     def __init__(self, fs: pafs.FileSystem, bucket: str, key: str, schema: pa.Schema):
@@ -331,8 +332,11 @@ class PartitionWriter:
         self._schema = schema
         self._stream: pafs.NativeFile | None = None
         self._writer: pq.ParquetWriter | None = None
+        self._entered = False
 
     def write_rows(self, rows: list[dict]) -> None:
+        if not self._entered:
+            raise RuntimeError(f"PartitionWriter({self._path}) must be used as a context manager")
         if not rows:
             return
         self._ensure_open()
@@ -369,6 +373,7 @@ class PartitionWriter:
             pass
 
     def __enter__(self) -> PartitionWriter:
+        self._entered = True
         return self
 
     def __exit__(self, exc_type: type[BaseException] | None, *_exc: object) -> bool:
