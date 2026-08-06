@@ -343,6 +343,40 @@ def test_a_missing_git_leaves_provenance_blank_rather_than_failing(monkeypatch) 
     assert got.git_sha == ""
 
 
+def test_untracked_notes_do_not_make_a_run_dirty(monkeypatch) -> None:
+    """The failure that made this flag useless: a working tree holds drafts and scratch
+    files that are deliberately neither committed nor ignored, and counting them marked
+    every run as not describing its own commit. Nothing could be published, so the flag
+    was never consulted.
+    """
+    calls = []
+
+    def fake(*args: str) -> str:
+        calls.append(args)
+        if args[0] == "status":
+            # A bare porcelain status would report the note; the narrowed one must not.
+            return "" if "--untracked-files=no" in args else "?? notes.md\n"
+        return ""
+
+    monkeypatch.setattr(runs, "_git", fake)
+    assert runs._dirty() is False
+    assert ("status", "--porcelain", "--untracked-files=no") in calls
+
+
+def test_an_untracked_module_does_make_a_run_dirty(monkeypatch) -> None:
+    """An extra file under a package can change what ran, which is exactly what the flag
+    is for."""
+    monkeypatch.setattr(
+        runs, "_git", lambda *args: "research/scratch.py" if args[0] == "ls-files" else ""
+    )
+    assert runs._dirty() is True
+
+
+def test_a_modified_tracked_file_makes_a_run_dirty(monkeypatch) -> None:
+    monkeypatch.setattr(runs, "_git", lambda *args: " M research/model.py")
+    assert runs._dirty() is True
+
+
 # ── folds ────────────────────────────────────────────────────────────────────
 
 

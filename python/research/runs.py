@@ -368,7 +368,7 @@ def provenance(builder_fingerprint: str, schema: FeatureSchema, sources: dict[st
     return Provenance(
         created_at=datetime.now(UTC).isoformat(timespec="seconds"),
         git_sha=_git("rev-parse", "--short", "HEAD"),
-        git_dirty=bool(_git("status", "--porcelain")),
+        git_dirty=_dirty(),
         builder_fingerprint=builder_fingerprint,
         feature_schema_digest=schema_digest(schema),
         source_fingerprints=dict(sources),
@@ -384,6 +384,23 @@ def schema_digest(schema: FeatureSchema) -> str:
     right thing to compare two runs on.
     """
     return blake2b("\n".join(sorted(schema.names)).encode(), digest_size=4).hexdigest()
+
+
+def _dirty() -> bool:
+    """Whether the code that ran differs from the commit recorded beside it.
+
+    Not a bare `git status --porcelain`. That counts untracked files, and a working tree
+    legitimately holds notes, drafts and scratch output that are deliberately neither
+    committed nor ignored. Counting those marked every run dirty for reasons that could
+    not touch a number, which makes the flag useless precisely where it matters: nothing
+    could be published, so nothing was checked.
+
+    Untracked Python is a different case, because an extra module can change what ran, so
+    it still counts.
+    """
+    if _git("status", "--porcelain", "--untracked-files=no"):
+        return True
+    return bool(_git("ls-files", "--others", "--exclude-standard", "*.py"))
 
 
 def _git(*args: str) -> str:
