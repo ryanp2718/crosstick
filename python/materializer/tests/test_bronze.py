@@ -78,6 +78,21 @@ def test_canonical_map_resolves_and_falls_back() -> None:
     assert cmap.resolve("binance", "BTCUSDT") == "BTC-USDT"
 
 
+def test_venue_pairs_is_the_declared_partition_set() -> None:
+    """What a complete date looks like, from reference data rather than from the day's
+    own output - gold.scorecard has no other way to see a partition that never arrived."""
+    assert CanonicalMap.from_yaml(INSTRUMENTS_FILE).venue_pairs() == {
+        ("coinbase", "BTC-USD"),
+        ("coinbase", "ETH-USD"),
+        ("kraken", "BTC-USD"),
+        ("kraken", "ETH-USD"),
+        ("binance", "BTC-USDT"),
+        ("binance", "ETH-USDT"),
+        ("binance-futures", "BTC-USDT-PERP"),
+        ("binance-futures", "ETH-USDT-PERP"),
+    }
+
+
 def test_object_key_layouts() -> None:
     cmap = CanonicalMap.from_yaml(INSTRUMENTS_FILE)
     deltas = parse_topic("md.book.binance.BTCUSDT.deltas")

@@ -25,6 +25,18 @@ import pyarrow.compute as pc
 # Re-exported: declared in common.schemas, imported from here by convention.
 from common.schemas import SCORECARD_SCHEMA, table_from_rows
 
+# The check vocabulary. Named here because two implementations emit it (the dict
+# oracle and the streaming accumulators) and `gold.budget` validates config keys
+# against it. `latency.*` is open-ended - one check per silver dataset - so it is a
+# prefix rather than a member of CHECKS.
+SEQUENCE_GAP = "sequence_gap"
+BOOK_INVARIANT = "book_invariant"
+COVERAGE = "coverage"
+CLOCK_MONOTONIC = "clock_monotonic"
+VENUE_UPTIME = "venue_uptime"
+LATENCY_PREFIX = "latency."
+CHECKS = (SEQUENCE_GAP, BOOK_INVARIANT, COVERAGE, CLOCK_MONOTONIC, VENUE_UPTIME)
+
 
 def _row(
     exchange: str,
@@ -93,7 +105,7 @@ def _clock_monotonic_row(exchange: str, symbol: str, date: str, group: list[dict
         exchange,
         symbol,
         date,
-        "clock_monotonic",
+        CLOCK_MONOTONIC,
         n_records=n,
         n_violations=intra,
         detail={"worst_lateness_ms": worst / 1e6, "inter_epoch_steps": inter},
@@ -113,7 +125,7 @@ def _book_checks(book_quality: Iterable[dict]) -> list[dict]:
                 exchange,
                 symbol,
                 date,
-                "sequence_gap",
+                SEQUENCE_GAP,
                 n_records=len(deltas),
                 n_violations=len(gaps),
                 detail={"total_missing": sum(gaps), "max_gap": max(gaps, default=0)},
@@ -127,7 +139,7 @@ def _book_checks(book_quality: Iterable[dict]) -> list[dict]:
                 exchange,
                 symbol,
                 date,
-                "book_invariant",
+                BOOK_INVARIANT,
                 n_records=len(group),
                 n_violations=len(invariants),
                 detail={**by_kind, "locked": locked},
@@ -138,7 +150,7 @@ def _book_checks(book_quality: Iterable[dict]) -> list[dict]:
                 exchange,
                 symbol,
                 date,
-                "coverage",
+                COVERAGE,
                 n_records=len(group),
                 n_violations=0,
                 detail={"snapshots": snaps, "deltas": len(deltas)},
@@ -160,7 +172,7 @@ def _latency_checks(latency: Iterable[dict]) -> list[dict]:
                 exchange,
                 symbol,
                 date,
-                f"latency.{dataset}",
+                f"{LATENCY_PREFIX}{dataset}",
                 n_records=len(group),
                 n_violations=0,
                 p50_ms=p50,
@@ -184,7 +196,7 @@ def _status_checks(status_events: Iterable[dict]) -> list[dict]:
                 exchange,
                 None,
                 date,
-                "venue_uptime",
+                VENUE_UPTIME,
                 n_records=len(group),
                 n_violations=len(downs),
                 detail={
@@ -196,6 +208,28 @@ def _status_checks(status_events: Iterable[dict]) -> list[dict]:
             )
         )
     return rows
+
+
+def absent_partition_rows(
+    rows: Iterable[dict], expected: Iterable[tuple[str, str]], date: str
+) -> list[dict]:
+    """A zero-record `coverage` row per declared venue-symbol that produced no row.
+
+    Every other check counts violations over records that exist, so a venue-symbol
+    which captured nothing is not a clean row, it is *no* row - the one failure a
+    rollup over silver cannot see, and the one a budget over that rollup therefore
+    cannot fail on. Writing the absence as `coverage` with n_records=0 puts it in the
+    mart and on the dashboard, and lets the record floor that already exists gate it
+    instead of inventing a second kind of budget.
+
+    `expected` is the declared (exchange, canonical_symbol) set - reference data, not
+    an inference from the day's own output, which is what makes an absence visible.
+    """
+    seen = {(r["exchange"], r["canonical_symbol"]) for r in rows}
+    return [
+        _row(exchange, symbol, date, COVERAGE, n_records=0, n_violations=0, detail={"absent": True})
+        for exchange, symbol in sorted(set(expected) - seen)
+    ]
 
 
 # --- per-partition accumulators (the streaming gold path) -------------------
@@ -288,7 +322,7 @@ class BookCheckAccumulator:
                 self.exchange,
                 self.canonical_symbol,
                 self.date,
-                "sequence_gap",
+                SEQUENCE_GAP,
                 n_records=self._n_deltas,
                 n_violations=self._n_gap,
                 detail={"total_missing": self._total_missing, "max_gap": self._max_gap},
@@ -297,7 +331,7 @@ class BookCheckAccumulator:
                 self.exchange,
                 self.canonical_symbol,
                 self.date,
-                "book_invariant",
+                BOOK_INVARIANT,
                 n_records=self._n_total,
                 n_violations=self._n_invariant,
                 detail={**self._by_kind, "locked": self._locked},
@@ -306,7 +340,7 @@ class BookCheckAccumulator:
                 self.exchange,
                 self.canonical_symbol,
                 self.date,
-                "coverage",
+                COVERAGE,
                 n_records=self._n_total,
                 n_violations=0,
                 detail={"snapshots": self._n_total - self._n_deltas, "deltas": self._n_deltas},
@@ -315,7 +349,7 @@ class BookCheckAccumulator:
                 self.exchange,
                 self.canonical_symbol,
                 self.date,
-                "clock_monotonic",
+                CLOCK_MONOTONIC,
                 n_records=self._n_deltas,
                 n_violations=self._clock_intra,
                 detail={
@@ -357,7 +391,7 @@ class LatencyAccumulator:
                     self.exchange,
                     self.canonical_symbol,
                     self.date,
-                    f"latency.{ds}",
+                    f"{LATENCY_PREFIX}{ds}",
                     n_records=len(vals),
                     n_violations=0,
                     p50_ms=p50,

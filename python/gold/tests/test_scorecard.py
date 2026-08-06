@@ -5,7 +5,15 @@ from __future__ import annotations
 import json
 from decimal import Decimal
 
-from gold.scorecard import SCORECARD_SCHEMA, build_scorecard, scorecard_table
+from gold.scorecard import (
+    CHECKS,
+    COVERAGE,
+    LATENCY_PREFIX,
+    SCORECARD_SCHEMA,
+    absent_partition_rows,
+    build_scorecard,
+    scorecard_table,
+)
 
 
 def bq(**over) -> dict:
@@ -123,3 +131,35 @@ def test_rows_match_the_published_schema() -> None:
     rows = build_scorecard([bq(seq_gap=1)], [lat(1_000_000)], [st("up", 1)])
     table = scorecard_table(rows)
     assert table.schema == SCORECARD_SCHEMA
+
+
+def test_absent_partition_becomes_a_zero_record_coverage_row() -> None:
+    """The failure the rollup cannot see: a venue-symbol that captured nothing.
+
+    binance/BTC-USDT produced rows, kraken/BTC-USD produced none - and produced no
+    violation either, which is exactly why a count of violations is not a measure of
+    data quality.
+    """
+    rows = build_scorecard([bq(seq_gap=1)], [], [])
+    expected = {("binance", "BTC-USDT"), ("kraken", "BTC-USD")}
+    absent = absent_partition_rows(rows, expected, "2026-06-12")
+    assert [(r["exchange"], r["canonical_symbol"]) for r in absent] == [("kraken", "BTC-USD")]
+    assert absent[0]["check"] == COVERAGE and absent[0]["n_records"] == 0
+    assert json.loads(absent[0]["detail"])["absent"] is True
+    assert scorecard_table(rows + absent).schema == SCORECARD_SCHEMA
+
+
+def test_venue_level_rows_do_not_mask_an_absent_symbol() -> None:
+    """`venue_uptime` carries no canonical_symbol, so a venue that was merely *up* must
+    not count as having covered its symbols."""
+    rows = build_scorecard([], [], [st("up", 1)])
+    absent = absent_partition_rows(rows, {("binance", "BTC-USDT")}, "2026-06-12")
+    assert len(absent) == 1
+
+
+def test_the_declared_vocabulary_is_what_gets_emitted() -> None:
+    """`gold.budget` validates config keys against CHECKS, so a check renamed here
+    without updating that tuple would silently stop being budgeted."""
+    rows = build_scorecard([bq(seq_gap=1)], [lat(1_000_000)], [st("up", 1)])
+    emitted = {r["check"] for r in rows}
+    assert emitted == {*CHECKS, f"{LATENCY_PREFIX}trades"}
