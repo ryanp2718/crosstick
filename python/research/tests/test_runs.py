@@ -364,3 +364,79 @@ def test_folds_that_disagree_on_the_feature_set_are_an_error() -> None:
             n_rows_before=1,
             coverage_gaps={},
         )
+
+
+# ── reading it back ──────────────────────────────────────────────────────────
+
+
+def test_a_written_record_reads_back_to_the_same_record(tmp_path) -> None:
+    """Write, read, write again, and compare the bytes.
+
+    Stronger than asserting field by field, which only ever checks the fields someone
+    thought to list. Anything `read` drops, defaults or reconstructs as the wrong type
+    changes the second serialisation, including the two things JSON cannot carry: the
+    tuples and the NaNs.
+    """
+    record = _record()
+    record.infoshare = [_infoshare_run()]
+    first = record.write(tmp_path / "a")
+    again = runs.RunRecord.read(first).write(tmp_path / "b")
+
+    assert (first / "record.json").read_text(encoding="utf-8") == (again / "record.json").read_text(
+        encoding="utf-8"
+    )
+    assert pl.read_parquet(first / "oos.parquet").equals(pl.read_parquet(again / "oos.parquet"))
+
+
+def test_an_undefined_metric_reads_back_undefined_rather_than_null(tmp_path) -> None:
+    """The `zero` baseline calls no direction, so its hit rate has no value. Left as the
+    JSON null it was written as, it formats as a number that was never measured."""
+    back = runs.RunRecord.read(_record().write(tmp_path))
+    assert np.isnan(back.pooled["zero"]["hit_rate"][0])
+
+
+def test_the_spec_reads_back_with_tuples_and_not_lists(tmp_path) -> None:
+    """`RunSpec` is frozen and its sequences are tuples, which is what lets two specs be
+    compared and hashed. JSON has only arrays, so this is the writer's one lossy edge."""
+    back = runs.RunRecord.read(_record().write(tmp_path))
+    assert isinstance(back.spec.dates, tuple)
+    assert isinstance(back.spec.coverages, tuple)
+    assert isinstance(back.venues, tuple)
+    assert isinstance(back.folds[0].train_dates, tuple)
+    assert back.spec.infoshare_venues is None
+
+
+def test_the_pooled_rows_read_back_and_still_recompute_the_headline(tmp_path) -> None:
+    """The point of the whole seam: a reader with the directory and no lake behind it
+    gets the same number the run reported."""
+    record = _record()
+    back = runs.RunRecord.read(record.write(tmp_path))
+    assert set(back.oos) == set(record.oos)
+
+    gbt = back.oos["gbt"]
+    r2 = 1.0 - float(np.sum((gbt.y - gbt.pred) ** 2)) / float(np.sum(gbt.y**2))
+    assert r2 == pytest.approx(record.pooled["gbt"]["r2_vs_zero"][0])
+    assert gbt.threshold is not None
+
+
+def test_the_information_shares_read_back_as_arrays(tmp_path) -> None:
+    """`bounds` is indexed as a matrix by the report. A list of lists would print but not
+    slice."""
+    record = _record()
+    record.infoshare = [_infoshare_run()]
+    back = runs.RunRecord.read(record.write(tmp_path))
+    estimate = back.infoshare[0].estimates[0]
+    assert isinstance(estimate.bounds, np.ndarray)
+    assert estimate.bounds.shape == record.infoshare[0].estimates[0].bounds.shape
+    assert estimate.component_shares.dtype == float
+
+
+def test_a_record_missing_a_field_is_an_error_rather_than_a_default(tmp_path) -> None:
+    """A record written by a version that did not have a field cannot be silently read as
+    if the field were absent on purpose: the number it reports would be made up."""
+    out = _record().write(tmp_path)
+    parsed = json.loads((out / "record.json").read_text(encoding="utf-8"))
+    del parsed["base_rates"]
+    (out / "record.json").write_text(json.dumps(parsed), encoding="utf-8")
+    with pytest.raises(KeyError, match="base_rates"):
+        runs.RunRecord.read(out)

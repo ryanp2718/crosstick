@@ -207,6 +207,105 @@ class RunRecord:
         oos_frame(self.oos).write_parquet(out / "oos.parquet")
         return out
 
+    @classmethod
+    def read(cls, run: Path) -> RunRecord:
+        """The inverse of `write`, for a reader that is not this repo.
+
+        JSON has neither tuples nor NaN, so `write` loses both and this puts them back.
+        That is not cosmetic: a metric that was undefined has to come back undefined
+        rather than as a null, or it formats as a number that was never measured.
+
+        Every field is indexed rather than `.get()`-ed, so a record written by a version
+        that did not have one fails here loudly instead of reporting a default.
+        """
+        raw = json.loads((run / "record.json").read_text(encoding="utf-8"))
+        pair = raw["spec"]["infoshare_venues"]
+        spec = raw["spec"] | {
+            "dates": tuple(raw["spec"]["dates"]),
+            "extra_symbols": tuple(raw["spec"]["extra_symbols"]),
+            "coverages": tuple(raw["spec"]["coverages"]),
+            "infoshare_venues": tuple(pair) if pair else None,
+            "infoshare_strides": tuple(raw["spec"]["infoshare_strides"]),
+        }
+        return cls(
+            spec=RunSpec(**spec),
+            provenance=Provenance(**raw["provenance"]),
+            venues=tuple(raw["venues"]),
+            feature_names=tuple(raw["feature_names"]),
+            n_rows=raw["n_rows"],
+            n_rows_before=raw["n_rows_before"],
+            n_oos=raw["n_oos"],
+            n_test_dates=raw["n_test_dates"],
+            coverage_gaps=raw["coverage_gaps"],
+            folds=[
+                Fold(
+                    train_dates=tuple(fold["train_dates"]),
+                    test_dates=tuple(fold["test_dates"]),
+                    n_train=fold["n_train"],
+                    n_val=fold["n_val"],
+                    n_test=fold["n_test"],
+                    metrics=_numbers(fold["metrics"]),
+                    edge=_numbers(fold["edge"]),
+                    classes=_numbers(fold["classes"]),
+                )
+                for fold in raw["folds"]
+            ],
+            pooled=_interval_table(raw["pooled"]),
+            classes=_interval_table(raw["classes"]),
+            traded={k: _number(v) for k, v in raw["traded"].items()},
+            base_rates={k: _number(v) for k, v in raw["base_rates"].items()},
+            selectivity=[
+                Selectivity(
+                    coverage=sel["coverage"],
+                    n_called=sel["n_called"],
+                    metrics=_intervals(sel["metrics"]),
+                )
+                for sel in raw["selectivity"]
+            ],
+            importance=[{k: _number(v) for k, v in each.items()} for each in raw["importance"]],
+            infoshare=[
+                InfoShares(
+                    venues=tuple(block["venues"]),
+                    stride=block["stride"],
+                    lags=block["lags"],
+                    estimates=[_info_share(e) for e in block["estimates"]],
+                )
+                for block in raw["infoshare"]
+            ],
+            oos=read_oos(pl.read_parquet(run / "oos.parquet")),
+        )
+
+
+def _number(value) -> float:
+    """A JSON null back to the NaN it was written from (see `_plain`)."""
+    return float("nan") if value is None else float(value)
+
+
+def _numbers(table: dict[str, dict[str, float]]) -> dict[str, dict[str, float]]:
+    return {name: {k: _number(v) for k, v in row.items()} for name, row in table.items()}
+
+
+def _intervals(row: dict[str, list]) -> dict[str, Interval]:
+    return {k: tuple(_number(v) for v in interval) for k, interval in row.items()}
+
+
+def _interval_table(table: dict[str, dict[str, list]]) -> dict[str, dict[str, Interval]]:
+    return {name: _intervals(row) for name, row in table.items()}
+
+
+def _info_share(raw: dict) -> InfoShare:
+    """`np.array(..., dtype=float)` is what turns the JSON nulls back into NaN."""
+    return InfoShare(
+        venues=tuple(raw["venues"]),
+        n=raw["n"],
+        alpha=np.array(raw["alpha"], dtype=float),
+        component_shares=np.array(raw["component_shares"], dtype=float),
+        bounds=np.array(raw["bounds"], dtype=float),
+        residual_corr=_number(raw["residual_corr"]),
+        conditioning=_number(raw["conditioning"]),
+        date=raw["date"],
+    )
+
 
 def _plain(value):
     """Dataclass tree to something `json.dumps(allow_nan=False)` accepts."""
@@ -243,6 +342,26 @@ def oos_frame(oos: dict[str, OutOfSample]) -> pl.DataFrame:
         **{f"pred_{name}": o.pred for name, o in oos.items()},
     }
     return pl.DataFrame(columns)
+
+
+def read_oos(frame: pl.DataFrame) -> dict[str, OutOfSample]:
+    """The pooled rows back into one `OutOfSample` per model.
+
+    `date`, `y` and `threshold` are shared across models by construction (`oos_frame`
+    refuses to write a frame where they are not), so every model gets the same arrays
+    rather than a copy each.
+    """
+    if "date" not in frame.columns:
+        return {}
+    dates, y = frame["date"].to_numpy(), frame["y"].to_numpy()
+    threshold = frame["threshold"].to_numpy() if "threshold" in frame.columns else None
+    return {
+        column.removeprefix("pred_"): OutOfSample(
+            dates=dates, y=y, pred=frame[column].to_numpy(), threshold=threshold
+        )
+        for column in frame.columns
+        if column.startswith("pred_")
+    }
 
 
 def provenance(builder_fingerprint: str, schema: FeatureSchema, sources: dict[str, str]):
