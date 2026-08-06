@@ -30,6 +30,7 @@ Repeating any of this over expanding-window folds, and putting error bars on it,
 from __future__ import annotations
 
 import logging
+from collections.abc import Callable
 from dataclasses import dataclass
 
 import numpy as np
@@ -229,19 +230,44 @@ def make_split(
     )
 
 
-def _r2_vs_zero(y: np.ndarray, pred: np.ndarray) -> float:
-    """Out-of-sample R2 against predicting zero, not against the test mean.
+@dataclass(frozen=True)
+class Ratio:
+    """A metric that is a ratio of two sums taken over rows.
+
+    Every metric a confidence interval is reported for has this shape, and saying so is
+    what makes the date-block bootstrap affordable. A draw is a multiset of whole dates,
+    so the two sums a draw needs are the per-date partial sums added up with
+    multiplicity, and those partial sums do not depend on the draw at all. Stated as an
+    opaque `(y, pred) -> float` instead, each of the thousand draws has to gather and
+    rescan every pooled row (see `research.validation.Blocks`).
+
+    `parts` returns the two per-row columns. `combine` maps the ratio to the reported
+    number and must be elementwise, because the bootstrap applies it to every draw at
+    once rather than one at a time.
+    """
+
+    parts: Callable[[np.ndarray, np.ndarray], tuple[np.ndarray, np.ndarray]]
+    combine: Callable[[np.ndarray], np.ndarray] = lambda ratio: ratio
+
+    def __call__(self, y: np.ndarray, pred: np.ndarray) -> float:
+        numerator, denominator = self.parts(y, pred)
+        total = float(np.sum(denominator))
+        if total <= 0:
+            return float("nan")
+        return float(self.combine(float(np.sum(numerator)) / total))
+
+
+def _r2_parts(y: np.ndarray, pred: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    """Residual and total sum of squares, against predicting zero rather than the mean.
 
     For a return series the honest null is "no view"; scoring against the realised
     test mean quietly credits the model for a drift it could not have known.
     """
-    ss_res = float(np.sum((y - pred) ** 2))
-    ss_tot = float(np.sum(y**2))
-    return 1.0 - ss_res / ss_tot if ss_tot > 0 else float("nan")
+    return (y - pred) ** 2, y**2
 
 
-def _hit_rate(y: np.ndarray, pred: np.ndarray) -> float:
-    """Share of directional calls that were right, over rows where a call was made.
+def _hit_parts(y: np.ndarray, pred: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    """Right calls over calls made.
 
     Two exclusions, both to stop the number being gamed by inaction. Flat rows do not
     count, because on a 1s grid many bars do not move and scoring them would let a
@@ -250,19 +276,19 @@ def _hit_rate(y: np.ndarray, pred: np.ndarray) -> float:
     it is no call - the same rows `_gross_bps` declines to trade. The `zero` baseline
     therefore has no hit rate at all, which is the honest answer for it.
     """
-    called = (np.abs(y) > 1e-9) & (np.abs(pred) > 0)
-    if not called.any():
-        return float("nan")
-    return float(np.mean(np.sign(pred[called]) == np.sign(y[called])))
+    called = ((np.abs(y) > 1e-9) & (np.abs(pred) > 0)).astype(float)
+    return called * (np.sign(pred) == np.sign(y)), called
 
 
-def _gross_bps(y: np.ndarray, pred: np.ndarray) -> float:
-    """Mean signed return from taking a unit position in the predicted direction."""
-    take = np.abs(pred) > 0
-    if not take.any():
-        return float("nan")
-    return float(np.mean(np.sign(pred[take]) * y[take]))
+def _gross_parts(y: np.ndarray, pred: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    """Signed return taken, over trades taken."""
+    take = (np.abs(pred) > 0).astype(float)
+    return take * np.sign(pred) * y, take
 
+
+_r2_vs_zero = Ratio(_r2_parts, lambda ratio: 1.0 - ratio)
+_hit_rate = Ratio(_hit_parts)
+_gross_bps = Ratio(_gross_parts)
 
 # Metrics a confidence interval is reported for. Each takes already-strided rows, so
 # `research.validation` can resample them without re-deriving what a metric means.
@@ -306,30 +332,26 @@ def dead_zone_classes(values: np.ndarray, threshold_bps: np.ndarray) -> np.ndarr
     return np.sign(values) * (np.abs(values) > threshold_bps)
 
 
-def _class_precision(cls: int):
+def _class_precision(cls: int) -> Ratio:
     """Of the bars called `cls`, how many really were - the number that decides whether
     an edge exists at all. Undefined rather than zero when no call was made."""
 
-    def metric(truth: np.ndarray, call: np.ndarray) -> float:
-        called = call == cls
-        if not called.any():
-            return float("nan")
-        return float(np.sum(called & (truth == cls)) / called.sum())
+    def parts(truth: np.ndarray, call: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+        called = (call == cls).astype(float)
+        return called * (truth == cls), called
 
-    return metric
+    return Ratio(parts)
 
 
-def _class_recall(cls: int):
+def _class_recall(cls: int) -> Ratio:
     """Of the bars that really were `cls`, how many were called. Says how much of the
     opportunity is left behind, which a high-precision model may well trade none of."""
 
-    def metric(truth: np.ndarray, call: np.ndarray) -> float:
-        actual = truth == cls
-        if not actual.any():
-            return float("nan")
-        return float(np.sum(actual & (call == cls)) / actual.sum())
+    def parts(truth: np.ndarray, call: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+        actual = (truth == cls).astype(float)
+        return actual * (call == cls), actual
 
-    return metric
+    return Ratio(parts)
 
 
 # Metrics over ALREADY-CLASSIFIED rows, so the pooled date-block bootstrap can resample

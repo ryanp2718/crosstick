@@ -277,6 +277,49 @@ def evaluate_walk_forward(
     )
 
 
+class Blocks:
+    """The date blocks and the multiplicity of each one in every draw.
+
+    `weights[b, j]` is how many times date j was drawn in resample b. Counting the draw
+    instead of expanding it into row indices is the whole point: a metric is a ratio of
+    sums over rows (`research.model.Ratio`), so the sums a draw needs are the per-date
+    partial sums weighted by this matrix, and the partial sums are the same for every
+    draw. One pass over the rows and one matrix product replaces a thousand gathers.
+
+    The draws are the same ones the row-wise version made. `rng.choice` over an array of
+    n dates consumes the same integer stream whether it is asked for `(n_boot, n)` at
+    once or for `n` a thousand times, so the intervals move only by the last bits of
+    floating-point summation order.
+    """
+
+    def __init__(self, dates: np.ndarray, n_boot: int = N_BOOT, seed: int = 0):
+        self.dates, self.codes = np.unique(dates, return_inverse=True)
+        rng = np.random.default_rng(seed)
+        picks = rng.choice(len(self.dates), size=(n_boot, len(self.dates)), replace=True)
+        self.weights = np.zeros((n_boot, len(self.dates)))
+        np.add.at(self.weights, (np.arange(n_boot)[:, None], picks), 1.0)
+
+    @property
+    def resamplable(self) -> bool:
+        """One date cannot be resampled into a distribution of anything."""
+        return len(self.dates) >= 2
+
+    def drawn(self, column: np.ndarray) -> np.ndarray:
+        """One column's sum under every draw, via its per-date partial sums."""
+        return self.weights @ np.bincount(self.codes, weights=column, minlength=len(self.dates))
+
+
+def _percentile_interval(blocks: Blocks, metric, y, pred, alpha: float) -> tuple[float, float]:
+    numerator, denominator = metric.parts(y, pred)
+    drawn_denominator = blocks.drawn(denominator)
+    stats = np.full(len(drawn_denominator), np.nan)
+    # A draw that called nothing leaves the metric undefined, exactly as it does per row.
+    defined = drawn_denominator > 0
+    stats[defined] = metric.combine(blocks.drawn(numerator)[defined] / drawn_denominator[defined])
+    lo, hi = np.nanpercentile(stats, [100 * alpha / 2, 100 * (1 - alpha / 2)])
+    return float(lo), float(hi)
+
+
 def bootstrap_ci(
     oos: OutOfSample,
     metric,
@@ -290,25 +333,25 @@ def bootstrap_ci(
     coarseness is the honest answer rather than a defect to smooth over: this capture
     holds days, not years, and an interval that pretended otherwise would be the lie.
     """
-    dates = np.unique(oos.dates)
-    if len(dates) < 2 or np.isnan(metric(oos.y, oos.pred)):
+    blocks = Blocks(oos.dates, n_boot, seed)
+    if not blocks.resamplable or np.isnan(metric(oos.y, oos.pred)):
         return (float("nan"), float("nan"))
-    rows_for = {d: np.flatnonzero(oos.dates == d) for d in dates}
-    rng = np.random.default_rng(seed)
-    stats = np.empty(n_boot)
-    for b in range(n_boot):
-        picked = rng.choice(dates, size=len(dates), replace=True)
-        idx = np.concatenate([rows_for[d] for d in picked])
-        stats[b] = metric(oos.y[idx], oos.pred[idx])
-    lo, hi = np.nanpercentile(stats, [100 * alpha / 2, 100 * (1 - alpha / 2)])
-    return float(lo), float(hi)
+    return _percentile_interval(blocks, metric, oos.y, oos.pred, alpha)
 
 
 def _intervals(oos: OutOfSample, metrics: dict, n_boot: int, seed: int):
-    return {
-        name: (metric(oos.y, oos.pred), *bootstrap_ci(oos, metric, n_boot, seed))
-        for name, metric in metrics.items()
-    }
+    """Every metric off one set of blocks, since they all resample the same dates."""
+    blocks = Blocks(oos.dates, n_boot, seed)
+    intervals = {}
+    for name, metric in metrics.items():
+        point = metric(oos.y, oos.pred)
+        interval = (
+            _percentile_interval(blocks, metric, oos.y, oos.pred, 0.05)
+            if blocks.resamplable and not np.isnan(point)
+            else (float("nan"), float("nan"))
+        )
+        intervals[name] = (point, *interval)
+    return intervals
 
 
 def confidence_intervals(
