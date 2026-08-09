@@ -4,7 +4,7 @@ version = "0.1.0"
 description = "Polyglot crypto market-data ingest + analytics platform"
 requires-python = ">=3.11"
 dependencies = [
-    "websockets==17.0",
+    "websockets==17.0.1",
     "httpx==0.28.1",
     "msgspec==0.21.1",
     "sortedcontainers==2.4.0",
@@ -22,7 +22,7 @@ dependencies = [
 # installs this package with `pip install "crosstick[research] @ git+...@<sha>"`.
 [project.optional-dependencies]
 research = [
-    "polars==1.43.1",
+    "polars==1.43.2",
     "scikit-learn==1.9.0",
 ]
 
@@ -44,7 +44,7 @@ exclude = ["*.tests", "*.tests.*"]
 dev = [
     "pytest==9.1.1",
     "pytest-asyncio==1.4.0",
-    "ruff==0.16.0",
+    "ruff==0.16.1",
     "testcontainers==4.15.0",
 ]
 # The extra, so `uv sync` keeps installing it and the pins stay in one place.
