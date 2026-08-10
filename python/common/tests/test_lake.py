@@ -218,6 +218,22 @@ def test_partition_writer_discard_survives_having_written_nothing(tmp_path) -> N
     assert read_dataset(fs, bucket, "nbbo", "2026-06-12") is None
 
 
+def test_partition_writer_refuses_to_write_outside_a_context(tmp_path) -> None:
+    """The all-or-nothing guarantee only exists inside `with`, so nothing else is allowed.
+
+    A caller that closes in a `finally` gets the truncating behavior back and reads
+    identically at the call site, which is how the gold basis writer kept it after the
+    other four writers moved over.
+    """
+    fs = pafs.LocalFileSystem()
+    bucket = tmp_path.as_posix()
+    schema = pa.schema([("a", pa.int64())])
+    key = partition_key("nbbo", symbol="BTC-USD", date="2026-06-12")
+    with pytest.raises(RuntimeError, match="context manager"):
+        PartitionWriter(fs, bucket, key, schema).write_rows([{"a": 1}])
+    assert read_dataset(fs, bucket, "nbbo", "2026-06-12") is None
+
+
 def test_freshness_marker_round_trip(tmp_path) -> None:
     fs = pafs.LocalFileSystem()
     bucket = tmp_path.as_posix()

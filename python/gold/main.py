@@ -4,10 +4,11 @@ For each UTC date, read silver and build every gold mart whose inputs exist:
   - scorecard      : the data-quality rollup over book_quality/latency/status.
   - basis/_summary : the stablecoin (USDT/USD) basis from per-canonical nbbo.
 Each is written one overwrite-keyed object per date. ``--fail-on-violation``
-exits non-zero if any scorecard check has violations (ops/CI use).
+exits non-zero if any scorecard row breaches its data-quality budget (ops/CI
+use); see ``gold.budget`` and ``ops/dq_budgets.yml``.
 
-Env: ``S3_ENDPOINT`` / keys; ``INSTRUMENTS_FILE``; ``SILVER_BUCKET`` (default
-``silver``) and ``GOLD_BUCKET`` (default ``gold``).
+Env: ``S3_ENDPOINT`` / keys; ``INSTRUMENTS_FILE``; ``DQ_BUDGET_FILE``;
+``SILVER_BUCKET`` (default ``silver``) and ``GOLD_BUCKET`` (default ``gold``).
 """
 
 from __future__ import annotations
@@ -22,6 +23,7 @@ from pyarrow import fs as pafs
 
 from common.lake import (
     PartitionWriter,
+    dq_budget_path_from_env,
     filesystem_from_env,
     instruments_path_from_env,
     iter_partition_tables,
@@ -32,10 +34,12 @@ from common.lake import (
     write_object,
 )
 from gold.basis import BASIS_SCHEMA, basis_summary_table, iter_basis, summary_row
+from gold.budget import Breach, Budget
 from gold.scorecard import (
     BookCheckAccumulator,
     LatencyAccumulator,
     _status_checks,
+    absent_partition_rows,
     scorecard_table,
 )
 from materializer.bronze import CanonicalMap
@@ -98,8 +102,8 @@ def write_basis_for_date(
     have = {p["symbol"] for p in list_partitions(fs, silver_bucket, "nbbo", date)}
     summaries: list[dict] = []
     n = 0
-    writer = PartitionWriter(fs, gold_bucket, partition_key("basis", date=date), BASIS_SCHEMA)
-    try:
+    key = partition_key("basis", date=date)
+    with PartitionWriter(fs, gold_bucket, key, BASIS_SCHEMA) as writer:
         for base, usd_c, usdt_c in canonical.pairs_by_base():
             if usd_c not in have or usdt_c not in have:
                 continue
@@ -121,8 +125,7 @@ def write_basis_for_date(
             writer.write_rows(batch)
             if bps:
                 summaries.append(summary_row(base, date, bps, ts))
-    finally:
-        writer.close()
+    # After the writer closes: a summary must never outlive the series it summarises.
     if summaries:
         path = write_object(
             fs,
@@ -142,7 +145,13 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     p.add_argument(
         "--fail-on-violation",
         action="store_true",
-        help="exit non-zero if any check reports violations",
+        help="exit non-zero if any scorecard row breaches its budget",
+    )
+    p.add_argument(
+        "--dq-budget",
+        default=None,
+        metavar="PATH",
+        help="data-quality budget file (default: DQ_BUDGET_FILE, else ops/dq_budgets.yml)",
     )
     return p.parse_args(argv)
 
@@ -154,11 +163,26 @@ def main() -> None:
     silver_bucket = os.environ.get("SILVER_BUCKET", "silver")
     gold_bucket = os.environ.get("GOLD_BUCKET", "gold")
     canonical = CanonicalMap.from_yaml(instruments_path_from_env())
+    # Loaded up front, and unconditionally: a malformed budget is a broken gate
+    # whether or not this run is the one that would have failed on it.
+    budget = Budget.from_yaml(args.dq_budget or dq_budget_path_from_env())
     total_violations = 0
+    breaches: list[Breach] = []
     for date in args.dates:
         counts: dict[str, int] = {}
         scorecard = build_for_date(fs, silver_bucket, date)
         if scorecard:
+            # Only for a date silver produced *something* for: a date with no silver at
+            # all is a pipeline outage, which the freshness markers already carry.
+            absent = absent_partition_rows(scorecard, canonical.venue_pairs(), date)
+            for row in absent:
+                log.warning(
+                    "  absent: %s/%s wrote no silver on %s",
+                    row["exchange"],
+                    row["canonical_symbol"],
+                    date,
+                )
+            scorecard += absent
             path = write_object(
                 fs,
                 gold_bucket,
@@ -169,16 +193,15 @@ def main() -> None:
             violations = sum(r["n_violations"] for r in scorecard)
             total_violations += violations
             log.info("gold PUT %s (%d checks, %d violations)", path, len(scorecard), violations)
-            for r in sorted(scorecard, key=lambda r: (-r["n_violations"], r["check"])):
-                if r["n_violations"]:
-                    log.warning(
-                        "  %s %s/%s: %d violations %s",
-                        r["check"],
-                        r["exchange"],
-                        r["canonical_symbol"] or "-",
-                        r["n_violations"],
-                        r["detail"] or "",
-                    )
+            # Only budget breaches are warned about. Every check carries some standing
+            # violation count (clock steps, invariant rejections); listing all of them
+            # buried the ones that matter.
+            date_breaches = budget.breaches(scorecard)
+            breaches += date_breaches
+            for breach in sorted(
+                date_breaches, key=lambda b: (b.check, b.exchange, b.canonical_symbol or "")
+            ):
+                log.warning("  budget: %s", breach)
 
         counts.update(write_basis_for_date(fs, silver_bucket, gold_bucket, date, canonical))
 
@@ -187,8 +210,11 @@ def main() -> None:
             continue
         # Markers last, after the gold objects for this date are written.
         write_freshness_markers(fs, gold_bucket, date, counts)
-    if args.fail_on_violation and total_violations:
-        log.error("scorecard found %d violations", total_violations)
+    log.info(
+        "scorecard totals: %d violations, %d budget breach(es)", total_violations, len(breaches)
+    )
+    if args.fail_on_violation and breaches:
+        log.error("data-quality budget exceeded: %d breach(es)", len(breaches))
         sys.exit(1)
 
 

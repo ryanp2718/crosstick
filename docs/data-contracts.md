@@ -394,8 +394,14 @@ What the non-obvious columns mean (the schema can carry the type, not the intent
 
 Checks: `sequence_gap`, `book_invariant`, `coverage` (per book symbol);
 `latency.{dataset}` (per firehose dataset); `venue_uptime` (per exchange,
-`canonical_symbol` null). `--fail-on-violation` makes `gold.main` exit non-zero
-for ops/CI gating.
+`canonical_symbol` null).
+
+Every check carries a standing violation count in normal operation, so the
+pass/fail line is a **budget**, not zero: `ops/dq_budgets.yml` sets per-check
+limits (absolute, rate, record floor, latency tail) resolved per scorecard row
+and narrowable per exchange and per symbol, and `--fail-on-violation` makes
+`gold.main` exit non-zero when a row breaches one. The limits are measured, not
+guessed; that file's header records the window and the method.
 
 ## Gold basis mart (stablecoin USDT/USD basis)
 

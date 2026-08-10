@@ -9,12 +9,15 @@ is the most dangerous kind of bug in this file.
 
 from __future__ import annotations
 
+import warnings
+
 import numpy as np
 import polars as pl
 import pytest
 
-from research.model import _hit_rate, _r2_vs_zero
+from research.model import METRICS, _hit_rate, _r2_vs_zero
 from research.validation import (
+    Blocks,
     OutOfSample,
     as_classes,
     as_classes_at_coverage,
@@ -122,6 +125,66 @@ def test_an_undefined_metric_is_not_bootstrapped_into_a_number() -> None:
     assert all(np.isnan(v) for v in bootstrap_ci(oos, _hit_rate, n_boot=50))
 
 
+def _gathering_reference(oos: OutOfSample, metric, n_boot: int, seed: int = 0):
+    """The bootstrap written the obvious way: build each draw's rows, rescan them.
+
+    What the fast path has to agree with. Kept here rather than in the module because
+    this is the definition and that is the optimisation, and an optimisation with no
+    independent statement of what it computes is just an assertion about itself.
+    """
+    dates = np.unique(oos.dates)
+    rows_for = {d: np.flatnonzero(oos.dates == d) for d in dates}
+    rng = np.random.default_rng(seed)
+    stats = np.empty(n_boot)
+    for b in range(n_boot):
+        picked = rng.choice(dates, size=len(dates), replace=True)
+        idx = np.concatenate([rows_for[d] for d in picked])
+        stats[b] = metric(oos.y[idx], oos.pred[idx])
+    return tuple(float(v) for v in np.nanpercentile(stats, [2.5, 97.5]))
+
+
+@pytest.mark.parametrize("metric_name", ["r2_vs_zero", "hit_rate", "gross_bps_per_trade"])
+def test_the_block_sums_agree_with_gathering_every_draws_rows(metric_name: str) -> None:
+    """Every metric is a ratio of sums over rows and a draw is a multiset of whole dates,
+    so the sums can be accumulated per date once instead of per draw. That identity is
+    the entire justification for not touching a row per draw, and it is exact up to
+    summation order.
+    """
+    rng = np.random.default_rng(7)
+    oos = _oos(14, 60, lambda d: rng.normal())
+    oos.pred = rng.normal(size=len(oos.y)) * 0.3
+
+    metric = METRICS[metric_name]
+    fast = bootstrap_ci(oos, metric, n_boot=200)
+    slow = _gathering_reference(oos, metric, n_boot=200)
+    assert fast == pytest.approx(slow, abs=1e-12)
+
+
+def test_a_draw_that_calls_nothing_leaves_the_metric_undefined() -> None:
+    """The denominator is a count of calls, and a resample can contain only the dates the
+    model stayed flat on. That draw has no hit rate, and averaging it in as a zero would
+    drag the lower bound down with a value that was never measured.
+    """
+    oos = _oos(9, 20, lambda d: float(d) - 4)
+    oos.pred = np.where(oos.dates == "2026-01-01", 1.0, 0.0)
+
+    blocks = Blocks(oos.dates, n_boot=200, seed=0)
+    called = METRICS["hit_rate"].parts(oos.y, oos.pred)[1]
+    silent = blocks.drawn(called) == 0
+    assert silent.any(), "fixture should produce draws that miss the only active date"
+
+    lo, hi = bootstrap_ci(oos, METRICS["hit_rate"], n_boot=200)
+    assert np.isfinite(lo) and np.isfinite(hi)
+
+
+def test_every_draw_picks_as_many_dates_as_there_are() -> None:
+    """A resample is the same size as the sample; the weights are how often each date was
+    drawn, so they have to sum to the block count in every row."""
+    blocks = Blocks(np.repeat(["a", "b", "c", "d"], 5), n_boot=50, seed=0)
+    assert blocks.weights.shape == (50, 4)
+    assert np.all(blocks.weights.sum(axis=1) == 4)
+
+
 # ── placebo ─────────────────────────────────────────────────────────────────
 
 
@@ -154,6 +217,24 @@ def test_fold_spread_is_mean_and_sd_over_folds() -> None:
     mean, sd = fold_spread(folds, "gbt", "r2")
     assert mean == pytest.approx(0.2)
     assert sd == pytest.approx(0.1)
+
+
+def test_a_metric_undefined_on_every_fold_is_quiet() -> None:
+    """The `zero` baseline calls no direction, so its hit rate has no value on any fold.
+    That is a documented case, not an error path, and numpy should not say otherwise."""
+    folds = [{"zero": {"hit": float("nan")}} for _ in range(4)]
+    with warnings.catch_warnings():
+        warnings.simplefilter("error", RuntimeWarning)
+        mean, sd = fold_spread(folds, "zero", "hit")
+    assert np.isnan(mean) and np.isnan(sd)
+
+
+def test_a_metric_defined_on_some_folds_still_averages_those() -> None:
+    """The guard must not swallow a partially defined metric along with the empty one."""
+    folds = [{"gbt": {"r2": v}} for v in (0.10, float("nan"), 0.20)]
+    mean, sd = fold_spread(folds, "gbt", "r2")
+    assert mean == pytest.approx(0.15)
+    assert sd == pytest.approx(0.05)
 
 
 # ── dead-zone plumbing ──────────────────────────────────────────────────────
