@@ -44,7 +44,7 @@ exclude = ["*.tests", "*.tests.*"]
 dev = [
     "pytest==9.1.1",
     "pytest-asyncio==1.4.0",
-    "ruff==0.16.1",
+    "ruff==0.16.2",
     "testcontainers==4.15.0",
 ]
 # The extra, so `uv sync` keeps installing it and the pins stay in one place.
