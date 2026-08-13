@@ -27,7 +27,7 @@ research = [
 ]
 
 [build-system]
-requires = ["setuptools>=80"]
+requires = ["setuptools>=84.0.0"]
 build-backend = "setuptools.build_meta"
 
 # Patterns, not a list of directories. The service image installs this package with only
