@@ -12,6 +12,10 @@ files are sitting side by side in a repo called `data/` nothing downstream can t
 the pair is checked here, once, at the moment the two stop being traceable to the runs
 that produced them.
 
+The reverse direction is held to the same standard for the same reason. Its whole job is
+to be the run that differs from the real one in direction and nothing else, so that a gap
+between them cannot be explained by a different window or a different builder.
+
 And a record written from a dirty tree does not have provenance: `git_sha` names a commit
 whose contents are not what ran. Fine for a local sweep, not fine for the artifact a
 writeup cites, so it is refused rather than warned about.
@@ -47,6 +51,11 @@ EXPERIMENT = (
     "dead_zone_spreads",
 )
 
+# The fields that name a direction. Predicting the other venue moves the target and the
+# spread that defines a tradeable move on it, so the reverse run has to differ here and
+# nowhere else.
+DIRECTION = ("predict_venue", "target", "spread_col")
+
 
 def check_provenance(tag: str, record: RunRecord, allow_dirty: bool) -> None:
     if record.provenance.git_dirty and not allow_dirty:
@@ -57,6 +66,29 @@ def check_provenance(tag: str, record: RunRecord, allow_dirty: bool) -> None:
         )
 
 
+def _differs(real: RunRecord, other: RunRecord, tag: str, fields: tuple[str, ...]) -> list[str]:
+    return [
+        f"{field}: real={getattr(real.spec, field)!r} {tag}={getattr(other.spec, field)!r}"
+        for field in fields
+        if getattr(real.spec, field) != getattr(other.spec, field)
+    ]
+
+
+def _check_same_builder(real: RunRecord, other: RunRecord, tag: str) -> None:
+    """Same dates and same spec is not enough if the features were built by other code."""
+    a, b = real.provenance, other.provenance
+    if a.builder_fingerprint != b.builder_fingerprint:
+        raise ValueError(
+            f"different feature builders: real={a.builder_fingerprint!r} "
+            f"{tag}={b.builder_fingerprint!r}"
+        )
+    if a.feature_schema_digest != b.feature_schema_digest:
+        raise ValueError(
+            f"different feature schemas: real={a.feature_schema_digest!r} "
+            f"{tag}={b.feature_schema_digest!r}"
+        )
+
+
 def check_pair(real: RunRecord, placebo: RunRecord) -> None:
     """The placebo has to be the same experiment, or it nulls out a different one."""
     if real.spec.placebo:
@@ -64,45 +96,59 @@ def check_pair(real: RunRecord, placebo: RunRecord) -> None:
     if not placebo.spec.placebo:
         raise ValueError("the placebo run was not recorded with --placebo set")
 
-    differs = [
-        f"{field}: real={getattr(real.spec, field)!r} placebo={getattr(placebo.spec, field)!r}"
-        for field in EXPERIMENT
-        if getattr(real.spec, field) != getattr(placebo.spec, field)
-    ]
+    differs = _differs(real, placebo, "placebo", EXPERIMENT)
     if differs:
         raise ValueError(
             "the placebo is not the same experiment as the real run:\n  " + "\n  ".join(differs)
         )
+    _check_same_builder(real, placebo, "placebo")
 
-    real_prov, placebo_prov = real.provenance, placebo.provenance
-    if real_prov.builder_fingerprint != placebo_prov.builder_fingerprint:
+
+def check_reverse(real: RunRecord, reverse: RunRecord) -> None:
+    """The other direction has to be the same experiment, pointed the other way.
+
+    "A forecasts B" is also what you would see if B were simply the slower book, so the
+    claim needs B forecasting A over the same days, the same bars and the same feature
+    builder. Then direction is the only thing left to explain a gap between them, which
+    is the whole point of running it.
+    """
+    if real.spec.placebo or reverse.spec.placebo:
+        raise ValueError("a placebo cannot stand in for the reverse direction")
+    if real.spec.predict_venue == reverse.spec.predict_venue:
         raise ValueError(
-            f"different feature builders: real={real_prov.builder_fingerprint!r} "
-            f"placebo={placebo_prov.builder_fingerprint!r}"
+            f"both runs predict {real.spec.predict_venue!r}, so neither reverses the other"
         )
-    if real_prov.feature_schema_digest != placebo_prov.feature_schema_digest:
+
+    shared = tuple(field for field in EXPERIMENT if field not in DIRECTION)
+    differs = _differs(real, reverse, "reverse", shared)
+    if differs:
         raise ValueError(
-            f"different feature schemas: real={real_prov.feature_schema_digest!r} "
-            f"placebo={placebo_prov.feature_schema_digest!r}"
+            "the reverse run is not the same experiment as the real run:\n  " + "\n  ".join(differs)
         )
+    _check_same_builder(real, reverse, "reverse")
 
 
 def export(
-    real: Path, out: Path, placebo: Path | None = None, allow_dirty: bool = False
+    real: Path,
+    out: Path,
+    placebo: Path | None = None,
+    reverse: Path | None = None,
+    allow_dirty: bool = False,
 ) -> list[Path]:
     """Validate, then copy. Returns what was written, in the order it was written."""
-    records = {"real": RunRecord.read(real)}
-    if placebo is not None:
-        records["placebo"] = RunRecord.read(placebo)
+    sources = {"real": real, "placebo": placebo, "reverse": reverse}
+    records = {tag: RunRecord.read(path) for tag, path in sources.items() if path is not None}
 
     for tag, record in records.items():
         check_provenance(tag, record, allow_dirty)
     if placebo is not None:
         check_pair(records["real"], records["placebo"])
+    if reverse is not None:
+        check_reverse(records["real"], records["reverse"])
 
     out.mkdir(parents=True, exist_ok=True)
     written = []
-    for tag, source in (("real", real), ("placebo", placebo)):
+    for tag, source in sources.items():
         if source is None:
             continue
         for name, stem in (("record.json", "record"), ("oos.parquet", "oos")):
@@ -118,6 +164,11 @@ def main() -> None:
     p.add_argument("--out", type=Path, required=True, help="destination data directory")
     p.add_argument("--placebo", type=Path, help="the matching --placebo run directory")
     p.add_argument(
+        "--reverse",
+        type=Path,
+        help="the same experiment with --predict-venue pointed at the other venue",
+    )
+    p.add_argument(
         "--allow-dirty",
         action="store_true",
         help="publish a record whose tree was dirty when it ran (its sha is not its code)",
@@ -125,7 +176,7 @@ def main() -> None:
     args = p.parse_args()
 
     try:
-        written = export(args.run, args.out, args.placebo, args.allow_dirty)
+        written = export(args.run, args.out, args.placebo, args.reverse, args.allow_dirty)
     except ValueError as refused:
         raise SystemExit(f"export refused: {refused}") from refused
     for path in written:
