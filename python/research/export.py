@@ -107,10 +107,12 @@ def check_pair(real: RunRecord, placebo: RunRecord) -> None:
 def check_reverse(real: RunRecord, reverse: RunRecord) -> None:
     """The other direction has to be the same experiment, pointed the other way.
 
-    "A forecasts B" is also what you would see if B were simply the slower book, so the
-    claim needs B forecasting A over the same days, the same bars and the same feature
-    builder. Then direction is the only thing left to explain a gap between them, which
-    is the whole point of running it.
+    Running the forecast backwards does not settle whether a venue discovers price or
+    merely tracks it slowly: a coarsely-requoted book produces the same asymmetry as
+    genuine leadership, which is why `research.infoshare` exists. What the reverse run
+    does rule out is every *symmetric* explanation, a shared latent factor or a leak that
+    would inflate both directions alike. It only rules those out if direction is the one
+    thing that differs, which is what is checked here.
     """
     if real.spec.placebo or reverse.spec.placebo:
         raise ValueError("a placebo cannot stand in for the reverse direction")
