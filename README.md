@@ -9,12 +9,14 @@ cross-exchange NBBO, and lands every event in a Parquet lake for replay and
 analysis. The design is Kappa-shaped: Redpanda holds the raw feed as one durable,
 replayable log, and every downstream stream and table is a pure function of it.
 
-> **Status.** Both halves run on live exchange data. The streaming spine (ingest →
-> Redpanda → gateway → NBBO → dashboard) is built and validated, and so is the
-> batch lake (bronze → silver → gold), including a point-in-time-correct
-> stablecoin-basis mart and a per-venue data-quality scorecard. What's left is the
-> modelling surface: a feature store, a fee-aware backtest harness, and a cloud
-> cutover.
+> **Status.** Streaming, batch, and research all run on live exchange data. The
+> streaming spine (ingest → Redpanda → gateway → NBBO → dashboard) is built and
+> validated, and so is the batch lake (bronze → silver → gold), including a
+> point-in-time-correct stablecoin-basis mart and a per-venue data-quality
+> scorecard. On top of those sits the research layer, which builds a
+> point-in-time feature matrix off silver and walks it forward date by date, with
+> date-block confidence intervals and a committed leakage placebo. What's left is
+> a fee-aware backtest harness, batch orchestration, and the cloud cutover.
 
 ## Offline demo
 
@@ -70,14 +72,27 @@ flowchart TD
         SG["silver + gold (batch, per UTC date)<br/>DQ facts · as-of NBBO · basis mart · scorecard"]
         MAT --> SG
     end
-    subgraph obs["Observability"]
-        OBS["Prometheus · Grafana"]
+    subgraph research["Research · Python"]
+        RES["walk-forward price discovery<br/>PIT features · date-block CIs · info shares"]
     end
     ING --> RP
     RP --> GW
     RP --> MAT
-    GW -.-> OBS
-    MAT -.-> OBS
+    SG --> RES
+```
+
+Metrics are a separate plane and are drawn separately, rather than threaded back
+through the data flow. Prometheus scrapes each component's `/metrics`, and the
+lake-exporter turns batch state that has no long-lived process behind it, partition
+freshness and row counts and DQ breaches, into metrics on the same footing.
+
+```mermaid
+flowchart LR
+    ING["ingesters"] -.-> PROM
+    GW["gateway"] -.-> PROM
+    MAT["materializer"] -.-> PROM
+    LEX["lake-exporter<br/>(freshness · row counts · DQ)"] -.-> PROM
+    PROM["Prometheus<br/>scrape + alert rules"] --> GRAF["Grafana<br/>provisioned ops dashboard"]
 ```
 
 ## Highlights
@@ -101,6 +116,13 @@ flowchart TD
   and USDT NBBO with a backward-only as-of join, so no observation ever sees a
   future quote. A leg that has gone quiet past a staleness bound is dropped rather
   than carried forward into a fabricated price. All price math is `DECIMAL(38,18)`.
+- **Research that states its own error bars.** The feature matrix is built
+  point-in-time off silver and walked forward date by date, so every fold trains
+  only on its own past and every confidence interval is bootstrapped by date
+  rather than by row. A run is not a print statement: it lands a record carrying
+  its spec, a git sha, a feature-schema digest and per-date source fingerprints,
+  and the printed reports are rendered back out of that record, so nothing
+  reaches the terminal that was not saved.
 - **Connection-state venue eviction.** A dead ingester used to leave a frozen leg
   that could win the NBBO and print a phantom crossed book. Venues now heartbeat
   liveness on `md.status.*`, and the gateway evicts a venue's legs on explicit
@@ -148,14 +170,23 @@ flowchart TD
 - [x] Perp capture (Binance USDⓈ-M): L2 book + aggTrade tape, liquidations,
       mark/funding, open-interest poll, on two routed WS connections; validated
       live end-to-end (book → NBBO `BTC-USDT-PERP` → bronze)
+- [x] Lake contracts: every schema declared once in `common/schemas.py` and
+      asserted at write time, with the contract tables in `docs/data-contracts.md`
+      generated from those schemas and a test that fails when the doc drifts
+- [x] Per-check data-quality budgets, calibrated against measured scorecard history,
+      that can fail a batch run on the check that actually breached
+- [x] Research layer over silver: point-in-time feature build (order-flow imbalance,
+      depth, spread and return families), walk-forward validation with date-block
+      bootstrap intervals, Hasbrouck information shares, and a committed leakage
+      placebo
+- [x] Run records: each research run lands its spec, provenance and results as a
+      record, and every reported number is rendered back out of it
 
-**Roadmap (the modelling surface)**
+**Roadmap**
 
-- [ ] Point-in-time feature store for downstream modelling, DIY first with Feast
-      later (the gold mart's as-of joins are the groundwork)
 - [ ] Fee- and latency-aware backtest harness over replay + silver
-- [ ] Research features off the event-grain book (order-flow imbalance, queue
-      dynamics, trade-sign autocorrelation)
+- [ ] A served feature store; the point-in-time build in `research/features.py` is
+      the DIY groundwork, Feast later
 - [ ] Long-horizon roll-ups and orchestration for the batch transforms
 - [ ] Cloud cutover
 
@@ -176,6 +207,7 @@ python/             ingesters + lake transforms (uv-managed)
   materializer/     md.* topics → bronze Parquet, streaming (+ tests)
   silver/           bronze → DQ facts + nbbo/quotes, batch per date (+ tests)
   gold/             silver → basis mart + data-quality scorecard, batch (+ tests)
+  research/         silver → PIT features, walk-forward validation, info shares (+ tests)
   exporter/         lake/batch metrics for Prometheus (+ tests)
   analytics/        capture + replay corpora for the integration harness and demo
 node/gateway/       kafkajs → ws gateway: BBO, NBBO, backpressure (src/, test/)
@@ -237,4 +269,6 @@ The *why* behind the architecture lives in [`docs/`](docs/):
 - [`DESIGN_perp_capture.md`](docs/DESIGN_perp_capture.md): perp capture on Binance
   futures, ranked unbackfillable-first, over two routed WS connections.
 - [`data-contracts.md`](docs/data-contracts.md): the wire envelopes and the
-  bronze, silver, and gold lake schemas, topic by topic.
+  bronze, silver, and gold lake schemas, topic by topic. The lake schema tables are
+  generated from `common/schemas.py`, and a test fails the build when the doc and
+  the code disagree.
