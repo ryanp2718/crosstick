@@ -114,3 +114,52 @@ def test_bronze_renders_its_shared_schema_once(doc: str) -> None:
     """Nine bronze datasets mirror the log, so nine identical column blocks would be
     noise; they collapse to one."""
     assert doc.count("| all of the above | `topic` | string |") == 1
+
+
+# ── the command-line interface ───────────────────────────────────────────────
+# The gate above calls render() directly, so nothing exercised the entry point the
+# module docstring documents, and --check was a usage error for as long as it said
+# otherwise.
+
+
+@pytest.fixture
+def stale(tmp_path):
+    """A copy of the real doc with one generated cell corrupted."""
+    path = tmp_path / "data-contracts.md"
+    text = DOC.read_text(encoding="utf-8")
+    path.write_text(
+        text.replace(
+            "| `book_quality` | `seq_gap` | int64 |", "| `book_quality` | `seq_gap` | bool |"
+        ),
+        encoding="utf-8",
+    )
+    return path
+
+
+def test_check_passes_on_the_committed_doc(capsys) -> None:
+    assert contracts.main(["--check"]) == 0
+    assert "up to date" in capsys.readouterr().out
+
+
+def test_check_fails_on_a_stale_doc_and_prints_the_diff(stale, capsys) -> None:
+    assert contracts.main(["--check", "--doc", str(stale)]) == 1
+    out = capsys.readouterr().out
+    assert "-| `book_quality` | `seq_gap` | bool |" in out
+    assert "+| `book_quality` | `seq_gap` | int64 |" in out
+    assert "--write" in out
+
+
+def test_checking_is_what_happens_with_no_flag(stale) -> None:
+    """--check names the default rather than changing it, so the two must agree."""
+    assert contracts.main(["--doc", str(stale)]) == 1
+    assert stale.read_text(encoding="utf-8").count("`seq_gap` | bool") == 1
+
+
+def test_check_and_write_together_are_a_usage_error(stale) -> None:
+    with pytest.raises(SystemExit):
+        contracts.main(["--check", "--write", "--doc", str(stale)])
+
+
+def test_write_repairs_a_stale_doc(stale) -> None:
+    assert contracts.main(["--write", "--doc", str(stale)]) == 0
+    assert contracts.main(["--check", "--doc", str(stale)]) == 0
