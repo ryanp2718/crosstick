@@ -153,3 +153,56 @@ def test_the_real_run_can_be_published_without_a_placebo(tmp_path) -> None:
     real = _record("1111111").write(tmp_path / "runs")
     written = export(real, tmp_path / "data")
     assert [p.name for p in written] == ["record_real.json", "oos_real.parquet"]
+
+
+def _reverse(tmp_path, **kw):
+    """The same experiment pointed the other way: predict coinbase from kraken."""
+    args = {
+        "predict_venue": "coinbase",
+        "target": "y_coinbase_ret_bps_5",
+        "spread_col": "coinbase_spread_bps",
+    }
+    return _record("4444444", **{**args, **kw}).write(tmp_path / "runs")
+
+
+def test_the_reverse_direction_publishes_beside_the_pair(tmp_path) -> None:
+    real, placebo = _pair(tmp_path)
+    written = export(real, tmp_path / "data", placebo, _reverse(tmp_path))
+    assert [p.name for p in written] == [
+        "record_real.json",
+        "oos_real.parquet",
+        "record_placebo.json",
+        "oos_placebo.parquet",
+        "record_reverse.json",
+        "oos_reverse.parquet",
+    ]
+
+
+def test_a_reverse_run_over_different_dates_is_rejected(tmp_path) -> None:
+    """An asymmetry between two different windows is not an asymmetry."""
+    real = _record("1111111").write(tmp_path / "runs")
+    reverse = _reverse(tmp_path, dates=("2026-02-01", "2026-02-02"))
+    with pytest.raises(ValueError, match="reverse run is not the same experiment") as caught:
+        export(real, tmp_path / "data", reverse=reverse)
+    assert "dates" in str(caught.value)
+
+
+def test_a_reverse_run_in_the_same_direction_is_rejected(tmp_path) -> None:
+    real = _record("1111111").write(tmp_path / "runs")
+    same = _record("5555555").write(tmp_path / "runs")
+    with pytest.raises(ValueError, match="neither reverses the other"):
+        export(real, tmp_path / "data", reverse=same)
+
+
+def test_a_placebo_cannot_be_published_as_the_reverse_direction(tmp_path) -> None:
+    real = _record("1111111").write(tmp_path / "runs")
+    placebo = _record("2222222", placebo=True).write(tmp_path / "runs")
+    with pytest.raises(ValueError, match="placebo cannot stand in"):
+        export(real, tmp_path / "data", reverse=placebo)
+
+
+def test_a_reverse_run_from_a_different_feature_builder_is_rejected(tmp_path) -> None:
+    real = _record("1111111").write(tmp_path / "runs")
+    reverse = _reverse(tmp_path, builder="ffff0000")
+    with pytest.raises(ValueError, match="different feature builders"):
+        export(real, tmp_path / "data", reverse=reverse)
