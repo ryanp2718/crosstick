@@ -25,7 +25,8 @@ from typing import Any
 # venue that goes quiet (without a status-down) would otherwise be carried into a
 # crossed/wide NBBO (multi-venue) or a frozen mid (single-venue), distorting the
 # basis. 10s sits above every venue's normal requote p99.9 (<=5s, measured) so a
-# healthy-but-quiet leg is not evicted, and 6x tighter than the reorder window.
+# healthy-but-quiet leg is not evicted, and well inside silver's WINDOW_NS reorder
+# window (silver/main.py, the one home for that value).
 # The offline analog of the gateway's venue-health eviction (DESIGN_nbbo.md).
 MAX_LEG_AGE_NS = 10_000_000_000  # 10s
 
