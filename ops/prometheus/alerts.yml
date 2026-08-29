@@ -98,14 +98,13 @@ groups:
       # gold_dq_clock_* the scorecard derives from silver). NTP slew never steps
       # backward, so any backward step between consecutive WS frames is a fault.
       # Floored on magnitude (the worst step since process start), mirroring the
-      # batch ClockStepBeyondReorderWindow. 1000ms, not 100: beyond the sub-10ms
+      # batch CaptureClockStepLarge. 1000ms, not 100: beyond the sub-10ms
       # WSL2 steady residual (06-28 worst 5.3ms), the 07-01 shakedown recorded a
       # single host-level event (VM pause or one NTP step) landing ~300ms on all
       # four feeds at once, and since the gauge is a since-start high-water mark
       # a 100ms floor latches on that benign event until the next restart. 1000ms
-      # clears both regimes yet still fires 60x before silver's W=60s reorder
-      # window actually breaks; a real fault stays surfaced rather than silently
-      # clearing. Predicted to read 0 on cloud+chrony.
+      # clears both regimes while still surfacing a real fault rather than letting
+      # it silently clear. Predicted to read 0 on cloud+chrony.
       - alert: RecvClockBackwardStep
         expr: max by (exchange) (md_recv_clock_worst_step_ms) > 1000
         for: 5m
@@ -137,15 +136,24 @@ groups:
           summary: "Bronze lake stale (>30m, no dataset written)"
           description: "No new bronze object across any dataset for >30m: the materializer is likely stuck (up but not flushing) or the ingest feeds are down."
 
-      # A capture-clock backward step larger than the silver reorder window (W=60s)
-      # would trip LatenessError and fail the NBBO build loud. Clean days peak ~10-16s,
-      # so >60s is a genuine threat, not the known WSL2-guest residual.
-      - alert: ClockStepBeyondReorderWindow
-        expr: gold_dq_clock_worst_ms > 60000
-        labels: { severity: critical }
+      # Batch-tier capture-clock fault canary: the worst intra-epoch backward recv
+      # step in the latest gold build. Live-tier analog is RecvClockBackwardStep -
+      # same phenomenon and same 1000ms floor, one read from the lake and one from
+      # the ingesters. Measured over every scorecard row on current-vintage dates
+      # (2026-06-27..07-25, n=56): median 0, p95 21ms, worst 54ms (kraken, 07-13).
+      # 1000ms clears that ~18x and still catches the ~1.9s host sleep/resume step.
+      #
+      # This does NOT predict a silver LatenessError and no longer claims to. The
+      # scorecard derives it from same-epoch deltas only, excluding the snapshot and
+      # epoch interleave that dominate the fold-order disorder `reorder` buffers: on
+      # 2026-07-13 this gauge read 54ms while the worst fold lateness was 151s. A
+      # reorder-headroom gauge is the follow-up; LatenessError already fails loud.
+      - alert: CaptureClockStepLarge
+        expr: gold_dq_clock_worst_ms > 1000
+        labels: { severity: warning }
         annotations:
-          summary: "Capture-clock step > 60s reorder window ({{ $labels.exchange }}/{{ $labels.symbol }})"
-          description: "Worst intra-epoch backward recv step {{ $value }}ms exceeds silver's W=60s: the NBBO build would fail loud. Investigate host/WSL2 clock (see host-clock-skew)."
+          summary: "Large capture-clock backward step ({{ $labels.exchange }}/{{ $labels.symbol }})"
+          description: "Worst intra-epoch backward recv step {{ $value }}ms in the latest gold build (>1000ms floor, measured worst real day 54ms): the capture host's clock stepped backward. See host-clock-skew."
 
       # Elevated step COUNT. Measured over 26 dates (2026-06-27..07-27): the median
       # scorecard row is 2 and the worst is 95, all of the tail is kraken (mean 28,
