@@ -243,11 +243,18 @@ class _BookEvent:
 
 
 class FoldOrderError(Exception):
-    """A book record arrived behind its predecessor in `(epoch, sequence)` order, so
-    the fold cannot place it. `_fold` rebuilds the book on any epoch change, so a
-    backward step discards a live book and reconstructs from the wrong generation -
-    silently, since a following delta refills the touch. Raised by `_fold`, the
-    fail-loud counterpart to `reorder`'s `LatenessError`."""
+    """The merged book stream is not in the order the fold requires, on either of two
+    counts. A record behind its predecessor in `(epoch, sequence, snap-first)` order
+    means an input stream broke the precondition `heapq.merge` cannot check; that is
+    also how a non-monotonic epoch surfaces on the streaming path, which folds bronze
+    in arrival order and never sorts. A record behind its predecessor in bronze offset,
+    within one stream, means the sort key disagrees with arrival order: the same defect
+    seen from the in-memory path, where sorting by the key first leaves the key check
+    unable to fail by construction. It also fires if a book topic ever gains a second
+    partition, which reads partition-major and so replays one symbol out of order.
+    Either way `_fold` would rebuild the book from the wrong generation, and silently,
+    since a following delta refills the touch. Raised by `_fold`, the fail-loud
+    counterpart to `reorder`'s `LatenessError`."""
 
 
 # snap before delta at equal sequence (a re-snapshot replaces the book).
@@ -266,6 +273,9 @@ def fold_book_partition(
     callers sort each stream first; the streaming driver feeds disk-ordered files.
     `heapq.merge` does not check its inputs, so `_fold` asserts the merged order and
     raises `FoldOrderError` rather than folding a stream that broke the precondition.
+    It separately asserts that each stream stays in bronze-offset order through the
+    merge, holding a caller that sorts by the key first to the same standard as the
+    streaming driver, which folds arrival order directly.
     """
     merged = heapq.merge(snaps, deltas, key=_book_sort_key)
     yield from _fold(merged, exchange in CONTIGUOUS_SEQ_EXCHANGES)
@@ -275,6 +285,7 @@ def _fold(book_recs: Iterable[_BookRec], contiguous: bool) -> Iterator[_BookEven
     book: OrderBook | None = None
     epoch: int | None = None
     prev_key: tuple[int, int, int] | None = None
+    prev_offset: dict[str, int] = {}
     for r in book_recs:
         key = _book_sort_key(r)
         if prev_key is not None and key < prev_key:
@@ -283,6 +294,17 @@ def _fold(book_recs: Iterable[_BookRec], contiguous: bool) -> Iterator[_BookEven
                 f"order: {prev_key} -> {key} at bronze offset {r.offset}"
             )
         prev_key = key
+
+        # Sorted-input callers cannot fail the key check, so this is what catches a
+        # non-monotonic epoch for them: the key disagreeing with arrival order.
+        last_offset = prev_offset.get(r.kind)
+        if last_offset is not None and r.offset < last_offset:
+            raise FoldOrderError(
+                f"{r.exchange} {r.symbol} {r.kind} stream left the merge out of bronze "
+                f"order: offset {last_offset} -> {r.offset} at epoch {r.epoch}, so epoch "
+                f"order disagrees with arrival order"
+            )
+        prev_offset[r.kind] = r.offset
 
         if book is None or r.epoch != epoch:
             book = OrderBook(r.exchange, r.symbol)
