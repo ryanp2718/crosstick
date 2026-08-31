@@ -156,7 +156,12 @@ def _region_at(line: str) -> str | None:
 
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    ap.add_argument("--write", action="store_true", help="rewrite the doc in place")
+    # --check is the default behaviour; naming it makes --check --write an error.
+    mode = ap.add_mutually_exclusive_group()
+    mode.add_argument(
+        "--check", action="store_true", help="diff against the registry, exit 1 if stale"
+    )
+    mode.add_argument("--write", action="store_true", help="rewrite the doc in place")
     ap.add_argument("--doc", type=Path, default=DOC)
     args = ap.parse_args(argv)
 

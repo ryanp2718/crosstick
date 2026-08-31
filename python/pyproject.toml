@@ -9,7 +9,7 @@ dependencies = [
     "msgspec==0.21.1",
     "sortedcontainers==2.4.0",
     "aiokafka==0.14.0",
-    "pyarrow==25.0.0",
+    "pyarrow==25.0.1",
     "numpy==2.4.6",
     "prometheus-client==0.26.0",
     "pyyaml==6.0.3",
@@ -27,7 +27,7 @@ research = [
 ]
 
 [build-system]
-requires = ["setuptools>=80"]
+requires = ["setuptools>=84.0.0"]
 build-backend = "setuptools.build_meta"
 
 # Patterns, not a list of directories. The service image installs this package with only
@@ -44,7 +44,7 @@ exclude = ["*.tests", "*.tests.*"]
 dev = [
     "pytest==9.1.1",
     "pytest-asyncio==1.4.0",
-    "ruff==0.16.1",
+    "ruff==0.16.4",
     "testcontainers==4.15.0",
 ]
 # The extra, so `uv sync` keeps installing it and the pins stay in one place.
