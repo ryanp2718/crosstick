@@ -242,6 +242,14 @@ class _BookEvent:
     ask_levels: list[Level] = field(default_factory=list)
 
 
+class FoldOrderError(Exception):
+    """A book record arrived behind its predecessor in `(epoch, sequence)` order, so
+    the fold cannot place it. `_fold` rebuilds the book on any epoch change, so a
+    backward step discards a live book and reconstructs from the wrong generation -
+    silently, since a following delta refills the touch. Raised by `_fold`, the
+    fail-loud counterpart to `reorder`'s `LatenessError`."""
+
+
 # snap before delta at equal sequence (a re-snapshot replaces the book).
 def _book_sort_key(r: _BookRec) -> tuple[int, int, int]:
     return (r.epoch, r.sequence, 0 if r.kind == "snap" else 1)
@@ -256,6 +264,8 @@ def fold_book_partition(
     are merged lazily by `(epoch, sequence, snap-first)` (so neither whole stream
     need be resident), the regime the bronze topics are written in. In-memory
     callers sort each stream first; the streaming driver feeds disk-ordered files.
+    `heapq.merge` does not check its inputs, so `_fold` asserts the merged order and
+    raises `FoldOrderError` rather than folding a stream that broke the precondition.
     """
     merged = heapq.merge(snaps, deltas, key=_book_sort_key)
     yield from _fold(merged, exchange in CONTIGUOUS_SEQ_EXCHANGES)
@@ -264,7 +274,16 @@ def fold_book_partition(
 def _fold(book_recs: Iterable[_BookRec], contiguous: bool) -> Iterator[_BookEvent]:
     book: OrderBook | None = None
     epoch: int | None = None
+    prev_key: tuple[int, int, int] | None = None
     for r in book_recs:
+        key = _book_sort_key(r)
+        if prev_key is not None and key < prev_key:
+            raise FoldOrderError(
+                f"{r.exchange} {r.symbol} book record out of (epoch, sequence, snap-first) "
+                f"order: {prev_key} -> {key} at bronze offset {r.offset}"
+            )
+        prev_key = key
+
         if book is None or r.epoch != epoch:
             book = OrderBook(r.exchange, r.symbol)
             epoch = r.epoch
