@@ -414,10 +414,9 @@ class BaseIngester(ABC):
         Prevents stale buffered deltas, old last_seq values, and dirty book
         state from a prior connection cycle from poisoning the next bootstrap.
         """
-        # New connection generation. time.time_ns() is distinct per connect and
-        # per process restart; downstream compares epochs by equality only, so
-        # clock skew is irrelevant.
-        self._epoch = time.time_ns()
+        # New connection generation, monotonic: silver ORDERS book records by
+        # epoch, so a backwards wall-clock step must never lower it.
+        self._epoch = max(self._epoch + 1, time.time_ns())
         for ctx in self.contexts.values():
             ctx.buffered.clear()
             ctx.last_seq = -1
