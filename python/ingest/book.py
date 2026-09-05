@@ -177,6 +177,12 @@ class OrderBook:
 # ---------------------------------------------------------------------------
 
 
+def kraken_wire_str(value: Decimal) -> str:
+    """Render a level as Kraken put it on the wire. Decimal.__str__ switches to
+    E-notation below 1e-6, which the CRC would then hash as literal "E-7" bytes."""
+    return format(value, "f")
+
+
 def _kraken_strip(value: str) -> str:
     """Strip decimal point and leading zeros for CRC input."""
     s = value.replace(".", "").lstrip("0")

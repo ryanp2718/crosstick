@@ -32,6 +32,24 @@
 # Extended over the three pre-fix dates it breaches 97 rows on 7 dates, which is the
 # calibration argument above restated as an outcome.
 
+# ── Exposure to the 2026-08-31 kraken CRC fix ─────────────────────────────────
+# The whole observation window above was captured while kraken's checksum verifier
+# was rejecting good books (str(Decimal) E-notation), so kraken resynced ~3,500x/day.
+# Checked per entry rather than assumed: `sequence_gap` and `clock_monotonic` are
+# epoch-scoped, so reconnects contribute zero and ~0.065% of adjacent delta pairs
+# respectively; `coverage` sees ~3,500 extra snapshots against millions of records;
+# `venue_uptime` never saw a down-transition because the reconnects were sub-second;
+# and CRC failures increment book_resyncs, not book_invariant. Those five are
+# structurally immune and their limits stand.
+#
+# `latency.*` is the exception: it measures exchange_to_emit_ns, which post-reconnect
+# catch-up bursts inflate, so kraken's 2.5s figure was measured on a broken regime and
+# is expected to be loose now. NOT re-measured here on purpose - clean kraken data
+# began 2026-09-01 ~02:11Z, and recalibrating on under a day would repeat the mistake
+# that set BookResyncStorm at the p95 of the pathology it was meant to catch.
+# TRIGGER: once ~2 weeks of post-fix silver exists, re-measure per the procedure above
+# and expect only the kraken latency tails to move.
+
 # Any check with no entry below. Fail-closed, so a check added to the scorecard
 # shows up as a breach rather than as silence.
 default:
