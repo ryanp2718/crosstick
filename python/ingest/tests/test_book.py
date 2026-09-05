@@ -213,3 +213,43 @@ def test_trim_noop_when_within_depth() -> None:
     b.apply_snapshot(1, [(D("100"), D("1"))], [(D("101"), D("1"))])
     b.trim(10)
     assert b.depth(Side.BID) == 1 and b.depth(Side.ASK) == 1
+
+
+def test_checksum_survives_sub_microcoin_dust() -> None:
+    """Regression: a top-of-book size below 1e-6 rendered via str(Decimal) becomes
+    "6.8E-7", and the CRC hashed those literal bytes and rejected a correct book.
+    Vector is a real kraken/BTC-USD frame that tore the connection down in prod."""
+    from ingest.book import kraken_checksum, kraken_wire_str
+
+    asks = [
+        ("78407.2", "0.00000068"),
+        ("78408.2", "0.00005100"),
+        ("78411.0", "0.01506769"),
+        ("78412.2", "0.00005100"),
+        ("78414.5", "0.63763762"),
+        ("78416.1", "0.00005100"),
+        ("78416.6", "0.63762079"),
+        ("78417.8", "0.31882847"),
+        ("78420.0", "0.04896729"),
+        ("78420.1", "0.00005100"),
+    ]
+    bids = [
+        ("78407.1", "1.00757392"),
+        ("78405.4", "0.63771091"),
+        ("78405.2", "0.95614821"),
+        ("78404.8", "0.00900000"),
+        ("78404.6", "0.04505000"),
+        ("78403.9", "0.00007463"),
+        ("78402.9", "0.40493316"),
+        ("78401.6", "0.00100000"),
+        ("78400.4", "0.00005100"),
+        ("78398.9", "0.19039497"),
+    ]
+    asks_r = [(kraken_wire_str(D(p)), kraken_wire_str(D(s))) for p, s in asks]
+    bids_r = [(kraken_wire_str(D(p)), kraken_wire_str(D(s))) for p, s in bids]
+    assert asks_r[0][1] == "0.00000068", "wire digits must survive the round trip"
+    assert kraken_checksum(asks_r, bids_r) == 1003631726
+
+    stale = [(str(D(p)), str(D(s))) for p, s in asks]
+    assert stale[0][1] == "6.8E-7", "str() is the trap this guards"
+    assert kraken_checksum(stale, bids_r) != 1003631726
