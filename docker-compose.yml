@@ -8,8 +8,8 @@ name: crosstick
 # App services carry healthchecks so `docker compose up -d --wait` blocks on a
 # real ready signal. NOTE: depends_on orders `compose up` only - on a host/Docker
 # reboot the daemon restarts every `unless-stopped` container at once, ignoring it.
-# Redpanda's --memory cap (below) is what keeps it from reserving most of the VM
-# and leaving the RAM-tight box with no headroom for a new container to start; the
+# Redpanda's --memory cap and MinIO's GOMEMLIMIT (both below) keep them from
+# reserving most of the VM and leaving the RAM-tight box with no headroom; the
 # reboot herd and the measured memory budget are a known single-box constraint.
 
 services:
@@ -102,6 +102,9 @@ services:
     environment:
       MINIO_ROOT_USER: ${MINIO_ROOT_USER}
       MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD}
+      # Soft limit so the Go GC reclaims first; 1.5x the measured 684 MiB peak.
+      GOMEMLIMIT: 1024MiB
+    mem_limit: 1536m
     ports:
       - "127.0.0.1:9000:9000"     # S3 API (localhost only)
       - "127.0.0.1:9001:9001"     # Web console (localhost only)
