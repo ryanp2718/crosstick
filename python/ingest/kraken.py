@@ -17,9 +17,10 @@ Wire contract (verified against current Kraken v2 docs, see plan):
 
 Decimal, not float: the checksum strips the decimal point and leading zeros but
 KEEPS trailing zeros ("0.00100000" -> "100000"), so the exact wire digits matter.
-msgspec decodes the JSON number straight into Decimal preserving those digits, and
-str(Decimal) reproduces the original token - feeding kraken_checksum() the book's
-own stored values therefore reconstructs Kraken's checksum input exactly.
+msgspec decodes the JSON number straight into Decimal preserving those digits, but
+str(Decimal) does NOT reproduce the wire token: below 1e-6 it switches to
+E-notation ("0.00000068" -> "6.8E-7"), which the CRC would hash as literal "E-7"
+bytes and reject a correct book. kraken_wire_str() renders plain digits instead.
 
 Kraken carries no sequence number, so OrderBook's monotonic-sequence guard is fed a
 synthetic per-connection counter (snapshot = 0, each update += 1).
@@ -43,7 +44,7 @@ from ingest.base_ingester import (
     SymbolContext,
     SymbolState,
 )
-from ingest.book import kraken_checksum
+from ingest.book import kraken_checksum, kraken_wire_str
 
 log = logging.getLogger(__name__)
 
@@ -306,8 +307,12 @@ class KrakenIngester(BaseIngester):
     def _verify_checksum(self, ctx: SymbolContext, expected: int) -> None:
         """CRC32 over the top-10 asks (low->high) then bids (high->low). A
         mismatch means a dropped/reordered update - the book is wrong, resync."""
-        asks = [(str(px), str(sz)) for px, sz in ctx.book.top_n(Side.ASK, 10)]
-        bids = [(str(px), str(sz)) for px, sz in ctx.book.top_n(Side.BID, 10)]
+        asks = [
+            (kraken_wire_str(px), kraken_wire_str(sz)) for px, sz in ctx.book.top_n(Side.ASK, 10)
+        ]
+        bids = [
+            (kraken_wire_str(px), kraken_wire_str(sz)) for px, sz in ctx.book.top_n(Side.BID, 10)
+        ]
         got = kraken_checksum(asks, bids)
         if got != expected:
             log.error(

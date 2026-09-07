@@ -42,15 +42,27 @@ groups:
           summary: "Book invariant violations on {{ $labels.exchange }} ({{ $labels.kind }})"
           description: "An ingester book failed an invariant and resynced. Repeated firing means a persistent feed or reconstruction problem."
 
-      # Elevated full-resync rate. On 06-12 kraken did 814 resyncs vs 62 on the
-      # clean day; a sustained rate is the reconnect-storm signature.
+      # Elevated full-resync rate. Threshold was 0.2/s and never fired: through the
+      # 2026-08-31 kraken CRC storm this reached `pending` and stopped there, because
+      # kraken's longest continuous run above 0.2 was 6m against the 10m `for`. Its
+      # own cited incident could not have fired it either: 06-12's 814 resyncs/day
+      # average 0.0094/s, 21x under the threshold they were meant to justify. The
+      # limit had been set near the p95 of the pathology (0.196) rather than above
+      # health, so a venue resyncing every ~26s for months paged nobody.
+      #
+      # Recalibrated against measured health, not against the incident. Over 24h
+      # spanning both regimes, longest continuous run above 0.02/s: kraken 36m,
+      # coinbase 0m, binance 0m, binance-futures 0m. 0.02/s is the lowest threshold
+      # at which every healthy venue scores a zero-length run, and it fires here with
+      # 3.6x margin on the `for` window. It also stands on its own terms: 0.02/s is
+      # one resync per 50s sustained for 10m, which no healthy feed does.
       - alert: BookResyncStorm
-        expr: sum by (exchange) (rate(md_book_resyncs_total[5m])) > 0.2
+        expr: sum by (exchange) (rate(md_book_resyncs_total[5m])) > 0.02
         for: 10m
         labels: { severity: warning }
         annotations:
           summary: "Book resync storm on {{ $labels.exchange }}"
-          description: "{{ $labels.exchange }} is resyncing its order book repeatedly (>0.2/s for 10m), likely a reconnect storm or a flapping feed."
+          description: "{{ $labels.exchange }} is resyncing its order book repeatedly (>0.02/s for 10m, i.e. faster than one resync per 50s): a reconnect storm, a flapping feed, or an integrity check rejecting good data."
 
   - name: crosstick-liveness
     rules:
