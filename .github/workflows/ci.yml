@@ -104,10 +104,23 @@ jobs:
             jq empty "$f"
           done
 
-  # House-style guard: zero em-dashes (U+2014) in tracked files.
+  # House-style guards: zero em-dashes (U+2014) in tracked files, and commit
+  # subjects in the form docs/CONVENTIONS.md pins. A commit made with
+  # --no-verify or from a clone without the hooks installed lands here.
   conventions:
-    name: conventions (no em-dash)
+    name: conventions (house style)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          fetch-depth: 0
       - run: python3 scripts/check_no_em_dash.py
+      # Against the merge base rather than the base tip, so a main that moved
+      # while the branch was open cannot drag historical subjects into scope.
+      - name: commit subjects
+        if: github.event_name == 'pull_request'
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: |
+          base=$(git merge-base "$BASE_SHA" HEAD)
+          python3 scripts/check_commit_subject.py --range "$base..HEAD"
