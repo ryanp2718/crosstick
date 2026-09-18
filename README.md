@@ -9,15 +9,6 @@ cross-exchange NBBO, and lands every event in a Parquet lake for replay and
 analysis. The design is Kappa-shaped: Redpanda holds the raw feed as one durable,
 replayable log, and every downstream stream and table is a pure function of it.
 
-> **Status.** Streaming, batch, and research all run on live exchange data. The
-> streaming spine (ingest → Redpanda → gateway → NBBO → dashboard) is built and
-> validated, and so is the batch lake (bronze → silver → gold), including a
-> point-in-time-correct stablecoin-basis mart and a per-venue data-quality
-> scorecard. On top of those sits the research layer, which builds a
-> point-in-time feature matrix off silver and walks it forward date by date, with
-> date-block confidence intervals and a committed leakage placebo. What's left is
-> a fee-aware backtest harness, batch orchestration, and the cloud cutover.
-
 ## Offline demo
 
 The fastest way to see the system run: no API keys, no exchange connectivity,
