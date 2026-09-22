@@ -58,7 +58,7 @@ def minio():
     from testcontainers.core.waiting_utils import wait_for_logs
 
     container = (
-        DockerContainer("minio/minio:latest")
+        DockerContainer("quay.io/minio/minio:RELEASE.2025-09-07T16-13-09Z")
         .with_env("MINIO_ROOT_USER", "minio")
         .with_env("MINIO_ROOT_PASSWORD", "minio12345")
         .with_exposed_ports(9000)
