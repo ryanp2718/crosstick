@@ -22,8 +22,8 @@ dependencies = [
 # installs this package with `pip install "crosstick[research] @ git+...@<sha>"`.
 [project.optional-dependencies]
 research = [
-    "polars==1.44.1",
-    "scikit-learn==1.9.0",
+    "polars==1.44.2",
+    "scikit-learn==1.9.1",
 ]
 
 [build-system]
@@ -44,7 +44,7 @@ exclude = ["*.tests", "*.tests.*"]
 dev = [
     "pytest==9.1.1",
     "pytest-asyncio==1.4.0",
-    "ruff==0.16.5",
+    "ruff==0.16.8",
     "testcontainers==4.15.0",
 ]
 # The extra, so `uv sync` keeps installing it and the pins stay in one place.
