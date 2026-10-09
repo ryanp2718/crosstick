@@ -20,7 +20,10 @@ created. User-facing endpoints:
 | redpanda-console | 8090 | broker and topic UI |
 | prometheus | 9090 | metrics and alerts |
 | grafana | 3000 | dashboards (bound to localhost) |
-| minio | 9000 | S3 API (bound to localhost) |
+| garage | 3900, 3903 | S3 API and admin API (bound to localhost) |
+
+The lake moved from MinIO to Garage in October 2026; an install that still has a
+`minio-data` volume migrates with [RUNBOOK_garage_migration.md](RUNBOOK_garage_migration.md).
 
 The per-exchange ingesters and the lake-exporter expose Prometheus metrics on the
 91xx range. Redpanda runs single-shard (`--smp=1`) with a hard `--memory=1536M`
