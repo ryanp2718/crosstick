@@ -1,7 +1,8 @@
 version: 2
 updates:
   # Node gateway (pnpm). Minor/patch are grouped into one PR; majors come
-  # separately so they get a real look.
+  # separately so they get a real look. Security fixes get their own group, so
+  # one batch of advisories lands as one PR.
   - package-ecosystem: "npm"
     directory: "/node/gateway"
     schedule:
@@ -12,6 +13,9 @@ updates:
     groups:
       gateway-minor:
         update-types: ["minor", "patch"]
+      gateway-security:
+        applies-to: security-updates
+        patterns: ["*"]
 
   # Python (uv). Dependabot reads uv.lock; it will not bump a pinned uv tool
   # version, only the locked dependencies.
@@ -25,6 +29,9 @@ updates:
     groups:
       python-minor:
         update-types: ["minor", "patch"]
+      python-security:
+        applies-to: security-updates
+        patterns: ["*"]
 
   # The workflow actions themselves. Dependabot reads the `# vN` comment beside
   # each SHA pin and bumps both the SHA and the comment when a new tag ships.
