@@ -1,13 +1,13 @@
 # Runbook: Phase A cutover (silver + gold to Cloudflare R2)
 
 Operational steps to move the derived medallion layers (silver, gold) off the local
-MinIO container onto Cloudflare R2, while the bulky raw **bronze** layer stays on
-MinIO. Bronze is roughly 100x the byte volume of silver + gold, so keeping it local
+Garage container onto Cloudflare R2, while the bulky raw **bronze** layer stays on
+Garage. Bronze is roughly 100x the byte volume of silver + gold, so keeping it local
 is the single biggest cost lever; R2's zero egress keeps serving the derived layers
 free at any scale.
 
 The code is already R2-ready and backward-compatible: with no R2 variables set, every
-process resolves to MinIO and behaves byte-for-byte as before (validated with
+process resolves to Garage and behaves byte-for-byte as before (validated with
 `docker compose config`). Nothing points at R2 until the steps below are run.
 
 ## The two-endpoint model
@@ -17,15 +17,15 @@ endpoint; `LAKE_S3_*` is the bronze endpoint and falls back to `S3_*` when unset
 
 | Process | bronze | silver | gold | Endpoints |
 |---|---|---|---|---|
-| materializer | write | - | - | MinIO only (pinned in compose; immune to R2 vars) |
-| silver batch | read | write | - | base `S3_*` = R2, `LAKE_S3_*` = MinIO |
+| materializer | write | - | - | Garage only (pinned in compose; immune to R2 vars) |
+| silver batch | read | write | - | base `S3_*` = R2, `LAKE_S3_*` = Garage |
 | gold batch | - | read | write | base `S3_*` = R2 (single endpoint) |
-| lake-exporter | read | read | read | base `S3_*` = R2 (RO), `LAKE_S3_*` = MinIO |
+| lake-exporter | read | read | read | base `S3_*` = R2 (RO), `LAKE_S3_*` = Garage |
 
 ## 1. Provision R2 (one-time)
 
 1. **Buckets** (private; no public `r2.dev` domain, no custom domain): create
-   `silver` and `gold`. Do **not** create a bronze bucket; bronze never leaves MinIO.
+   `silver` and `gold`. Do **not** create a bronze bucket; bronze never leaves Garage.
 2. **Two scoped API tokens**, each limited to the `silver` + `gold` buckets only:
    - **RW** (silver/gold batch): Object Read & Write. Fills `R2_ACCESS_KEY` /
      `R2_SECRET_KEY`.
@@ -55,7 +55,8 @@ endpoint; `LAKE_S3_*` is the bronze endpoint and falls back to `S3_*` when unset
    Uses the RW token against an existing bucket (`silver`); it writes and deletes one
    throwaway object.
 2. **Measure silver + gold size** to ground the storage-cost estimate, e.g. a throwaway
-   `mc du` container on the compose network (`mc du local/silver local/gold`). Storage
+   rclone container on the compose network (`rclone size src:silver`, see
+   [RUNBOOK_garage_migration.md](RUNBOOK_garage_migration.md) for the remote setup). Storage
    is `V*I * MB_per_instrument_day * retention_days / 1024` GB at $0.015/GB-mo (10 GB
    free), linear and retention-controlled.
 
@@ -64,23 +65,26 @@ endpoint; `LAKE_S3_*` is the bronze endpoint and falls back to `S3_*` when unset
 Mirror the existing silver + gold objects, scoped to those two buckets only, never
 bronze, `.env`, logs, or local dirs:
 ```
-mc alias set r2 https://<account-id>.r2.cloudflarestorage.com $R2_ACCESS_KEY $R2_SECRET_KEY
-mc mirror --overwrite local/silver r2/silver
-mc mirror --overwrite local/gold   r2/gold
+rclone copy src:silver r2:silver
+rclone copy src:gold   r2:gold
+rclone check src:silver r2:silver --download
+rclone check src:gold   r2:gold   --download
 ```
-Verify object counts match (`mc ls --recursive` on both sides) and checksum-spot-check
-a sample object. This is a bounded one-time Class A PUT burst.
+with `src` the local Garage and `r2` an `s3` remote (`provider=Cloudflare`, the R2
+endpoint, the RW token), configured through `RCLONE_CONFIG_*` env vars as in
+[RUNBOOK_garage_migration.md](RUNBOOK_garage_migration.md). `check --download`
+compares bytes, so expect `0 differences found`. This is a bounded one-time Class A PUT burst.
 
 ## 4. Cut over
 
 1. In `.env`, uncomment and fill the R2 block: `S3_ENDPOINT`, `S3_REGION=auto`,
    `R2_ACCESS_KEY` / `R2_SECRET_KEY` (RW), `R2_RO_ACCESS_KEY` / `R2_RO_SECRET_KEY` (RO).
 2. **Batch (silver/gold)** run against R2 with base `S3_*` = R2 RW, and for silver also
-   `LAKE_S3_*` = MinIO so its bronze reads stay local:
+   `LAKE_S3_*` = Garage so its bronze reads stay local:
    ```
    S3_ENDPOINT=$S3_ENDPOINT S3_REGION=auto \
    S3_ACCESS_KEY=$R2_ACCESS_KEY S3_SECRET_KEY=$R2_SECRET_KEY \
-   LAKE_S3_ENDPOINT=http://localhost:9000 \
+   LAKE_S3_ENDPOINT=http://localhost:3900 \
    LAKE_S3_ACCESS_KEY=$S3_ACCESS_KEY LAKE_S3_SECRET_KEY=$S3_SECRET_KEY \
    uv run python -m silver.main <date>
    # gold needs no LAKE_S3_* (silver-in, gold-out are both R2):
@@ -91,7 +95,7 @@ a sample object. This is a bounded one-time Class A PUT burst.
    Run one date; verify silver/gold objects land in R2 and the scorecard/basis are
    correct. Confirm the `_freshness/<dataset>` markers were written.
 3. **Exporter**: `docker compose up -d --force-recreate lake-exporter`. With the R2
-   vars set, its base flips to R2 (RO) for silver/gold while bronze stays on MinIO.
+   vars set, its base flips to R2 (RO) for silver/gold while bronze stays on Garage.
    Verify `/metrics`: `lake_freshness_seconds{layer="silver"|"gold"}` come from the
    markers, and after the first daily audit `lake_freshness_marker_skew_seconds` ~ 0.
    `python ops/smoke.py` should stay green.
@@ -99,7 +103,7 @@ a sample object. This is a bounded one-time Class A PUT burst.
 ## 5. Rollback
 
 Comment the R2 block back out in `.env` and `docker compose up -d --force-recreate
-lake-exporter`; run the batch without the R2 env. The local MinIO stack runs untouched
+lake-exporter`; run the batch without the R2 env. The local Garage stack runs untouched
 throughout, and the migrated R2 objects are left in place, so rollback is immediate and
 lossless.
 

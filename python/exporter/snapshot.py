@@ -1,7 +1,7 @@
 """Pure builders that turn lake state into Prometheus metric families.
 
 Split from the serving/refresh loop (`service.py`) so the row->metric mapping is
-unit-testable with plain dicts and the I/O is integration-tested over MinIO. This
+unit-testable with plain dicts and the I/O is integration-tested over Garage. This
 exporter only *reads* the already-derived gold rollups + lists object metadata -
 it computes nothing new (a gold mart reads silver, never bronze; this reads gold).
 
@@ -197,7 +197,7 @@ def build_families(
     now_s: float,
 ) -> list[GaugeMetricFamily]:
     # Bronze lives on its own endpoint (bronze_fs) and stays on the LIST walk (local
-    # MinIO, free). Silver/gold are the derived layers (derived_fs): freshness comes
+    # Garage, free). Silver/gold are the derived layers (derived_fs): freshness comes
     # from the O(1) markers, so the hot path issues no metered LIST walk on the cloud
     # store. Equal filesystems when unsplit.
     by_layer = {

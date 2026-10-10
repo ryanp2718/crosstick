@@ -1,14 +1,14 @@
 name: crosstick
 
 # Kappa architecture: Redpanda topics = source of truth.
-# Materializer projects topics to Parquet on MinIO; warehouse (DuckDB + dbt)
+# Materializer projects topics to Parquet on Garage (S3); warehouse (DuckDB + dbt)
 # queries the lake; gateway computes live derived signals (BBO, spread) from
 # the same topic firehose it fans out to WS clients.
 #
 # App services carry healthchecks so `docker compose up -d --wait` blocks on a
 # real ready signal. NOTE: depends_on orders `compose up` only - on a host/Docker
 # reboot the daemon restarts every `unless-stopped` container at once, ignoring it.
-# Redpanda's --memory cap and MinIO's GOMEMLIMIT (both below) keep them from
+# Redpanda's --memory cap and Garage's mem_limit (both below) keep them from
 # reserving most of the VM and leaving the RAM-tight box with no headroom; the
 # reboot herd and the measured memory budget are a known single-box constraint.
 
@@ -93,57 +93,47 @@ services:
     restart: unless-stopped
 
   # ─── object store ─────────────────────────────────────────────────────────
-  minio:
-    image: quay.io/minio/minio:RELEASE.2025-09-07T16-13-09Z
-    container_name: minio
-    command: ["server", "/data", "--console-address", ":9001"]
-    volumes:
-      - minio-data:/data
+  garage:
+    image: dxflrs/garage:v2.4.1
+    container_name: garage
     environment:
-      MINIO_ROOT_USER: ${MINIO_ROOT_USER}
-      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD}
-      # Soft limit so the Go GC reclaims first; 1.5x the measured 684 MiB peak.
-      GOMEMLIMIT: 1024MiB
-    mem_limit: 1536m
+      GARAGE_RPC_SECRET: ${GARAGE_RPC_SECRET}
+      GARAGE_ADMIN_TOKEN: ${GARAGE_ADMIN_TOKEN}
+    volumes:
+      - ./ops/garage/garage.toml:/etc/garage.toml:ro
+      - garage-meta:/var/lib/garage/meta
+      - garage-data:/var/lib/garage/data
+    # A ceiling, not a measured peak like Redpanda's: Garage idles in tens of MiB.
+    mem_limit: 1024m
     ports:
-      - "127.0.0.1:9000:9000"     # S3 API (localhost only)
-      - "127.0.0.1:9001:9001"     # Web console (localhost only)
+      - "127.0.0.1:3900:3900"     # S3 API (localhost only)
+      - "127.0.0.1:3903:3903"     # admin API (localhost only)
     healthcheck:
-      test: ["CMD", "mc", "ready", "local"]
+      test: ["CMD", "/garage", "status"]
       interval: 10s
       timeout: 5s
       retries: 5
     restart: unless-stopped
 
-  minio-init:
-    image: minio/mc:RELEASE.2025-08-13T08-35-41Z
-    container_name: minio-init
+  # Idempotent one-shot: node layout, the app's S3 key, the lake/silver/gold buckets,
+  # and a bronze expiry rule (BRONZE_EXPIRE_DAYS, default 30) that is only seeded when
+  # `lake` has no lifecycle config, so a hand-tuned retention survives restarts. See
+  # common/garage.py; the materializer and lake-exporter wait on it.
+  garage-init:
+    build:
+      context: ./python
+      dockerfile: Dockerfile
+    command: ["python", "-m", "common.garage"]
     environment:
-      MINIO_ROOT_USER: ${MINIO_ROOT_USER}
-      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD}
+      GARAGE_ADMIN_URL: http://garage:3903
+      GARAGE_ADMIN_TOKEN: ${GARAGE_ADMIN_TOKEN}
+      S3_ENDPOINT: http://garage:3900
+      S3_ACCESS_KEY: ${S3_ACCESS_KEY}
+      S3_SECRET_KEY: ${S3_SECRET_KEY}
+      BRONZE_EXPIRE_DAYS: ${BRONZE_EXPIRE_DAYS:-30}
     depends_on:
-      minio:
+      garage:
         condition: service_healthy
-    # Idempotent bucket setup + a bronze lifecycle rule: expire raw `lake` objects
-    # after BRONZE_EXPIRE_DAYS (default 30, matches log_retention_ms) so the lake
-    # can't grow unbounded. `ilm rule add` is NOT idempotent - it appends a rule per
-    # call - so this only seeds a rule when the bucket has no lifecycle config yet,
-    # leaving a hand-tuned retention (e.g. extended for a backfill) intact across
-    # restarts. Non-blocking (|| WARN to stderr) so a retention hiccup never fails
-    # minio-init (materializer waits on it) yet stays visible in the logs.
-    # Verify: mc ilm rule ls local/lake. Change retention: mc ilm rule rm --all
-    # --force local/lake && mc ilm rule add --expire-days N local/lake.
-    entrypoint: >
-      /bin/sh -c "
-        mc alias set local http://minio:9000 "$$MINIO_ROOT_USER" "$$MINIO_ROOT_PASSWORD" &&
-        mc mb -p local/lake &&
-        mc mb -p local/silver &&
-        mc mb -p local/gold &&
-        { mc ilm rule ls local/lake >/dev/null 2>&1 ||
-          mc ilm rule add --expire-days $${BRONZE_EXPIRE_DAYS:-30} local/lake ||
-          echo 'WARN: bronze lifecycle rule not set (mc ilm failed)' >&2; } &&
-        echo 'buckets ready'
-      "
     restart: "no"
 
   # ─── ingest (Python, one process per exchange) ────────────────────────────
@@ -251,7 +241,7 @@ services:
     command: ["python", "-m", "materializer.main"]
     environment:
       KAFKA_BROKERS: redpanda:9092
-      S3_ENDPOINT: http://minio:9000
+      S3_ENDPOINT: http://garage:3900
       S3_ACCESS_KEY: ${S3_ACCESS_KEY}
       S3_SECRET_KEY: ${S3_SECRET_KEY}
       S3_BUCKET: lake
@@ -268,7 +258,7 @@ services:
     depends_on:
       redpanda:
         condition: service_healthy
-      minio-init:
+      garage-init:
         condition: service_completed_successfully
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:9110/metrics', timeout=2)"]
@@ -305,25 +295,25 @@ services:
   # ─── lake-exporter: batch/analytics tier as Prometheus metrics ────────────
   # Reads the derived gold DQ scorecard + basis + per-layer freshness and exposes
   # /metrics; Prometheus scrapes it like the others. Pull-based + env-driven so
-  # cloud cutover is an env change. depends on the buckets (minio-init), not
+  # cloud cutover is an env change. depends on the buckets (garage-init), not
   # redpanda (it never touches the log).
   #
   # Two endpoints (Phase A, batch tiers only): base S3_* is the DERIVED layers
-  # (silver/gold), LAKE_S3_* is BRONZE. Unset, both resolve to local MinIO, so an
+  # (silver/gold), LAKE_S3_* is BRONZE. Unset, both resolve to local Garage, so an
   # unprovisioned stack is byte-identical to before. At cutover, set S3_ENDPOINT +
   # R2_RO_* + S3_REGION=auto in .env to point silver/gold at R2 (read-only token);
-  # bronze stays pinned to MinIO here (the fat raw layer is never metered off-box).
+  # bronze stays pinned to Garage here (the fat raw layer is never metered off-box).
   lake-exporter:
     build:
       context: ./python
       dockerfile: Dockerfile
     command: ["python", "-m", "exporter.main"]
     environment:
-      S3_ENDPOINT: ${S3_ENDPOINT:-http://minio:9000}
+      S3_ENDPOINT: ${S3_ENDPOINT:-http://garage:3900}
       S3_ACCESS_KEY: ${R2_RO_ACCESS_KEY:-${S3_ACCESS_KEY}}
       S3_SECRET_KEY: ${R2_RO_SECRET_KEY:-${S3_SECRET_KEY}}
       S3_REGION: ${S3_REGION:-us-east-1}
-      LAKE_S3_ENDPOINT: http://minio:9000
+      LAKE_S3_ENDPOINT: http://garage:3900
       LAKE_S3_ACCESS_KEY: ${S3_ACCESS_KEY}
       LAKE_S3_SECRET_KEY: ${S3_SECRET_KEY}
       LAKE_BUCKET: lake
@@ -335,7 +325,7 @@ services:
     ports:
       - "127.0.0.1:9120:9120"
     depends_on:
-      minio-init:
+      garage-init:
         condition: service_completed_successfully
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:9120/metrics', timeout=2)"]
@@ -388,5 +378,6 @@ services:
 
 volumes:
   redpanda-data:
-  minio-data:
+  garage-meta:
+  garage-data:
   prometheus-data:

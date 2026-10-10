@@ -1,6 +1,6 @@
-"""Phase 2 - scorecard-over-S3 integration: bronze -> silver -> gold on MinIO.
+"""Phase 2 - scorecard-over-S3 integration: bronze -> silver -> gold on Garage.
 
-Seeds the golden corpus as bronze Parquet on an ephemeral MinIO (the same layout
+Seeds the golden corpus as bronze Parquet on an ephemeral Garage (the same layout
 the materializer writes), then runs the real silver and gold entrypoints against
 it and asserts the planted incidents land in the gold scorecard. This is the only
 test that exercises the S3 read/write path in common.lake (the unit tests use a
@@ -17,6 +17,7 @@ from __future__ import annotations
 import json
 import uuid
 from collections import defaultdict
+from collections.abc import Iterator
 from decimal import Decimal
 from pathlib import Path
 
@@ -27,6 +28,7 @@ from pyarrow import fs as pafs
 from analytics.corpus import CorpusRecord
 from analytics.tests.golden import build_golden_records
 from common.lake import read_dataset
+from common.tests.garage_container import garage_filesystem
 from gold.main import build_for_date, write_basis_for_date
 from materializer.bronze import (
     CanonicalMap,
@@ -44,34 +46,9 @@ INSTRUMENTS_FILE = REPO_ROOT / "ops" / "instruments.yml"
 
 
 @pytest.fixture(scope="module")
-def minio():
-    from testcontainers.core.container import DockerContainer
-    from testcontainers.core.waiting_utils import wait_for_logs
-
-    container = (
-        DockerContainer("quay.io/minio/minio:RELEASE.2025-09-07T16-13-09Z")
-        .with_env("MINIO_ROOT_USER", "minio")
-        .with_env("MINIO_ROOT_PASSWORD", "minio12345")
-        .with_exposed_ports(9000)
-        .with_command("server /data")
-    )
-    with container:
-        wait_for_logs(container, "API:", timeout=60)
-        yield container
-
-
-@pytest.fixture
-def fs(minio) -> pafs.S3FileSystem:
-    host = minio.get_container_host_ip()
-    port = minio.get_exposed_port(9000)
-    return pafs.S3FileSystem(
-        access_key="minio",
-        secret_key="minio12345",
-        endpoint_override=f"http://{host}:{port}",
-        scheme="http",
-        region="us-east-1",
-        allow_bucket_creation=True,
-    )
+def fs() -> Iterator[pafs.S3FileSystem]:
+    with garage_filesystem() as fs:
+        yield fs
 
 
 def _seed_bronze(

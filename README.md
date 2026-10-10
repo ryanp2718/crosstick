@@ -59,7 +59,7 @@ flowchart TD
         GW --> DASH
     end
     subgraph lake["Lake · Python"]
-        MAT["materializer (streaming)<br/>bronze Parquet on MinIO"]
+        MAT["materializer (streaming)<br/>bronze Parquet on Garage"]
         SG["silver + gold (batch, per UTC date)<br/>DQ facts · as-of NBBO · basis mart · scorecard"]
         MAT --> SG
     end
@@ -148,7 +148,7 @@ flowchart LR
 - [x] Browser dashboard with staleness-aware greying and crossed-book warnings
 - [x] Prometheus + Grafana ops dashboard, plus a lake/batch metrics exporter
 - [x] CI gate (GitHub Actions): vitest, pytest, ruff, tsc on push/PR
-- [x] Streaming materializer writing a bronze Parquet lake on MinIO, idempotent at
+- [x] Streaming materializer writing a bronze Parquet lake on Garage (S3), idempotent at
       the file grain (a crash re-reads the in-flight chunk and rewrites the
       identical object, so re-runs never duplicate or drop data)
 - [x] Silver/gold batch transforms: data-quality facts, as-of-joined NBBO, the
@@ -186,7 +186,7 @@ flowchart LR
 - **Ingest:** Python (asyncio, uvloop), aiokafka, msgspec, sortedcontainers; managed by [`uv`](https://docs.astral.sh/uv/).
 - **Transport:** Redpanda (Kafka API).
 - **Gateway:** Node 22 + TypeScript, kafkajs, `ws`, prom-client; tested with vitest.
-- **Lake:** PyArrow + Parquet on MinIO (S3), written as idempotent, overwrite-keyed objects.
+- **Lake:** PyArrow + Parquet on [Garage](https://garagehq.deuxfleurs.fr/) (S3), written as idempotent, overwrite-keyed objects.
 - **Observability:** Prometheus, Grafana.
 
 ## Repo layout
@@ -205,7 +205,7 @@ node/gateway/       kafkajs → ws gateway: BBO, NBBO, backpressure (src/, test/
 dashboard/          static WS client, served by the gateway
 demo/               offline demo: isolated compose stack + captured corpus fixture
 ops/                instruments.yml, prometheus/ (config + alerts), grafana provisioning, smoke.py
-docker-compose.yml  redpanda, minio, ingesters, materializer, gateway, lake-exporter, prometheus, grafana
+docker-compose.yml  redpanda, garage, ingesters, materializer, gateway, lake-exporter, prometheus, grafana
 docs/               architecture + design docs
 ```
 
