@@ -1,0 +1,20 @@
+# Single-node Garage: the lake (bronze, silver, gold) on this box.
+# Secrets come from env (GARAGE_RPC_SECRET, GARAGE_ADMIN_TOKEN), never this file.
+replication_factor = 1
+db_engine = "lmdb"
+metadata_dir = "/var/lib/garage/meta"
+data_dir = "/var/lib/garage/data"
+metadata_auto_snapshot_interval = "6h"
+# Parquet is already compressed; a second zstd pass is CPU for nothing.
+compression_level = "none"
+
+rpc_bind_addr = "[::]:3901"
+rpc_public_addr = "127.0.0.1:3901"
+
+[s3_api]
+api_bind_addr = "[::]:3900"
+# pyarrow and the R2 path both sign for us-east-1 unless told otherwise.
+s3_region = "us-east-1"
+
+[admin]
+api_bind_addr = "[::]:3903"

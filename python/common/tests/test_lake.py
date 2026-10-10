@@ -36,32 +36,41 @@ def clean_s3_env(monkeypatch):
 
 
 def test_s3_env_prefix_falls_back_to_base(clean_s3_env) -> None:
-    clean_s3_env.setenv("S3_ENDPOINT", "http://minio:9000")
+    clean_s3_env.setenv("S3_ENDPOINT", "http://garage:3900")
     # No LAKE_S3_ENDPOINT set: the bronze role resolves to the base value.
-    assert _s3_env("S3_ENDPOINT", "LAKE_") == "http://minio:9000"
-    assert _s3_env("S3_ENDPOINT", "") == "http://minio:9000"
+    assert _s3_env("S3_ENDPOINT", "LAKE_") == "http://garage:3900"
+    assert _s3_env("S3_ENDPOINT", "") == "http://garage:3900"
 
 
 def test_s3_env_prefix_overrides_base(clean_s3_env) -> None:
     clean_s3_env.setenv("S3_ENDPOINT", "https://acct.r2.cloudflarestorage.com")
-    clean_s3_env.setenv("LAKE_S3_ENDPOINT", "http://minio:9000")
-    assert _s3_env("S3_ENDPOINT", "LAKE_") == "http://minio:9000"  # bronze -> MinIO
+    clean_s3_env.setenv("LAKE_S3_ENDPOINT", "http://garage:3900")
+    assert _s3_env("S3_ENDPOINT", "LAKE_") == "http://garage:3900"  # bronze -> Garage
     assert _s3_env("S3_ENDPOINT", "") == "https://acct.r2.cloudflarestorage.com"  # derived -> R2
 
 
 def test_s3_env_default_when_unset(clean_s3_env) -> None:
-    assert _s3_env("S3_ACCESS_KEY", "LAKE_") == "minio"
+    assert _s3_env("S3_REGION", "LAKE_") == "us-east-1"
+
+
+def test_s3_credentials_have_no_default(clean_s3_env) -> None:
+    with pytest.raises(RuntimeError, match="S3_ACCESS_KEY is unset"):
+        _s3_env("S3_ACCESS_KEY", "LAKE_")
 
 
 def test_bronze_fs_matches_primary_without_override(clean_s3_env) -> None:
-    clean_s3_env.setenv("S3_ENDPOINT", "http://minio:9000")
+    clean_s3_env.setenv("S3_ACCESS_KEY", "GK00")
+    clean_s3_env.setenv("S3_SECRET_KEY", "secret")
+    clean_s3_env.setenv("S3_ENDPOINT", "http://garage:3900")
     assert bronze_filesystem_from_env().equals(filesystem_from_env())
 
 
 def test_bronze_fs_diverges_with_override(clean_s3_env) -> None:
+    clean_s3_env.setenv("S3_ACCESS_KEY", "GK00")
+    clean_s3_env.setenv("S3_SECRET_KEY", "secret")
     clean_s3_env.setenv("S3_ENDPOINT", "https://acct.r2.cloudflarestorage.com")
     clean_s3_env.setenv("S3_REGION", "auto")
-    clean_s3_env.setenv("LAKE_S3_ENDPOINT", "http://minio:9000")
+    clean_s3_env.setenv("LAKE_S3_ENDPOINT", "http://garage:3900")
     assert not bronze_filesystem_from_env().equals(filesystem_from_env())
 
 

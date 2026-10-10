@@ -3,7 +3,7 @@
 The materializer owns the *bronze* contract (object layout + Parquet schema);
 this module is the read/write plumbing the layers above bronze share:
 
-  - an S3/MinIO filesystem and the instruments path from env (lifted here so
+  - an S3 filesystem and the instruments path from env (lifted here so
     silver and gold don't each re-derive the materializer's wiring),
   - Hive-partitioned object listing + reading for one dataset+date,
   - overwrite-keyed writes - a deterministic key per partition+date, so a
@@ -24,24 +24,26 @@ from pyarrow import fs as pafs
 
 from common.schemas import FRESHNESS_SCHEMA, table_from_rows
 
-# Base env names + defaults for an S3/MinIO connection. A role prefix (e.g. "LAKE_")
+# Base env names + defaults for an S3 connection. A role prefix (e.g. "LAKE_")
 # selects an override group whose vars fall back to these base names when unset, so a
 # single-endpoint deploy that sets no prefixed vars behaves identically to the base.
+# Credentials have no default: Garage's key is generated per install (see .env).
 _S3_DEFAULTS = {
-    "S3_ENDPOINT": "http://localhost:9000",
-    "S3_ACCESS_KEY": "minio",
-    "S3_SECRET_KEY": "minio12345",
-    "S3_REGION": "us-east-1",  # MinIO ignores it; pyarrow needs one to skip discovery.
+    "S3_ENDPOINT": "http://localhost:3900",
+    "S3_ACCESS_KEY": None,
+    "S3_SECRET_KEY": None,
+    "S3_REGION": "us-east-1",  # Garage's s3_region (ops/garage/garage.toml).
     "S3_MAX_ATTEMPTS": "10",
 }
 
 
 def _s3_env(name: str, prefix: str) -> str:
     """Read `{prefix}{name}`, falling back to the un-prefixed base, then the default."""
-    default = _S3_DEFAULTS[name]
-    if prefix:
-        return os.environ.get(prefix + name, os.environ.get(name, default))
-    return os.environ.get(name, default)
+    value = os.environ.get(prefix + name) if prefix else None
+    value = value or os.environ.get(name) or _S3_DEFAULTS[name]
+    if value is None:
+        raise RuntimeError(f"{name} is unset; export it from the repo's .env")
+    return value
 
 
 def _filesystem(prefix: str = "") -> pafs.S3FileSystem:
@@ -54,7 +56,7 @@ def _filesystem(prefix: str = "") -> pafs.S3FileSystem:
         scheme=scheme,
         region=_s3_env("S3_REGION", prefix),
         # Batch builds make thousands of calls; ride through transient connection
-        # blips (local WSL2/MinIO, and expected on cloud S3) instead of aborting.
+        # blips (local WSL2/Garage, and expected on cloud S3) instead of aborting.
         retry_strategy=pafs.AwsStandardS3RetryStrategy(
             max_attempts=int(_s3_env("S3_MAX_ATTEMPTS", prefix))
         ),
@@ -73,7 +75,7 @@ def bronze_filesystem_from_env() -> pafs.S3FileSystem:
     """Filesystem for the bronze (raw lake) role. Reads LAKE_S3_* with fallback to the
     base S3_*, so a single-endpoint deploy (no LAKE_* set) is byte-for-byte the same as
     filesystem_from_env; the split activates only when LAKE_S3_ENDPOINT points somewhere
-    distinct (e.g. bronze stays on MinIO while silver/gold move to R2)."""
+    distinct (e.g. bronze stays on Garage while silver/gold move to R2)."""
     return _filesystem("LAKE_")
 
 
