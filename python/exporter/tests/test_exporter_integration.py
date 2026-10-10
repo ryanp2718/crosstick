@@ -1,6 +1,6 @@
-"""Lake-exporter over S3 (MinIO): the read/serve path the unit tests don't cover.
+"""Lake-exporter over S3 (Garage): the read/serve path the unit tests don't cover.
 
-Seeds a gold scorecard + basis_summary + a bronze object on an ephemeral MinIO,
+Seeds a gold scorecard + basis_summary + a bronze object on an ephemeral Garage,
 then builds the snapshot over S3 and renders it through the real collector +
 registry exactly as a Prometheus scrape would. Requires Docker; run with:
 
@@ -10,6 +10,7 @@ registry exactly as a Prometheus scrape would. Requires Docker; run with:
 from __future__ import annotations
 
 import uuid
+from collections.abc import Iterator
 
 import pyarrow as pa
 import pytest
@@ -17,6 +18,7 @@ from prometheus_client import CollectorRegistry, generate_latest
 from pyarrow import fs as pafs
 
 from common.lake import partition_key, write_object
+from common.tests.garage_container import garage_filesystem
 from exporter.service import LakeCollector
 from exporter.snapshot import build_families
 from exporter.tests.test_snapshot import BASIS_ROWS, DATE, SCORECARD_ROWS, _index
@@ -27,34 +29,9 @@ pytestmark = pytest.mark.integration
 
 
 @pytest.fixture(scope="module")
-def minio():
-    from testcontainers.core.container import DockerContainer
-    from testcontainers.core.waiting_utils import wait_for_logs
-
-    container = (
-        DockerContainer("quay.io/minio/minio:RELEASE.2025-09-07T16-13-09Z")
-        .with_env("MINIO_ROOT_USER", "minio")
-        .with_env("MINIO_ROOT_PASSWORD", "minio12345")
-        .with_exposed_ports(9000)
-        .with_command("server /data")
-    )
-    with container:
-        wait_for_logs(container, "API:", timeout=60)
-        yield container
-
-
-@pytest.fixture
-def fs(minio) -> pafs.S3FileSystem:
-    host = minio.get_container_host_ip()
-    port = minio.get_exposed_port(9000)
-    return pafs.S3FileSystem(
-        access_key="minio",
-        secret_key="minio12345",
-        endpoint_override=f"http://{host}:{port}",
-        scheme="http",
-        region="us-east-1",
-        allow_bucket_creation=True,
-    )
+def fs() -> Iterator[pafs.S3FileSystem]:
+    with garage_filesystem() as fs:
+        yield fs
 
 
 def test_exporter_over_s3(fs: pafs.S3FileSystem) -> None:

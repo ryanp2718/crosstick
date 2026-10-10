@@ -93,8 +93,9 @@ latest record per key indefinitely.
 
 **Bronze lake lifecycle.** The materializer now persists bronze to the `lake`
 bucket, so the log is just the replay buffer. To stop the lake growing unbounded,
-`minio-init` sets a MinIO lifecycle rule expiring raw `lake` objects after **30
-days** (matching `log_retention_ms`); verify with `mc ilm rule ls local/lake`.
+`garage-init` seeds a lifecycle rule expiring raw `lake` objects after **30
+days** (matching `log_retention_ms`); verify with a `GET /lake?lifecycle` (see
+`common/garage.py`).
 On the dev box this is generous (~200 GB free is months of headroom), and it
 deletes nothing until objects age past 30 days. The horizon is the
 raw-history-vs-disk tradeoff; the durable layer's real fix is off-box object

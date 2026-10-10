@@ -1,7 +1,7 @@
 """Phase 1 - materializer-in-the-loop integration.
 
 Replays the golden corpus into an ephemeral Redpanda, runs the real
-materializer against an ephemeral MinIO, and asserts:
+materializer against an ephemeral Garage, and asserts:
 
   * bronze == corpus, verbatim and exactly once - every md.* record lands in
     a Parquet object under its canonical-resolved partition path, and reading
@@ -22,6 +22,7 @@ from __future__ import annotations
 import asyncio
 import uuid
 from collections import defaultdict
+from collections.abc import Iterator
 from pathlib import Path
 
 import pyarrow.parquet as pq
@@ -34,6 +35,7 @@ from analytics.kafka_admin import create_single_partition_topics
 from analytics.replay import replay_corpus
 from analytics.tests.kafka_admin import seed_group_offsets
 from common.kafka_io import brokers_from_env, make_producer
+from common.tests.garage_container import garage_filesystem
 from materializer.bronze import CanonicalMap, table_to_records
 from materializer.service import Materializer
 
@@ -52,23 +54,6 @@ def redpanda():
         yield container
 
 
-@pytest.fixture(scope="module")
-def minio():
-    from testcontainers.core.container import DockerContainer
-    from testcontainers.core.waiting_utils import wait_for_logs
-
-    container = (
-        DockerContainer("quay.io/minio/minio:RELEASE.2025-09-07T16-13-09Z")
-        .with_env("MINIO_ROOT_USER", "minio")
-        .with_env("MINIO_ROOT_PASSWORD", "minio12345")
-        .with_exposed_ports(9000)
-        .with_command("server /data")
-    )
-    with container:
-        wait_for_logs(container, "API:", timeout=60)
-        yield container
-
-
 @pytest.fixture
 def brokers(redpanda, monkeypatch: pytest.MonkeyPatch) -> str:
     bootstrap = redpanda.get_bootstrap_server()
@@ -76,18 +61,10 @@ def brokers(redpanda, monkeypatch: pytest.MonkeyPatch) -> str:
     return bootstrap
 
 
-@pytest.fixture
-def lake_fs(minio) -> pafs.S3FileSystem:
-    host = minio.get_container_host_ip()
-    port = minio.get_exposed_port(9000)
-    return pafs.S3FileSystem(
-        access_key="minio",
-        secret_key="minio12345",
-        endpoint_override=f"http://{host}:{port}",
-        scheme="http",
-        region="us-east-1",
-        allow_bucket_creation=True,
-    )
+@pytest.fixture(scope="module")
+def lake_fs() -> Iterator[pafs.S3FileSystem]:
+    with garage_filesystem() as fs:
+        yield fs
 
 
 async def _start_materializer(fs: pafs.S3FileSystem, bucket: str):
