@@ -1,7 +1,8 @@
 name: dependabot auto-merge
 
-# Queues Dependabot's patch/minor and security PRs to merge once the required
-# checks pass. Majors stay manual so they get a real look.
+# Queues Dependabot's PRs to merge once the required checks pass. Majors, and any
+# non-patch bump of a 0.x package (msgspec, uvloop, aiokafka...), stay manual:
+# under 0.x a minor bump may break the API even though semver labels it minor.
 on: pull_request
 
 permissions:
@@ -15,7 +16,26 @@ jobs:
     steps:
       - id: meta
         uses: dependabot/fetch-metadata@25dd0e34f4fe68f24cc83900b1fe3fe149efef98 # v3.1.0
-      - if: steps.meta.outputs.update-type != 'version-update:semver-major'
+      # Checks every dependency, not `update-type`/`previous-version`, which only
+      # describe the highest bump and the first dependency of a grouped PR.
+      - id: gate
+        env:
+          DEPS: ${{ steps.meta.outputs.updated-dependencies-json }}
+        run: |
+          jq -e 'type == "array" and length > 0' <<<"$DEPS" >/dev/null
+          held=$(jq -r '.[] | select(
+              .updateType == "version-update:semver-major"
+              or (.prevVersion // "") == ""
+              or ((.prevVersion | startswith("0.")) and .updateType != "version-update:semver-patch")
+              or (.prevVersion | startswith("0.0."))
+            ) | "\(.dependencyName) \(.prevVersion) -> \(.newVersion)"' <<<"$DEPS")
+          if [ -n "$held" ]; then
+            printf 'Held for review:\n%s\n' "$held"
+            echo "auto=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "auto=true" >> "$GITHUB_OUTPUT"
+          fi
+      - if: steps.gate.outputs.auto == 'true'
         run: gh pr merge --auto --merge "$PR_URL"
         env:
           PR_URL: ${{ github.event.pull_request.html_url }}
