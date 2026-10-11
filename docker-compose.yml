@@ -33,9 +33,9 @@ services:
       - --memory=1536M
       - --default-log-level=warn
     ports:
-      - "19092:19092"   # Kafka API (external)
-      - "18081:18081"   # Schema Registry (external)
-      - "9644:9644"     # Admin API
+      - "127.0.0.1:19092:19092"   # Kafka API (external)
+      - "127.0.0.1:18081:18081"   # Schema Registry (external)
+      - "127.0.0.1:9644:9644"     # Admin API
     volumes:
       # Named volume: the log survives container recreation (image pull, config
       # change). Until the materializer lands, the log is the ONLY data store.
@@ -80,13 +80,13 @@ services:
     restart: "no"
 
   redpanda-console:
-    image: redpandadata/console:latest
+    image: redpandadata/console:v3.7.4
     container_name: redpanda-console
     environment:
       KAFKA_BROKERS: redpanda:9092
       CONFIG_FILEPATH: ""
     ports:
-      - "8090:8080"
+      - "127.0.0.1:8090:8080"
     depends_on:
       redpanda:
         condition: service_healthy
@@ -150,7 +150,7 @@ services:
       KAFKA_BROKERS: redpanda:9092
       METRICS_PORT: "9101"
     ports:
-      - "9101:9101"
+      - "127.0.0.1:9101:9101"
     depends_on:
       redpanda:
         condition: service_healthy
@@ -173,7 +173,7 @@ services:
       KAFKA_BROKERS: redpanda:9092
       METRICS_PORT: "9102"
     ports:
-      - "9102:9102"
+      - "127.0.0.1:9102:9102"
     depends_on:
       redpanda:
         condition: service_healthy
@@ -198,7 +198,7 @@ services:
       KAFKA_BROKERS: redpanda:9092
       METRICS_PORT: "9104"
     ports:
-      - "9104:9104"
+      - "127.0.0.1:9104:9104"
     depends_on:
       redpanda:
         condition: service_healthy
@@ -221,7 +221,7 @@ services:
       KAFKA_BROKERS: redpanda:9092
       METRICS_PORT: "9103"
     ports:
-      - "9103:9103"
+      - "127.0.0.1:9103:9103"
     depends_on:
       redpanda:
         condition: service_healthy
@@ -254,7 +254,7 @@ services:
     volumes:
       - ./ops/instruments.yml:/app/ops/instruments.yml:ro
     ports:
-      - "9110:9110"
+      - "127.0.0.1:9110:9110"
     depends_on:
       redpanda:
         condition: service_healthy
@@ -280,7 +280,7 @@ services:
       # Mounted over the baked copy so instrument edits don't need a rebuild.
       - ./ops/instruments.yml:/app/ops/instruments.yml:ro
     ports:
-      - "8080:8080"   # WS + dashboard + /metrics (no separate metrics port)
+      - "127.0.0.1:8080:8080"   # WS + dashboard + /metrics (no separate metrics port)
     depends_on:
       redpanda:
         condition: service_healthy
@@ -323,7 +323,7 @@ services:
       REFRESH_SEC: "60"
       AUDIT_INTERVAL_SEC: "86400"
     ports:
-      - "9120:9120"
+      - "127.0.0.1:9120:9120"
     depends_on:
       garage-init:
         condition: service_completed_successfully
@@ -355,7 +355,7 @@ services:
       # in the container layer and evaporates on every recreate/rebuild.
       - prometheus-data:/prometheus
     ports:
-      - "9090:9090"
+      - "127.0.0.1:9090:9090"
     restart: unless-stopped
 
   grafana:
