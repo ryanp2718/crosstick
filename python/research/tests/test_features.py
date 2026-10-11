@@ -8,12 +8,17 @@ boundary gets an explicit test rather than a comment.
 
 from __future__ import annotations
 
+from decimal import Decimal
 from unittest import mock
 
 import polars as pl
 import pyarrow as pa
+import pyarrow.dataset as pads
 import pytest
+from pyarrow import fs as pafs
 
+from common.lake import partition_key, write_object
+from common.schemas import BOOK_QUALITY_SCHEMA, table_from_rows
 from research.features import (
     _LIVE_COL,
     BAR_NS,
@@ -31,6 +36,7 @@ from research.features import (
     _ofi,
     _oi_features,
     _quote_legs,
+    _read_symbol,
     _returns,
     _window_tol,
     build_features,
@@ -440,6 +446,56 @@ def test_a_venue_without_depth_loads_beside_one_with_it() -> None:
     without = _book_features(df.filter(pl.col("exchange") == "old"), "v")
     assert without["v_depth_imb_10"][0] is None
     assert without["v_bid_span_bps"][0] is None
+
+
+def test_book_quality_without_engine_time_reads_beside_a_vintage_with_it(tmp_path) -> None:
+    """Silver built before `engine_ts_ns` lacks the column, so a backfill leaves dates of
+    mixed vintage. Both readers must still load them, the old rows null: the per-symbol
+    read here, and a pyarrow dataset given the declared schema (without one it infers
+    the first file's, and asking for the column fails when that file is the old one)."""
+    fs, bucket, date = pafs.LocalFileSystem(), tmp_path.as_posix(), "2026-10-11"
+    old_schema = pa.schema([f for f in BOOK_QUALITY_SCHEMA if f.name != "engine_ts_ns"])
+
+    def row(exchange: str, **extra) -> dict:
+        return {
+            "exchange": exchange,
+            "canonical_symbol": "BTC-USD",
+            "date": date,
+            "kind": "delta",
+            "offset": 0,
+            "sequence": 1,
+            "epoch": 1,
+            "exchange_ts_ns": 5,
+            "local_ts_ns": 6,
+            "local_recv_ts_ns": 7,
+            "best_bid": Decimal("100"),
+            "best_ask": Decimal("101"),
+            "seq_gap": 0,
+            "crossed": False,
+            "invariant_kind": None,
+            **extra,
+        }
+
+    for exchange, table in (
+        ("coinbase", table_from_rows([row("coinbase", engine_ts_ns=4)], BOOK_QUALITY_SCHEMA)),
+        ("kraken", table_from_rows([row("kraken")], old_schema)),
+    ):
+        key = partition_key("book_quality", exchange=exchange, symbol="BTC-USD", date=date)
+        write_object(fs, bucket, key, table)
+
+    got = _read_symbol(fs, bucket, "book_quality", date, "BTC-USD")
+    assert dict(zip(got["exchange"].to_pylist(), got["engine_ts_ns"].to_pylist(), strict=True)) == {
+        "coinbase": 4,
+        "kraken": None,
+    }
+
+    root = f"{bucket}/book_quality"
+    declared = pads.dataset(root, filesystem=fs, format="parquet", schema=BOOK_QUALITY_SCHEMA)
+    rows = declared.to_table(columns=["exchange", "engine_ts_ns", "exchange_ts_ns"]).to_pylist()
+    assert sorted(rows, key=lambda r: r["exchange"]) == [
+        {"exchange": "coinbase", "engine_ts_ns": 4, "exchange_ts_ns": 5},
+        {"exchange": "kraken", "engine_ts_ns": None, "exchange_ts_ns": 5},
+    ]
 
 
 # ── perp microstructure ─────────────────────────────────────────────────────

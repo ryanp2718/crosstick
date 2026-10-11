@@ -78,6 +78,27 @@ erDiagram
   gateway only applies a delta to a book of the same `epoch`, so a prior
   connection's deltas can't corrupt a fresh snapshot. Compared by equality only
   (never as a clock); pre-epoch records decode as `0`.
+- `BookSnapshot` / `BookDelta` carry an `engine_ts_ns` (default `0`): a venue
+  stamp at or after every change the message carries, epoch ns, or `0` where
+  the venue publishes none. Only coinbase fills it, with the max per-update
+  `event_time` of the event (microsecond precision). Despite the name it is not
+  a trade's own engine time. Coinbase stamps each message once, snapshots and
+  events of hundreds of levels included, and in every sample so far the stamp
+  has equalled no trade's `time`: it falls after the trades a message reflects
+  and before the send time.
+  Re-emitted snapshots, other venues and records from before the field all
+  carry `0`. It sits beside `exchange_ts_ns` rather than replacing it, so
+  `exchange_ts_ns` keeps one meaning on every date. `messages.ts` mirrors it;
+  the gateway does not read it.
+- **What a book `exchange_ts_ns` marks** depends on the venue, so comparing it
+  across venues compares different moments:
+
+  | Venue | Book `exchange_ts_ns` |
+  |---|---|
+  | coinbase | the send time: the envelope `timestamp`, which Coinbase documents as the server time the message was sent. A stamp nearer the change is `engine_ts_ns`. |
+  | kraken | the engine event: the v2 book message's `timestamp`. |
+  | binance | the end of each 100 ms depth batch: `E`. |
+  | binance-futures | `E`, the push time of each depth batch. The payload also carries `T`, the transaction time, which precedes `E`; crosstick does not decode it. |
 - `NBBOMsg.local_ts_ns` and per-leg `leg_age_ms` are **stream time** (the max
   event-time across the gateway's consumed messages at compute, not wall
   clock), so `md.nbbo.*` replays byte-for-byte (see ADR-0001). In
@@ -220,6 +241,7 @@ discipline as bronze's start-offset keys, but at date grain).
 | `book_quality` | `sequence` | int64 |
 | `book_quality` | `epoch` | int64 |
 | `book_quality` | `exchange_ts_ns` | int64 |
+| `book_quality` | `engine_ts_ns` | int64 |
 | `book_quality` | `local_ts_ns` | int64 |
 | `book_quality` | `local_recv_ts_ns` | int64 |
 | `book_quality` | `best_bid` | decimal128(38, 18) |
@@ -321,6 +343,13 @@ discipline as bronze's start-offset keys, but at date grain).
   binance/binance-futures (update-ids) are **monotonic-only** (forward jumps are
   normal). Non-monotonic regressions are caught for all venues by the OrderBook
   fold (`non_monotonic_seq`).
+- **`engine_ts_ns`** on `book_quality` is the book message's `engine_ts_ns`, null
+  where that is `0` (every venue but coinbase, and bronze from before the field).
+  Partitions built before the column lack it entirely. A reader spanning both
+  vintages promotes (`pa.concat_tables(..., promote_options="permissive")`, as the
+  research read does) or passes `BOOK_QUALITY_SCHEMA` to `pyarrow.dataset`; left to
+  infer, a dataset takes its first file's schema and cannot select the column when
+  that file is the older one.
 - **`latency`** skips locally-generated records (`exchange_ts_ns == 0`:
   re-emitted snapshots, binance(-futures) snapshots, with no exchange clock behind
   them). Cross-venue `exchange_ts_ns` comparisons inherit the clock-domain caveat

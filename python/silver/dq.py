@@ -131,6 +131,7 @@ class _BookRec:
     bids: list[Level]
     asks: list[Level]
     exchange_ts_ns: int
+    engine_ts_ns: int
     local_ts_ns: int
     local_recv_ts_ns: int | None
 
@@ -199,6 +200,7 @@ def build_silver(records: Iterable[CorpusRecord], canonical: CanonicalMap) -> Si
                     bids=bids,
                     asks=asks,
                     exchange_ts_ns=msg.exchange_ts_ns,
+                    engine_ts_ns=msg.engine_ts_ns,
                     local_ts_ns=msg.local_ts_ns,
                     local_recv_ts_ns=recv,
                 )
@@ -376,6 +378,7 @@ def to_book_recs(records: Iterable[CorpusRecord], canonical: CanonicalMap) -> It
             bids=bids,
             asks=asks,
             exchange_ts_ns=msg.exchange_ts_ns,
+            engine_ts_ns=msg.engine_ts_ns,
             local_ts_ns=msg.local_ts_ns,
             local_recv_ts_ns=_recv_ns(rec),
         )
@@ -523,6 +526,7 @@ def _book_quality_row(ev: _BookEvent) -> dict:
         "sequence": r.sequence,
         "epoch": r.epoch,
         "exchange_ts_ns": r.exchange_ts_ns,
+        "engine_ts_ns": r.engine_ts_ns or None,
         "local_ts_ns": r.local_ts_ns,
         "local_recv_ts_ns": r.local_recv_ts_ns,
         "best_bid": ev.best_bid[0] if ev.best_bid else None,

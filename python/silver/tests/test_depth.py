@@ -27,6 +27,7 @@ def _rec(bids: list[tuple[str, str]], asks: list[tuple[str, str]], seq: int = 1)
         bids=[(Decimal(p), Decimal(s)) for p, s in bids],
         asks=[(Decimal(p), Decimal(s)) for p, s in asks],
         exchange_ts_ns=1_000,
+        engine_ts_ns=0,
         local_ts_ns=2_000,
         local_recv_ts_ns=3_000,
     )
