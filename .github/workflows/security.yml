@@ -4,9 +4,9 @@ on:
   push:
     branches: [main]
   pull_request:
-  # Weekly, so newly disclosed vulns in unchanged deps still surface.
+  # Daily, so newly disclosed vulns in unchanged deps surface without a PR.
   schedule:
-    - cron: "17 6 * * 1"
+    - cron: "17 6 * * *"
 
 concurrency:
   group: security-${{ github.ref }}
@@ -30,8 +30,32 @@ jobs:
           docker run --rm -v "$PWD:/repo" ghcr.io/gitleaks/gitleaks:v8.24.2 \
             git /repo --redact --verbose
 
+  # On PRs, audit only when dependencies change: a new advisory should not turn
+  # every unrelated PR red. A skipped job still satisfies the required check.
+  deps-changed:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    outputs:
+      changed: ${{ steps.diff.outputs.changed }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          fetch-depth: 0
+      - id: diff
+        run: |
+          if git diff --name-only "${{ github.event.pull_request.base.sha }}" HEAD -- \
+              node/gateway/package.json node/gateway/pnpm-lock.yaml \
+              node/gateway/pnpm-workspace.yaml python/pyproject.toml python/uv.lock \
+              .github/workflows/security.yml | grep -q .; then
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+          fi
+
   audit:
     name: dependency audit
+    needs: deps-changed
+    if: ${{ !cancelled() && (github.event_name != 'pull_request' || needs.deps-changed.outputs.changed != 'false') }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
