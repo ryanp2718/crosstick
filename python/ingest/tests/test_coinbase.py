@@ -2,7 +2,7 @@
 
 Wire contract verified live (see plan): channel `l2_data` with snapshot/update
 events carrying absolute `new_quantity`; per-connection `sequence_num`; side
-labels `bid`/`offer`; `market_trades` with BUY/SELL; `heartbeats`/`subscriptions`
+labels `bid`/`offer`; `market_trades` with the maker's BUY/SELL; `heartbeats`/`subscriptions`
 control frames. Unit tests drive parse_message/process_event directly; the two
 integration tests drive the full WS loop via FakeExchangeServer.
 """
@@ -159,8 +159,8 @@ def test_l2_side_mapping():
 
 
 def test_trade_side_mapping():
-    assert _trade_side("BUY") is Side.BID
-    assert _trade_side("SELL") is Side.ASK
+    assert _trade_side("BUY") is Side.ASK
+    assert _trade_side("SELL") is Side.BID
     with pytest.raises(ResyncRequired):
         _trade_side("offer")
 
@@ -354,7 +354,55 @@ async def test_process_trade_emits_regardless_of_state():
     msg = decode(value)
     assert isinstance(msg, Trade)
     assert msg.trade_id == "t1"
-    assert msg.side is Side.ASK  # SELL -> ASK
+    assert msg.side is Side.BID  # maker SELL -> taker BID
+
+
+# A real market_trades frame, captured live 2026-10-12. Against the book rebuilt from
+# the same capture, the SELL printed at the best ask (83826.02) and the BUY at the best
+# bid (83826.01): Coinbase's `side` is the resting order's, so a buyer lifted the ask
+# and a seller hit the bid.
+CAPTURED_TRADES = {
+    "channel": "market_trades",
+    "timestamp": "2026-10-12T00:51:58.319492292Z",
+    "sequence_num": 422,
+    "events": [
+        {
+            "type": "update",
+            "trades": [
+                {
+                    "product_id": "BTC-USD",
+                    "trade_id": "1104838112",
+                    "price": "83826.02",
+                    "size": "0.00023624",
+                    "time": "2026-10-12T00:51:58.260835Z",
+                    "side": "SELL",
+                },
+                {
+                    "product_id": "BTC-USD",
+                    "trade_id": "1104838111",
+                    "price": "83826.01",
+                    "size": "0.00000007",
+                    "time": "2026-10-12T00:51:58.221341Z",
+                    "side": "BUY",
+                },
+            ],
+        }
+    ],
+}
+
+
+async def test_captured_trades_carry_the_taker_side():
+    """Coinbase labels a trade with the maker's side; Trade.side is the taker's."""
+    ing = _ing()
+    ctx = ing.contexts["BTC-USD"]
+    for ev in ing.parse_message(json.dumps(CAPTURED_TRADES).encode(), 7):
+        await ing.process_event(ctx, ev)
+
+    trades = [decode(v) for t, v, _ in ing.producer.calls if t == "md.trades.coinbase.BTC-USD"]
+    assert [(t.trade_id, t.price, t.side) for t in trades] == [
+        ("1104838112", "83826.02", Side.BID),  # maker SELL: a buyer lifted the ask
+        ("1104838111", "83826.01", Side.ASK),  # maker BUY: a seller hit the bid
+    ]
 
 
 # ─── integration: full WS loop ──────────────────────────────────────────────

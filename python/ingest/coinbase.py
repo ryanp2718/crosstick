@@ -10,7 +10,8 @@ Wire contract (verified live, see plan):
   - `l2_data` events: type `snapshot` (full book) then `update`. Each update level
     is {side, price_level, new_quantity} where new_quantity is ABSOLUTE size
     (0 = remove). Sides are `bid` / `offer`.
-  - `market_trades` events carry a `trades` list with BUY/SELL taker side.
+  - `market_trades` events carry a `trades` list whose BUY/SELL `side` is the
+    MAKER's (the resting order), so it inverts to crosstick's taker side.
   - `heartbeats` / `subscriptions` are control frames (no book/trade data) but
     still advance `sequence_num`.
 
@@ -48,7 +49,8 @@ _CHANNELS = ("level2", "market_trades", "heartbeats")
 # Side maps. _l2_side: `ask` kept as a defensive fallback though the live feed
 # uses `offer`. Unknown labels resync rather than silently mis-book.
 _L2_SIDE = {"bid": Side.BID, "offer": Side.ASK, "ask": Side.ASK}
-_TRADE_SIDE = {"BUY": Side.BID, "SELL": Side.ASK}
+# Coinbase's trade side is the maker's; Trade.side is the taker's, so it inverts.
+_TRADE_SIDE = {"BUY": Side.ASK, "SELL": Side.BID}
 
 
 # ─── wire structs (msgspec, two-stage decode) ───────────────────────────────

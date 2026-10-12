@@ -352,6 +352,9 @@ discipline as bronze's start-offset keys, but at date grain).
   a tape joins to the book on `(exchange, canonical_symbol, ts_ns)` without a clock
   conversion. `trades.side` is the **taker/aggressor** direction in every driver
   (`bid` = buyer-initiated), so order-flow sign needs no Lee-Ready inference.
+  Coinbase labels a trade with the maker's side, which the driver inverts.
+  Coinbase trades captured before that inversion shipped carry the maker's
+  side, so their `side` is backwards in bronze and silver.
   `liquidations` is sampled, not a tape (`DESIGN_perp_capture.md`), and
   `open_interest` is REST-polled at the ingester's interval.
 
