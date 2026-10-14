@@ -15,6 +15,7 @@ import pytest
 from research.infoshare import (
     DEFAULT_LAGS,
     MIN_ROWS,
+    NS_PER_S,
     OBS_PER_PARAMETER,
     by_date,
     fit,
@@ -22,13 +23,18 @@ from research.infoshare import (
     min_rows_for,
     price_panel,
     report,
+    unbroken_rows,
 )
 
 VENUES = ("coinbase", "kraken")
 
 
 def _leader_follower(
-    n: int = 20_000, adjust: float = 0.5, noise: float = 0.02, seed: int = 0
+    n: int = 20_000,
+    adjust: float = 0.5,
+    noise: float = 0.02,
+    seed: int = 0,
+    trend: np.ndarray | None = None,
 ) -> np.ndarray:
     """Venue 0 IS the efficient price; venue 1 closes a fraction of the gap each bar.
 
@@ -38,10 +44,12 @@ def _leader_follower(
     the gap is a persistent AR process, which is what a VECM is actually specified for.
 
     Every innovation originates at venue 0, so its information share is 1 by construction
-    and alpha is (0, adjust).
+    and alpha is (0, adjust). `trend`, one value per bar, is added to the leader's
+    innovations, which the follower then chases.
     """
     rng = np.random.default_rng(seed)
-    leader = np.cumsum(rng.normal(size=n))
+    news = rng.normal(size=n)
+    leader = np.cumsum(news if trend is None else news + trend)
     idiosyncratic = rng.normal(scale=noise, size=n)
     follower = np.empty(n)
     follower[0] = leader[0]
@@ -204,6 +212,92 @@ def test_simultaneous_discovery_widens_the_bounds_and_separated_discovery_narrow
     assert simultaneous.residual_corr > 0.8
 
 
+# ── holes in the capture ────────────────────────────────────────────────────
+
+
+def _seconds(n: int) -> np.ndarray:
+    return np.arange(n, dtype=np.int64) * NS_PER_S
+
+
+def test_with_no_holes_the_timed_fit_is_the_untimed_fit_exactly() -> None:
+    """Every step spans one interval, so the rule keeps every row and has to change
+    nothing, to the bit: the records the untimed fit wrote are refitted from their panels
+    downstream and must still come out the same."""
+    panel = _two_sided(w=0.7)
+    untimed = information_shares(panel, VENUES)
+    timed = information_shares(panel, VENUES, ts_ns=_seconds(len(panel)))
+    assert timed.n == untimed.n
+    assert timed.n_dropped == untimed.n_dropped == 0
+    for name in ("alpha", "component_shares", "bounds"):
+        assert np.array_equal(getattr(timed, name), getattr(untimed, name)), name
+    assert timed.residual_corr == untimed.residual_corr
+    assert timed.conditioning == untimed.conditioning
+
+
+def test_a_hole_across_a_large_move_is_skipped_rather_than_spliced() -> None:
+    """The defect this rule exists for, on a pair whose answer is known.
+
+    The capture is down for ten minutes while the efficient price trends, so both venues
+    end about 120 one-second sds from where they started. Spliced, that is one step in
+    which both venues jumped together: the residuals correlate, the Cholesky ordering
+    starts to matter, and the leader's lower bound falls from 1 to about one minus the
+    squared residual correlation. Skipping the step and the ten whose lags reach back across it
+    recovers the fit made with no hole. Over seeds 0 to 4 it landed within 0.0003 of that
+    lower bound and 0.005 of its residual correlation, so the tolerances are 0.005 and 0.01.
+    """
+    n, start, length = 20_000, 10_000, 600
+    trend = np.zeros(n)
+    trend[start : start + length] = 0.2
+    whole = _leader_follower(n, trend=trend)
+    kept = np.r_[0:start, start + length : n]
+
+    truth = information_shares(whole, VENUES)
+    spliced = information_shares(whole[kept], VENUES)
+    skipping = information_shares(whole[kept], VENUES, ts_ns=_seconds(n)[kept])
+
+    assert spliced.residual_corr > truth.residual_corr + 0.5
+    assert spliced.bounds[0, 0] < truth.bounds[0, 0] - 0.3
+    assert skipping.bounds[0, 0] == pytest.approx(truth.bounds[0, 0], abs=0.005)
+    assert skipping.residual_corr == pytest.approx(truth.residual_corr, abs=0.01)
+    assert spliced.n_dropped == 0
+    assert skipping.n_dropped == DEFAULT_LAGS + 1
+    assert skipping.n == spliced.n - (DEFAULT_LAGS + 1)
+
+
+def test_a_strided_sample_never_straddles_a_hole() -> None:
+    """Taking every stride-th row, one dropped bar shifts every later sample off the grid
+    and nothing marks the step that crossed the hole. On the grid, every step the fit uses
+    spans exactly the stride."""
+    stride = 5
+    df = _frame(1)
+    first = df["ts_ns"][0]
+    # Seconds 2,003 to 2,016 missing, a hole that starts and ends off the grid.
+    df = df.filter(~pl.col("ts_ns").is_between(first + 2_003 * NS_PER_S, first + 2_016 * NS_PER_S))
+    _, ts_ns = price_panel(df, VENUES, stride=stride)
+    assert np.all(ts_ns % (stride * NS_PER_S) == 0)
+
+    keep = unbroken_rows(ts_ns, DEFAULT_LAGS, stride * NS_PER_S)
+    assert not keep.all()
+    # Row t regresses the step from t to t + 1 on the `lags` steps before it.
+    t = np.flatnonzero(keep) + DEFAULT_LAGS
+    used = np.unique(np.concatenate([t - k for k in range(DEFAULT_LAGS + 1)]))
+    assert np.all(np.diff(ts_ns)[used] == stride * NS_PER_S)
+
+    (estimate,) = by_date(df, VENUES, stride=stride, min_rows=500)
+    assert estimate.n_dropped == DEFAULT_LAGS + 1
+
+
+def test_the_row_floor_counts_the_rows_the_fit_used() -> None:
+    """One missing second costs the fit eleven rows. A floor checked against the panel
+    would pass a date on rows the fit never used."""
+    df = _frame(1)
+    holed = df.filter(pl.col("ts_ns") != df["ts_ns"][2_000])
+    used = len(holed) - DEFAULT_LAGS - 1 - (DEFAULT_LAGS + 1)
+    (estimate,) = by_date(holed, VENUES, min_rows=used)
+    assert estimate.n == used
+    assert by_date(holed, VENUES, min_rows=used + 1) == []
+
+
 # ── input handling ──────────────────────────────────────────────────────────
 
 
@@ -223,6 +317,17 @@ def test_too_few_rows_for_the_lag_order_is_rejected() -> None:
         fit(np.zeros((8, 2)), lags=10)
 
 
+def test_timestamps_that_do_not_match_the_rows_are_rejected() -> None:
+    with pytest.raises(ValueError, match="99 timestamps for 100 rows"):
+        fit(np.zeros((100, 2)), ts_ns=_seconds(99))
+
+
+def test_a_panel_that_is_all_holes_is_rejected() -> None:
+    """Two seconds between every row leaves no step of one interval to fit on."""
+    with pytest.raises(ValueError, match="after skipping holes"):
+        fit(_leader_follower(1_000), ts_ns=_seconds(1_000) * 2)
+
+
 # ── the polars adapter ──────────────────────────────────────────────────────
 
 
@@ -233,7 +338,7 @@ def _frame(n_dates: int, n_per_date: int = MIN_ROWS + 100) -> pl.DataFrame:
         frames.append(
             pl.DataFrame(
                 {
-                    "ts_ns": np.arange(n_per_date, dtype=np.int64) + d * 10**12,
+                    "ts_ns": (np.arange(n_per_date, dtype=np.int64) + d * 86_400) * NS_PER_S,
                     "date": [f"2026-01-{d:02d}"] * n_per_date,
                     "coinbase_mid": panel[:, 0],
                     "kraken_mid": panel[:, 1],
@@ -247,21 +352,25 @@ def _frame(n_dates: int, n_per_date: int = MIN_ROWS + 100) -> pl.DataFrame:
 
 def test_the_panel_is_log_prices_in_venue_order() -> None:
     df = _frame(1)
-    panel = price_panel(df, VENUES)
+    panel, ts_ns = price_panel(df, VENUES)
     assert panel.shape[1] == 2
     assert panel[0, 0] == pytest.approx(np.log(df["coinbase_mid"][0]))
+    assert np.array_equal(ts_ns, df["ts_ns"].to_numpy())
 
 
 def test_stride_subsamples_the_panel() -> None:
     df = _frame(1)
-    assert len(price_panel(df, VENUES, stride=10)) == pytest.approx(len(df) / 10, rel=0.01)
+    panel, ts_ns = price_panel(df, VENUES, stride=10)
+    assert len(panel) == pytest.approx(len(df) / 10, rel=0.01)
+    assert np.all(np.diff(ts_ns) == 10 * NS_PER_S)
 
 
 def test_the_staleness_cut_drops_rows() -> None:
     df = _frame(1).with_columns(
         pl.when(pl.int_range(pl.len()) % 2 == 0).then(9_999.0).otherwise(0.0).alias("kraken_age_ms")
     )
-    assert len(price_panel(df, VENUES, max_age_ms=100)) < len(df) * 0.6
+    panel, _ = price_panel(df, VENUES, max_age_ms=100)
+    assert len(panel) < len(df) * 0.6
 
 
 def test_a_missing_price_column_names_itself() -> None:
