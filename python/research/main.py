@@ -20,6 +20,7 @@ Env matches the batch layers: base ``S3_*`` is the silver endpoint, ``SILVER_BUC
 from __future__ import annotations
 
 import argparse
+import json
 import logging
 import os
 from functools import lru_cache
@@ -51,32 +52,78 @@ from research.validation import (
 log = logging.getLogger(__name__)
 
 
-def source_fingerprint(fs, bucket: str, date: str, symbols: tuple[str, ...]) -> str:
-    """Newest silver object backing this date across every symbol, as the cache key.
+DIGESTS_FILE = "source_digests.json"
+
+
+def source_fingerprint(fs, bucket: str, date: str, symbols: tuple[str, ...], digests: Path) -> str:
+    """Digest of every silver object backing this date across every symbol, as the cache key.
 
     A date is only immutable once silver has finished with it. Re-running the backfill
     (adding the trades tape to a date built before it existed) rewrites those objects,
     and a cache keyed on date alone would keep serving the older, narrower feature set
-    without a word. Keying on mtime makes a rebuild produce a different filename.
+    without a word. Keying on content makes a rebuild produce a different filename, and a
+    copy of the lake, which stamps every object with the copy time without changing a
+    byte, does not. A key on mtime read every such copy as a rebuild of every date.
+
+    Size and Parquet footer are not enough: a rewrite that only changes values (a side
+    flipped on every trade) keeps both. So each object is read in full once, and its
+    digest is kept in `digests` against its size and mtime: a cache hit still costs one
+    stat per object, and only a new or re-stamped object is read again.
     """
-    newest = 0.0
+    memo = _read_digests(digests)
+    before = dict(memo)
+    lines = []
     for dataset in SOURCE_DATASETS:
         for part in list_partitions(fs, bucket, dataset, date):
             if part.get("symbol") not in symbols:
                 continue
-            info = fs.get_file_info(f"{bucket}/{partition_key(dataset, date=date, **part)}")
-            if info.mtime is not None:
-                newest = max(newest, info.mtime.timestamp())
-    return str(int(newest))
+            key = partition_key(dataset, date=date, **part)
+            lines.append(f"{key} {_object_digest(fs, f'{bucket}/{key}', memo)}")
+    if memo != before:
+        _write_digests(digests, memo)
+    return blake2b("\n".join(sorted(lines)).encode(), digest_size=8).hexdigest()
+
+
+def _object_digest(fs, path: str, memo: dict) -> str:
+    """Content digest of one object, read again only when its size or mtime moved."""
+    info = fs.get_file_info(path)
+    stamp = [info.size, info.mtime_ns]
+    hit = memo.get(path)
+    if info.mtime_ns is not None and isinstance(hit, list) and hit[:2] == stamp:
+        return hit[2]
+    h = blake2b(digest_size=16)
+    with fs.open_input_stream(path) as f:
+        while chunk := f.read(1 << 22):
+            h.update(chunk)
+    if info.mtime_ns is not None:
+        memo[path] = [*stamp, h.hexdigest()]
+    return h.hexdigest()
+
+
+def _read_digests(path: Path) -> dict:
+    """The digest memo, or empty if it is missing or unreadable (it only saves reads)."""
+    try:
+        memo = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    return memo if isinstance(memo, dict) else {}
+
+
+def _write_digests(path: Path, memo: dict) -> None:
+    """Replace the memo whole, so a concurrent reader never sees half a file."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_name(f"{path.name}.{os.getpid()}.tmp")
+    tmp.write_text(json.dumps(memo, sort_keys=True), encoding="utf-8")
+    os.replace(tmp, path)
 
 
 @lru_cache(maxsize=1)
 def builder_fingerprint() -> str:
     """Short digest of `research/features.py`, as part of every cache key.
 
-    The source mtime says when the DATA last changed and nothing about what was computed
+    The source fingerprint says whether the DATA changed and nothing about what was computed
     from it. Adding a feature family changes the frame without touching a single silver
-    object, so an mtime-only key happily serves a matrix built before the columns existed
+    object, so a data-only key happily serves a matrix built before the columns existed
     - the run then trains on a narrower feature set than it reports and nothing fails.
 
     Hashing the builder is deliberately blunt: any edit here rebuilds, including one that
@@ -89,7 +136,7 @@ def builder_fingerprint() -> str:
 def cache_name(date: str, symbol: str, extra_symbols: tuple[str, ...], fingerprint: str) -> str:
     """Cache filename for one date's feature matrix.
 
-    The extra symbols are part of the identity, not just the mtime: the same date built
+    The extra symbols are part of the identity, not just the data: the same date built
     with and without Binance legs are different matrices, and a key that ignored them
     would serve a two-venue frame to a four-venue run.
     """
@@ -117,7 +164,7 @@ def cached_features(
     fingerprints differ read different silver.
     """
     all_symbols = (symbol, *extra_symbols)
-    fingerprint = source_fingerprint(fs, bucket, date, all_symbols)
+    fingerprint = source_fingerprint(fs, bucket, date, all_symbols, cache / DIGESTS_FILE)
     path = cache / cache_name(date, symbol, extra_symbols, fingerprint)
     if path.exists() and not refresh:
         return pl.read_parquet(path), fingerprint
@@ -517,7 +564,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     p.add_argument(
         "--refresh",
         action="store_true",
-        help="rebuild features even when a cache entry matches (the mtime key already "
+        help="rebuild features even when a cache entry matches (the content key already "
         "invalidates on a silver rebuild; this forces it)",
     )
     p.add_argument(
