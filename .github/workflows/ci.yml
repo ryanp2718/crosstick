@@ -104,6 +104,24 @@ jobs:
             jq empty "$f"
           done
 
+  # Nothing else builds the service images, which must install from the lockfiles tested above.
+  images:
+    name: images (docker build)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - run: docker build -t crosstick-python:ci python
+      - run: docker build -t crosstick-gateway:ci -f node/gateway/Dockerfile .
+      - name: python services import
+        run: >-
+          docker run --rm crosstick-python:ci
+          python -c "import common.garage, ingest.main, materializer.main, exporter.main"
+      - name: gateway ships the patched kafkajs
+        run: >-
+          docker run --rm crosstick-gateway:ci
+          grep -q "Math.max(0, this.throttledUntil" node_modules/kafkajs/src/network/requestQueue/index.js
+
   # House-style guard: zero em-dashes (U+2014) in tracked files.
   conventions:
     name: conventions (no em-dash)
