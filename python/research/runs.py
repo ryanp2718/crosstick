@@ -104,7 +104,7 @@ class RunSpec:
 class Provenance:
     """What produced the numbers, at the three layers that can independently change them.
 
-    The data (`source_fingerprints`, one silver mtime key per date), the code that turned
+    The data (`source_fingerprints`, one silver content digest per date), the code that turned
     it into features (`builder_fingerprint`, `feature_schema_digest`, `git_sha`), and the
     libraries that fitted it. Two runs whose records differ in none of these and whose
     numbers differ anyway are a determinism bug, which is the point of recording them.

@@ -80,7 +80,7 @@ _LIVE_COL = "_capture_live"
 # Half-spreads of forward move required before a bar counts as a real direction rather
 # than the flat class. Half a spread is the cost of crossing to get in (see `_dead_zone`).
 DEAD_ZONE_SPREADS = 0.5
-# Silver datasets a feature matrix is derived from (the cache keys on their mtimes).
+# Silver datasets a feature matrix is derived from (the cache keys on their contents).
 SOURCE_DATASETS = ("quotes", "nbbo", "trades", "mark_price", "open_interest", "liquidations")
 # Depth rungs to build imbalance from; mirrors silver.dq.DEPTH_LEVELS. Dates whose
 # silver predates the depth columns simply produce nulls (see _depth_features).
