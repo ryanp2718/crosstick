@@ -16,6 +16,10 @@ export interface BookSnapshotMsg {
   // Per-WS-connection generation (models.py BookSnapshot.epoch). Optional on the
   // wire - pre-epoch captures omit it; the aggregator treats absent as 0.
   epoch?: number;
+  // Venue stamp at or after every change carried (models.py
+  // BookSnapshot.engine_ts_ns), 0 where the venue publishes none. Mirrored for
+  // completeness: the gateway must not read it.
+  engine_ts_ns?: number;
 }
 
 export interface BookDeltaMsg {
@@ -28,6 +32,7 @@ export interface BookDeltaMsg {
   exchange_ts_ns: number;
   local_ts_ns: number;
   epoch?: number; // see BookSnapshotMsg.epoch
+  engine_ts_ns?: number; // see BookSnapshotMsg.engine_ts_ns
 }
 
 export interface TradeMsg {

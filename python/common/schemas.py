@@ -63,6 +63,8 @@ BOOK_QUALITY_SCHEMA = pa.schema(
         ("sequence", pa.int64()),
         ("epoch", pa.int64()),
         ("exchange_ts_ns", pa.int64()),
+        # Null where the message carried 0 (all but coinbase); absent on older partitions.
+        ("engine_ts_ns", pa.int64()),
         ("local_ts_ns", pa.int64()),
         ("local_recv_ts_ns", pa.int64()),
         ("best_bid", _PRICE),

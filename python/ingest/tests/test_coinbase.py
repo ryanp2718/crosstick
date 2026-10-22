@@ -21,9 +21,11 @@ from ingest.base_ingester import ResyncRequired, SymbolState
 from ingest.book import BookInvariantError
 from ingest.coinbase import (
     CoinbaseIngester,
+    _engine_ts_ns,
     _l2_side,
     _rfc3339_to_ns,
     _trade_side,
+    _Update,
 )
 from ingest.tests.test_base_ingester import (  # noqa: F401  (fake_server is a fixture)
     FakeProducer,
@@ -65,6 +67,60 @@ def _l2_frame(seq, *, etype, product="BTC-USD", bids=(), offers=(), ts=TS):
             "events": [{"type": etype, "product_id": product, "updates": updates}],
         }
     ).encode()
+
+
+# Live l2_data frames captured 2026-10-11, trimmed to a few levels and renumbered to one
+# connection. Unlike `_l2_frame` they carry the per-update `event_time` and no client_id.
+CAPTURED_SNAPSHOT = {
+    "channel": "l2_data",
+    "timestamp": "2026-10-11T23:27:01.965857597Z",
+    "sequence_num": 0,
+    "events": [
+        {
+            "type": "snapshot",
+            "product_id": "BTC-USD",
+            "updates": [
+                {
+                    "side": "bid",
+                    "event_time": "2026-10-11T23:27:01.662764Z",
+                    "price_level": "83623.66",
+                    "new_quantity": "0.13129292",
+                },
+                {
+                    "side": "offer",
+                    "event_time": "2026-10-11T23:27:01.662764Z",
+                    "price_level": "83634.37",
+                    "new_quantity": "0.01075067",
+                },
+            ],
+        }
+    ],
+}
+CAPTURED_UPDATE = {
+    "channel": "l2_data",
+    "timestamp": "2026-10-11T23:27:11.677099377Z",
+    "sequence_num": 1,
+    "events": [
+        {
+            "type": "update",
+            "product_id": "BTC-USD",
+            "updates": [
+                {
+                    "side": "bid",
+                    "event_time": "2026-10-11T23:27:11.65264Z",
+                    "price_level": "73173.54",
+                    "new_quantity": "0",
+                },
+                {
+                    "side": "offer",
+                    "event_time": "2026-10-11T23:27:11.65264Z",
+                    "price_level": "83691.04",
+                    "new_quantity": "0.0300326",
+                },
+            ],
+        }
+    ],
+}
 
 
 def _trades_frame(seq, *, product="BTC-USD", trades=(), ts=TS):
@@ -340,6 +396,54 @@ async def test_emitted_book_messages_carry_connection_epoch():
     book_msgs = [decode(v) for t, v, _ in ing.producer.calls if t.startswith("md.book.")]
     assert len(book_msgs) == 2
     assert all(m.epoch == epoch for m in book_msgs)
+
+
+async def test_engine_time_is_carried_beside_the_send_time():
+    """event_time goes to engine_ts_ns; exchange_ts_ns and its latency header keep the
+    envelope timestamp, Coinbase's send time, so neither changes meaning."""
+    ing = _ing()
+    ctx = ing.contexts["BTC-USD"]
+    for frame in (CAPTURED_SNAPSHOT, CAPTURED_UPDATE):
+        (ev,) = ing.parse_message(json.dumps(frame).encode(), 1)
+        await ing.process_event(ctx, ev)
+
+    book = [(decode(v), kw) for t, v, kw in ing.producer.calls if t.startswith("md.book.")]
+    (snap, snap_kw), (delta, delta_kw) = book
+    assert isinstance(snap, BookSnapshot)
+    assert snap.engine_ts_ns == _rfc3339_to_ns("2026-10-11T23:27:01.662764Z")
+    assert snap.exchange_ts_ns == _rfc3339_to_ns("2026-10-11T23:27:01.965857597Z")
+    assert isinstance(delta, BookDelta)
+    assert delta.engine_ts_ns == _rfc3339_to_ns("2026-10-11T23:27:11.65264Z")
+    assert delta.exchange_ts_ns == _rfc3339_to_ns("2026-10-11T23:27:11.677099377Z")
+    assert ("exchange_ts_ns", str(delta.exchange_ts_ns).encode()) in delta_kw["headers"]
+    assert ("exchange_ts_ns", str(snap.exchange_ts_ns).encode()) in snap_kw["headers"]
+
+
+def test_engine_time_is_the_latest_update_compared_as_time():
+    """Coinbase trims trailing zeros from event_time, so the strings do not sort as
+    times: '.7Z' sorts after '.700001Z'. No live event has carried two times (0 of
+    7,553 in a quiet Sunday-evening capture, 2026-10-11); this pins the reduction
+    should one ever do so, as it might under load."""
+
+    def upd(event_time: str) -> _Update:
+        return _Update(side="bid", price_level="1", new_quantity="1", event_time=event_time)
+
+    times = ["2026-10-11T23:27:11.7Z", "2026-10-11T23:27:11.700001Z", "2026-10-11T23:27:11.65Z"]
+    assert _engine_ts_ns([upd(t) for t in times]) == _rfc3339_to_ns(times[1])
+
+
+async def test_frames_without_event_time_emit_zero():
+    ing = _ing()
+    ctx = ing.contexts["BTC-USD"]
+    snap = ing.parse_message(
+        _l2_frame(0, etype="snapshot", bids=[("100", "1")], offers=[("101", "2")]), 1
+    )[0]
+    await ing.process_event(ctx, snap)
+    delta = ing.parse_message(_l2_frame(1, etype="update", bids=[("99", "3")]), 1)[0]
+    await ing.process_event(ctx, delta)
+
+    book_msgs = [decode(v) for t, v, _ in ing.producer.calls if t.startswith("md.book.")]
+    assert [m.engine_ts_ns for m in book_msgs] == [0, 0]
 
 
 async def test_process_trade_emits_regardless_of_state():

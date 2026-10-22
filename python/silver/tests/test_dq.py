@@ -5,6 +5,8 @@ from __future__ import annotations
 from decimal import Decimal
 from pathlib import Path
 
+import pyarrow as pa
+
 from analytics.corpus import CorpusRecord
 from common.kafka_io import (
     book_delta_topic,
@@ -22,8 +24,9 @@ from common.models import (
     Trade,
     encode,
 )
+from common.schemas import table_from_rows
 from materializer.bronze import CanonicalMap
-from silver.dq import build_silver
+from silver.dq import BOOK_QUALITY_SCHEMA, book_partition_rows, build_silver, to_book_recs
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
 INSTRUMENTS_FILE = REPO_ROOT / "ops" / "instruments.yml"
@@ -51,7 +54,7 @@ def _rec(topic: str, msg, offset: int, *, recv_ns: int | None = None) -> CorpusR
     )
 
 
-def _snap(ex, sym, seq, bids, asks, ex_ts=5, lo_ts=10):
+def _snap(ex, sym, seq, bids, asks, ex_ts=5, lo_ts=10, engine_ts=0):
     return BookSnapshot(
         exchange=ex,
         symbol=sym,
@@ -60,10 +63,11 @@ def _snap(ex, sym, seq, bids, asks, ex_ts=5, lo_ts=10):
         asks=[_lv(*a) for a in asks],
         exchange_ts_ns=ex_ts,
         local_ts_ns=lo_ts,
+        engine_ts_ns=engine_ts,
     )
 
 
-def _delta(ex, sym, seq, bids, asks, ex_ts=5, lo_ts=10):
+def _delta(ex, sym, seq, bids, asks, ex_ts=5, lo_ts=10, engine_ts=0):
     return BookDelta(
         exchange=ex,
         symbol=sym,
@@ -72,6 +76,7 @@ def _delta(ex, sym, seq, bids, asks, ex_ts=5, lo_ts=10):
         asks=[_lv(*a) for a in asks],
         exchange_ts_ns=ex_ts,
         local_ts_ns=lo_ts,
+        engine_ts_ns=engine_ts,
     )
 
 
@@ -188,6 +193,41 @@ def test_resnapshot_collision_is_not_a_non_monotonic_violation() -> None:
     assert eight["best_bid"] == Decimal("100.7")
     assert eight["best_ask"] == Decimal("101")  # ask survived -> book was not cleared
     assert eight["invariant_kind"] is None
+
+
+def test_book_quality_carries_engine_time_null_where_the_venue_has_none() -> None:
+    """coinbase fills engine_ts_ns on its book messages; kraken publishes none, and
+    neither does bronze from before the field. The column holds that stamp or
+    null, never a 0 that reads as 1970, and exchange_ts_ns is untouched."""
+    cb_snap = _rec(
+        book_snapshot_topic("coinbase", "BTC-USD"),
+        _snap("coinbase", "BTC-USD", 0, [("100", "1")], [("101", "1")], engine_ts=3),
+        0,
+    )
+    cb_delta = _rec(
+        book_delta_topic("coinbase", "BTC-USD"),
+        _delta("coinbase", "BTC-USD", 1, [("100", "2")], [], engine_ts=4),
+        0,
+    )
+    kraken = _rec(
+        book_snapshot_topic("kraken", "BTC/USD"),
+        _snap("kraken", "BTC/USD", 5, [("100", "1")], [("101", "1")]),
+        0,
+    )
+    facts = build_silver([cb_snap, cb_delta, kraken], cmap())
+    got = {(r["exchange"], r["kind"]): r["engine_ts_ns"] for r in facts.book_quality}
+    assert got == {("coinbase", "snap"): 3, ("coinbase", "delta"): 4, ("kraken", "snap"): None}
+    assert {r["exchange_ts_ns"] for r in facts.book_quality} == {5}
+
+    table = table_from_rows(facts.book_quality, BOOK_QUALITY_SCHEMA)
+    assert table.schema.field("engine_ts_ns").type == pa.int64()
+    assert table.column("engine_ts_ns").null_count == 1
+
+    # The streaming driver builds its records separately (to_book_recs), so check it too.
+    streamed = book_partition_rows(
+        to_book_recs([cb_snap], cmap()), to_book_recs([cb_delta], cmap()), "coinbase"
+    )
+    assert [bq["engine_ts_ns"] for bq, _, _ in streamed] == [3, 4]
 
 
 def test_latency_skips_locally_generated_records() -> None:

@@ -37,6 +37,7 @@ def _rec(kind: str, seq: int, epoch: int = 1, offset: int | None = None) -> _Boo
         bids=[(Decimal("100"), Decimal("1"))],
         asks=[(Decimal("101"), Decimal("1"))],
         exchange_ts_ns=1_000,
+        engine_ts_ns=0,
         local_ts_ns=2_000,
         local_recv_ts_ns=3_000,
     )

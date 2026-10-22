@@ -8,8 +8,12 @@ Wire contract (verified live, see plan):
     envelope across all channels/products. A gap means we may have missed data
     for any symbol on the socket → resync the whole connection.
   - `l2_data` events: type `snapshot` (full book) then `update`. Each update level
-    is {side, price_level, new_quantity} where new_quantity is ABSOLUTE size
-    (0 = remove). Sides are `bid` / `offer`.
+    is {side, event_time, price_level, new_quantity} where new_quantity is ABSOLUTE
+    size (0 = remove). Sides are `bid` / `offer`.
+  - `event_time` is one stamp per message, at or after every change it carries but
+    never a trade's own time, in microseconds with trailing zeros trimmed. It goes to
+    `engine_ts_ns`; the envelope `timestamp` is the send time and stays
+    `exchange_ts_ns`.
   - `market_trades` events carry a `trades` list whose BUY/SELL `side` is the
     MAKER's (the resting order), so it inverts to crosstick's taker side.
   - `heartbeats` / `subscriptions` are control frames (no book/trade data) but
@@ -60,6 +64,7 @@ class _Update(msgspec.Struct):
     side: str
     price_level: str
     new_quantity: str
+    event_time: str = ""
 
 
 class _L2Event(msgspec.Struct):
@@ -126,6 +131,15 @@ def _rfc3339_to_ns(ts: str) -> int:
         head, frac_ns = body, 0
     dt = datetime.fromisoformat(head).replace(tzinfo=UTC)
     return int(dt.timestamp()) * 1_000_000_000 + frac_ns
+
+
+def _engine_ts_ns(updates: list[_Update]) -> int:
+    """Latest event_time across an event's updates, or 0 if none carry one.
+
+    Parsed before comparing: trimmed fractions make the strings unorderable
+    ('.7Z' sorts after '.70001Z'). Deduped first, since a snapshot's updates
+    all carry one time."""
+    return max(map(_rfc3339_to_ns, {u.event_time for u in updates}), default=0)
 
 
 # ─── ingester ────────────────────────────────────────────────────────────────
@@ -247,6 +261,7 @@ class CoinbaseIngester(BaseIngester):
                     exchange_ts_ns=event.exchange_ts_ns,
                     local_ts_ns=event.local_recv_ts_ns,
                     epoch=self._epoch,
+                    engine_ts_ns=_engine_ts_ns(event.payload.updates),
                 ),
                 ctx.symbol,
                 event,
@@ -269,6 +284,7 @@ class CoinbaseIngester(BaseIngester):
                     exchange_ts_ns=event.exchange_ts_ns,
                     local_ts_ns=event.local_recv_ts_ns,
                     epoch=self._epoch,
+                    engine_ts_ns=_engine_ts_ns(event.payload.updates),
                 ),
                 ctx.symbol,
                 event,

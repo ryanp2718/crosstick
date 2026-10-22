@@ -43,6 +43,9 @@ class BookSnapshot(msgspec.Struct, tag="snap", tag_field="t", frozen=True):
     # sequence) to avoid replaying a stale epoch onto a fresh snapshot. Defaults
     # to 0 so pre-epoch captures decode (compared by equality only - never time).
     epoch: int = 0
+    # Venue stamp at or after every change carried, not a trade's own time, epoch ns.
+    # 0 where the venue publishes none (all but coinbase) and on older captures.
+    engine_ts_ns: int = 0
 
 
 class BookDelta(msgspec.Struct, tag="delta", tag_field="t", frozen=True):
@@ -54,6 +57,7 @@ class BookDelta(msgspec.Struct, tag="delta", tag_field="t", frozen=True):
     exchange_ts_ns: int
     local_ts_ns: int
     epoch: int = 0  # see BookSnapshot.epoch
+    engine_ts_ns: int = 0  # see BookSnapshot.engine_ts_ns
 
 
 class Trade(msgspec.Struct, tag="trade", tag_field="t", frozen=True):
