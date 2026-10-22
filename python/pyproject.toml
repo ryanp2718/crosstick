@@ -30,9 +30,7 @@ research = [
 requires = ["setuptools>=84.0.0"]
 build-backend = "setuptools.build_meta"
 
-# Patterns, not a list of directories. The service image installs this package with only
-# pyproject.toml present (Dockerfile:12, a dependency-cache layer), where a named
-# directory would be a missing-package error and a pattern matching nothing is not.
+# Patterns, so each package's subpackages match too.
 [tool.setuptools.packages.find]
 include = [
     "analytics*", "common*", "exporter*", "gold*",
@@ -51,8 +49,8 @@ dev = [
 research = ["crosstick[research]"]
 
 [tool.uv]
-# Both groups install for local dev and CI (`uv sync`). The service images build with
-# `uv pip install .` (main deps only), so research never reaches a runtime container.
+# Both groups install for local dev and CI (`uv sync`). The service images sync with
+# `--no-default-groups` (main deps only), so research never reaches a runtime container.
 default-groups = ["dev", "research"]
 
 [tool.pytest.ini_options]

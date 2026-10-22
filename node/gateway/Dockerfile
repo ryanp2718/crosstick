@@ -2,10 +2,13 @@ FROM node:22-alpine AS build
 
 WORKDIR /app
 
-RUN npm install -g pnpm@9
+# corepack installs the pnpm that package.json's packageManager pins, checked against its hash.
+ENV COREPACK_ENABLE_DOWNLOAD_PROMPT=0
+RUN corepack enable
 
-COPY node/gateway/package.json ./
-RUN pnpm install --prod=false
+COPY node/gateway/package.json node/gateway/pnpm-lock.yaml node/gateway/pnpm-workspace.yaml ./
+COPY node/gateway/patches ./patches
+RUN pnpm install --frozen-lockfile
 
 COPY node/gateway/tsconfig.json ./
 COPY node/gateway/src ./src
@@ -15,10 +18,12 @@ FROM node:22-alpine AS runtime
 
 WORKDIR /app
 
-RUN npm install -g pnpm@9
+ENV COREPACK_ENABLE_DOWNLOAD_PROMPT=0
+RUN corepack enable
 
-COPY node/gateway/package.json ./
-RUN pnpm install --prod
+COPY node/gateway/package.json node/gateway/pnpm-lock.yaml node/gateway/pnpm-workspace.yaml ./
+COPY node/gateway/patches ./patches
+RUN pnpm install --frozen-lockfile --prod
 
 COPY --from=build /app/dist ./dist
 COPY dashboard ./dashboard
