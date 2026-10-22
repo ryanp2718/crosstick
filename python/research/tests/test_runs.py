@@ -248,7 +248,7 @@ def _infoshare_run(stride: int = 1) -> runs.InfoShares:
     follower = efficient - 0.5 * np.diff(efficient, prepend=efficient[0])
     frame = pl.DataFrame(
         {
-            "ts_ns": np.arange(n, dtype=np.int64),
+            "ts_ns": np.arange(n, dtype=np.int64) * infoshare.NS_PER_S,
             "date": ["2026-01-01"] * n,
             "coinbase_mid": np.exp(leader),
             "kraken_mid": np.exp(follower),
@@ -262,6 +262,7 @@ def _infoshare_run(stride: int = 1) -> runs.InfoShares:
         stride=stride,
         lags=infoshare.DEFAULT_LAGS,
         estimates=estimates,
+        skips_holes=True,
     )
 
 
@@ -274,6 +275,7 @@ def test_the_information_share_block_prints_when_asked_for(capsys) -> None:
     out = capsys.readouterr().out
     assert "information shares" in out
     assert "stride 1" in out
+    assert "skipping capture holes" in out
     assert "different questions" in out
 
 
@@ -463,6 +465,27 @@ def test_the_information_shares_read_back_as_arrays(tmp_path) -> None:
     assert isinstance(estimate.bounds, np.ndarray)
     assert estimate.bounds.shape == record.infoshare[0].estimates[0].bounds.shape
     assert estimate.component_shares.dtype == float
+
+
+def test_a_record_from_before_the_hole_rule_reads_as_the_spliced_fit(tmp_path, capsys) -> None:
+    """The published records predate `skips_holes` and `n_dropped`. They were made by the
+    fit that spliced across every hole and left no row out, so that is what they read as,
+    and the report says so rather than passing them off as the fit that skips holes."""
+    record = _record()
+    record.infoshare = [_infoshare_run()]
+    out = record.write(tmp_path)
+    parsed = json.loads((out / "record.json").read_text(encoding="utf-8"))
+    for block in parsed["infoshare"]:
+        del block["skips_holes"]
+        for estimate in block["estimates"]:
+            del estimate["n_dropped"]
+    (out / "record.json").write_text(json.dumps(parsed), encoding="utf-8")
+
+    back = runs.RunRecord.read(out)
+    assert back.infoshare[0].skips_holes is False
+    assert [e.n_dropped for e in back.infoshare[0].estimates] == [0]
+    report(back)
+    assert "spliced across capture holes" in capsys.readouterr().out
 
 
 def test_a_record_missing_a_field_is_an_error_rather_than_a_default(tmp_path) -> None:

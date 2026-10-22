@@ -302,7 +302,8 @@ def _report_infoshare(record: RunRecord) -> None:
     any outside information. This says which venue the other one error-corrects toward.
     """
     for run in record.infoshare:
-        print(f"\n{'=' * 72}\nstride {run.stride} ({run.stride}s bars), {run.lags} lags")
+        holes = "skipping capture holes" if run.skips_holes else "spliced across capture holes"
+        print(f"\n{'=' * 72}\nstride {run.stride} ({run.stride}s bars), {run.lags} lags, {holes}")
         infoshare.report(run.estimates)
 
 
@@ -346,6 +347,7 @@ def _information_shares(df: pl.DataFrame, spec: RunSpec, max_age_ms: int) -> lis
                 stride=stride,
                 lags=infoshare.DEFAULT_LAGS,
                 estimates=estimates,
+                skips_holes=True,
             )
         )
     return out
@@ -579,9 +581,9 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         type=int,
         default=[1],
         metavar="N",
-        help="sample every Nth bar for --infoshare (default 1). Information shares depend "
-        "on sampling frequency - coarse enough and every venue looks simultaneous - so "
-        "pass several to report the answer as a function of it",
+        help="sample the bars on an N-second grid for --infoshare (default 1). Information "
+        "shares depend on sampling frequency - coarse enough and every venue looks "
+        "simultaneous - so pass several to report the answer as a function of it",
     )
     return p.parse_args(argv)
 
