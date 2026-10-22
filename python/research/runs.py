@@ -163,6 +163,9 @@ class InfoShares:
     stride: int
     lags: int
     estimates: list[InfoShare]
+    # Which fit made the estimates: True if it skipped steps that cross a capture hole,
+    # False if it spliced across each hole as one step (see research.infoshare).
+    skips_holes: bool
 
 
 @dataclass
@@ -216,7 +219,11 @@ class RunRecord:
         rather than as a null, or it formats as a number that was never measured.
 
         Every field is indexed rather than `.get()`-ed, so a record written by a version
-        that did not have one fails here loudly instead of reporting a default.
+        that did not have one fails here loudly instead of reporting a default. The two
+        exceptions came with the information-share fit that skips capture holes. A record
+        without them was made by the fit before it, which spliced across every hole and
+        left no row out, so `skips_holes` False and `n_dropped` 0 are what that fit did,
+        not a guess.
         """
         raw = json.loads((run / "record.json").read_text(encoding="utf-8"))
         pair = raw["spec"]["infoshare_venues"]
@@ -269,6 +276,7 @@ class RunRecord:
                     stride=block["stride"],
                     lags=block["lags"],
                     estimates=[_info_share(e) for e in block["estimates"]],
+                    skips_holes=block.get("skips_holes", False),
                 )
                 for block in raw["infoshare"]
             ],
@@ -303,6 +311,7 @@ def _info_share(raw: dict) -> InfoShare:
         bounds=np.array(raw["bounds"], dtype=float),
         residual_corr=_number(raw["residual_corr"]),
         conditioning=_number(raw["conditioning"]),
+        n_dropped=raw.get("n_dropped", 0),
         date=raw["date"],
     )
 
