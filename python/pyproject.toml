@@ -4,11 +4,11 @@ version = "0.1.0"
 description = "Polyglot crypto market-data ingest + analytics platform"
 requires-python = ">=3.11"
 dependencies = [
-    "websockets==17.3",
+    "websockets==17.4",
     "httpx==0.28.1",
     "msgspec==0.22.0",
     "sortedcontainers==2.4.0",
-    "aiokafka==0.14.0",
+    "aiokafka==0.15.0",
     "pyarrow==25.0.1",
     "numpy==2.4.6",
     "prometheus-client==0.26.0",
@@ -40,9 +40,9 @@ exclude = ["*.tests", "*.tests.*"]
 
 [dependency-groups]
 dev = [
-    "pytest==9.1.1",
+    "pytest==9.2.0",
     "pytest-asyncio==1.4.1",
-    "ruff==0.17.2",
+    "ruff==0.17.3",
     "testcontainers==4.15.0",
 ]
 # The extra, so `uv sync` keeps installing it and the pins stay in one place.
