@@ -22,7 +22,7 @@ dependencies = [
 # installs this package with `pip install "crosstick[research] @ git+...@<sha>"`.
 [project.optional-dependencies]
 research = [
-    "polars==1.44.1",
+    "polars==2.1.0",
     "scikit-learn==1.9.1",
 ]
 
